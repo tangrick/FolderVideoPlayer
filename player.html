@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Folder Video Player</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #111;
+    color: #eee;
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  #picker {
+    margin: auto;
+    text-align: center;
+    padding: 24px;
+  }
+  #picker h1 { font-weight: 500; font-size: 20px; margin: 0 0 16px; }
+  #picker p { color: #888; margin: 12px 0 0; }
+  button {
+    background: #2b6cf0;
+    color: #fff;
+    border: 0;
+    border-radius: 6px;
+    padding: 12px 22px;
+    font-size: 15px;
+    cursor: pointer;
+  }
+  button:hover { background: #3d7bf5; }
+  #stage { display: none; flex: 1; min-height: 0; flex-direction: column; }
+  video { flex: 1; min-height: 0; width: 100%; background: #000; }
+  #bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    background: #1a1a1a;
+    border-top: 1px solid #2a2a2a;
+  }
+  #title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #count { color: #888; font-variant-numeric: tabular-nums; }
+  #bar button { padding: 6px 14px; font-size: 13px; background: #333; }
+  #bar button:hover { background: #444; }
+</style>
+</head>
+<body>
+
+<div id="picker">
+  <h1>Folder Video Player</h1>
+  <button id="choose">Choose folder</button>
+  <input id="input" type="file" webkitdirectory multiple hidden>
+  <p>Plays every video in the folder in order, then repeats.</p>
+</div>
+
+<div id="stage">
+  <video id="video" controls autoplay></video>
+  <div id="bar">
+    <button id="prev">Prev</button>
+    <button id="next">Next</button>
+    <span id="title"></span>
+    <span id="count"></span>
+  </div>
+</div>
+
+<script>
+const VIDEO_RE = /\.(mp4|m4v|webm|ogv|ogg|mov)$/i;
+
+const input = document.getElementById('input');
+const video = document.getElementById('video');
+const titleEl = document.getElementById('title');
+const countEl = document.getElementById('count');
+
+let files = [];
+let index = 0;
+let url = null;
+
+document.getElementById('choose').onclick = () => input.click();
+
+input.onchange = () => {
+  files = [...input.files]
+    .filter(f => VIDEO_RE.test(f.name))
+    .sort((a, b) => a.webkitRelativePath.localeCompare(
+      b.webkitRelativePath, undefined, { numeric: true, sensitivity: 'base' }));
+
+  if (!files.length) {
+    alert('No playable video files found in that folder.');
+    return;
+  }
+  document.getElementById('picker').style.display = 'none';
+  document.getElementById('stage').style.display = 'flex';
+  play(0);
+};
+
+function play(i) {
+  index = (i + files.length) % files.length;
+  const file = files[index];
+
+  if (url) URL.revokeObjectURL(url);
+  url = URL.createObjectURL(file);
+
+  video.src = url;
+  video.play().catch(() => {});   // ignore autoplay rejection; controls are visible
+
+  titleEl.textContent = file.name;
+  countEl.textContent = `${index + 1} / ${files.length}`;
+  document.title = file.name;
+}
+
+video.onended = () => play(index + 1);
+video.onerror = () => { if (files.length > 1) play(index + 1); };  // skip unplayable codecs
+
+document.getElementById('next').onclick = () => play(index + 1);
+document.getElementById('prev').onclick = () => play(index - 1);
+
+document.onkeydown = e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'ArrowRight' && e.shiftKey) play(index + 1);
+  if (e.key === 'ArrowLeft' && e.shiftKey) play(index - 1);
+};
+</script>
+
+</body>
+</html>

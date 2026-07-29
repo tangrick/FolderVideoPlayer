@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Video Player</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #111;
+    color: #eee;
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  #picker { margin: auto; text-align: center; padding: 24px; }
+  #picker h1 { font-weight: 500; font-size: 20px; margin: 0 0 20px; }
+  #picker p { color: #888; margin: 16px 0 0; }
+  button {
+    background: #2b6cf0;
+    color: #fff;
+    border: 0;
+    border-radius: 6px;
+    padding: 12px 22px;
+    font-size: 15px;
+    cursor: pointer;
+  }
+  button:hover { background: #3d7bf5; }
+  button:disabled { background: #333; color: #777; cursor: default; }
+  button.ghost { background: #333; }
+  button.ghost:hover { background: #444; }
+  #stage { display: none; flex: 1; min-height: 0; flex-direction: column; }
+  video { flex: 1; min-height: 0; width: 100%; background: #000; }
+  #bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    background: #1a1a1a;
+    border-top: 1px solid #2a2a2a;
+  }
+  #bar button { padding: 6px 13px; font-size: 13px; }
+  #star { background: #333; font-size: 15px; line-height: 1; padding: 6px 12px; }
+  #star.on { background: #8a6d00; }
+  #title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #count { color: #888; font-variant-numeric: tabular-nums; }
+  #mode {
+    color: #888;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 12px;
+  }
+</style>
+</head>
+<body>
+
+<div id="picker">
+  <h1>Video Player</h1>
+  <p style="margin: 0 0 20px">
+    <button id="chooseBtn">Choose folder</button>
+    <button id="favBtn" class="ghost">Play favorites</button>
+  </p>
+  <p>Plays every video in order, then repeats.<br>Press <b>F</b> while watching to favorite the current video.</p>
+</div>
+
+<div id="stage">
+  <video id="video" controls autoplay></video>
+  <div id="bar">
+    <button id="prev" class="ghost">Prev</button>
+    <button id="next" class="ghost">Next</button>
+    <button id="star" title="Favorite (F)">☆</button>
+    <span id="title"></span>
+    <span id="count"></span>
+    <span id="mode"></span>
+    <button id="chooseBtn2" class="ghost">Folder…</button>
+    <button id="favBtn2" class="ghost">Favorites</button>
+  </div>
+</div>
+
+<script>
+const TOKEN = new URLSearchParams(location.search).get('t') || '';
+const api = (path, opts) => fetch(path + (path.includes('?') ? '&' : '?') + 't=' + TOKEN, opts);
+
+const video = document.getElementById('video');
+const titleEl = document.getElementById('title');
+const countEl = document.getElementById('count');
+const modeEl = document.getElementById('mode');
+const starEl = document.getElementById('star');
+const favBtn = document.getElementById('favBtn');
+
+let playlist = [];        // [{path, name}]
+let index = 0;
+let mode = '';            // 'folder' | 'favorites'
+let favs = new Set();     // absolute paths
+
+// -- favorites ---------------------------------------------------------
+
+async function loadFavorites() {
+  const list = await (await api('/api/favorites')).json();
+  favs = new Set(list.map(f => f.path));
+  favBtn.textContent = `Play favorites (${favs.size})`;
+  favBtn.disabled = favs.size === 0;
+  return list;
+}
+
+async function toggleFavorite() {
+  if (!playlist.length) return;
+  const current = playlist[index];
+
+  if (favs.has(current.path)) {
+    await api('/api/favorites?path=' + encodeURIComponent(current.path), { method: 'DELETE' });
+    favs.delete(current.path);
+    // in favorites mode the list is what we're playing, so drop it from the queue too
+    if (mode === 'favorites' && playlist.length > 1) {
+      playlist.splice(index, 1);
+      if (index >= playlist.length) index = 0;
+      return play(index);
+    }
+  } else {
+    await api('/api/favorites', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: current.path })
+    });
+    favs.add(current.path);
+  }
+  refreshBar();
+}
+
+// -- playback ----------------------------------------------------------
+
+function play(i) {
+  index = (i + playlist.length) % playlist.length;
+  video.src = '/media?t=' + TOKEN + '&path=' + encodeURIComponent(playlist[index].path);
+  video.play().catch(() => {});   // ignore autoplay rejection; controls are visible
+  refreshBar();
+}
+
+function refreshBar() {
+  const current = playlist[index];
+  titleEl.textContent = current.name;
+  countEl.textContent = `${index + 1} / ${playlist.length}`;
+  modeEl.textContent = mode === 'favorites' ? 'Favorites' : 'Folder';
+  const on = favs.has(current.path);
+  starEl.textContent = on ? '★' : '☆';
+  starEl.classList.toggle('on', on);
+  starEl.title = on ? 'Remove from favorites (F)' : 'Add to favorites (F)';
+  favBtn.textContent = `Play favorites (${favs.size})`;
+  favBtn.disabled = favs.size === 0;
+  document.title = current.name;
+}
+
+function start(list, which) {
+  if (!list.length) {
+    alert(which === 'favorites' ? 'No favorites yet.' : 'No playable videos in that folder.');
+    return;
+  }
+  playlist = list;
+  mode = which;
+  document.getElementById('picker').style.display = 'none';
+  document.getElementById('stage').style.display = 'flex';
+  play(0);
+}
+
+// -- actions -----------------------------------------------------------
+
+async function chooseFolder() {
+  const { path } = await (await api('/api/pick', { method: 'POST' })).json();
+  if (!path) return;    // cancelled
+  start(await (await api('/api/list?dir=' + encodeURIComponent(path))).json(), 'folder');
+}
+
+async function playFavorites() {
+  start(await loadFavorites(), 'favorites');
+}
+
+document.getElementById('chooseBtn').onclick = chooseFolder;
+document.getElementById('chooseBtn2').onclick = chooseFolder;
+document.getElementById('favBtn').onclick = playFavorites;
+document.getElementById('favBtn2').onclick = playFavorites;
+document.getElementById('next').onclick = () => play(index + 1);
+document.getElementById('prev').onclick = () => play(index - 1);
+starEl.onclick = toggleFavorite;
+
+video.onended = () => play(index + 1);
+video.onerror = () => { if (playlist.length > 1) play(index + 1); };   // skip unplayable codecs
+
+document.onkeydown = e => {
+  if (e.key === 'f' || e.key === 'F') toggleFavorite();
+  if (e.key === 'ArrowRight' && e.shiftKey) play(index + 1);
+  if (e.key === 'ArrowLeft' && e.shiftKey) play(index - 1);
+};
+
+loadFavorites();
+</script>
+
+</body>
+</html>

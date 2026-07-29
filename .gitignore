@@ -1,0 +1,18 @@
+# Personal data — these contain absolute paths into your own media library,
+# including filenames. Never commit them.
+favorites.json
+favorites.json.backup
+
+# Build output. The app is ~60MB and the DMG ~25MB; ship the DMG as a
+# GitHub Release asset instead of committing it.
+Video Player.app/
+Video Player.dmg
+build/
+dist/
+venv/
+__pycache__/
+*.pyc
+
+# macOS / editor cruft
+.DS_Store
+.claude/
