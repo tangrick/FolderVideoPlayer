@@ -1,5 +1,5 @@
 ===============================================================================
- VIDEO PLAYER — a native macOS media player with autoplay and favorites
+ FOLDERVIDEOPLAYER — a native macOS media player with autoplay and favorites
 ===============================================================================
 
 Pick a folder, and every video in it plays back to back in a real player
@@ -18,7 +18,7 @@ are involved.
  QUICK START
 -------------------------------------------------------------------------------
 
-  1. Double-click "Video Player.app"
+  1. Double-click "FolderVideoPlayer.app"
 
   2. A dialog asks what you want to play:
 
@@ -35,7 +35,7 @@ are involved.
 
   To quit: Cmd+Q, or close the window.
 
-  You can drag "Video Player.app" to your Applications folder or keep it in
+  You can drag "FolderVideoPlayer.app" to your Applications folder or keep it in
   the Dock, like any other app. Everything it needs is inside the app.
 
 
@@ -106,7 +106,7 @@ are involved.
       Mac, and even replacing the app with a newer copy — because it's
       stored outside the app, here:
 
-          ~/Library/Application Support/Video Player/favorites.json
+          ~/Library/Application Support/FolderVideoPlayer/favorites.json
 
     - Clicking ★ Favorite (or Cmd+Shift+D) on a video you've already
       favorited removes it. If you do that while it's the one currently
@@ -155,7 +155,7 @@ are involved.
       1. Open System Settings
       2. Go to Privacy & Security > Full Disk Access
       3. Click the + button
-      4. Select "Video Player.app" and add it
+      4. Select "FolderVideoPlayer.app" and add it
       5. Make sure its switch is turned ON
       6. Quit the player and open it again
 
@@ -186,7 +186,7 @@ are involved.
  GIVING IT TO SOMEONE ELSE
 -------------------------------------------------------------------------------
 
-  Send them "Video Player.dmg". They open it and drag Video Player across
+  Send them "FolderVideoPlayer.dmg". They open it and drag FolderVideoPlayer across
   to the Applications shortcut in the same window. That's the whole
   install.
 
@@ -194,13 +194,13 @@ are involved.
 
   The app is signed, but only with an ad-hoc signature, not with a paid
   Apple Developer ID. macOS therefore refuses to open it the first time,
-  with a message like "Apple could not verify Video Player is free of
+  with a message like "Apple could not verify FolderVideoPlayer is free of
   malware". This is expected and says nothing about the app. To get past
   it, once:
 
       1. Try to open the app normally, and dismiss the warning
       2. Open System Settings > Privacy & Security
-      3. Scroll down — there'll be a line about Video Player being blocked
+      3. Scroll down — there'll be a line about FolderVideoPlayer being blocked
       4. Click "Open Anyway"
 
   On older versions of macOS, right-clicking the app and choosing Open is
@@ -208,7 +208,7 @@ are involved.
 
   Anyone comfortable in Terminal can skip all of that by running:
 
-      xattr -d com.apple.quarantine "/Applications/Video Player.app"
+      xattr -d com.apple.quarantine "/Applications/FolderVideoPlayer.app"
 
   Paying for an Apple Developer ID and notarizing the app is the only way
   to remove this step for good.
@@ -231,13 +231,13 @@ are involved.
       ./venv/bin/pip install py2app pyobjc-framework-AVKit \
                              pyobjc-framework-AVFoundation
       ./venv/bin/python setup.py py2app
-      codesign --force --deep --sign - "dist/Video Player.app"
+      codesign --force --deep --sign - "dist/FolderVideoPlayer.app"
 
   The finished app lands in dist/. To wrap it back into a DMG, put the app,
   Readme.txt and a symlink to /Applications into one folder and run:
 
-      hdiutil create -volname "Video Player" -srcfolder <that folder> \
-                     -ov -format UDZO -fs HFS+ "Video Player.dmg"
+      hdiutil create -volname "FolderVideoPlayer" -srcfolder <that folder> \
+                     -ov -format UDZO -fs HFS+ "FolderVideoPlayer.dmg"
 
   Always re-sign after changing anything inside the bundle, or macOS will
   refuse to launch it.
@@ -247,8 +247,8 @@ are involved.
  FILES IN THIS FOLDER
 -------------------------------------------------------------------------------
 
-  Video Player.app ........ the app. This is the one you want.
-  Video Player.dmg ........ the same app, packaged to give to other people
+  FolderVideoPlayer.app ........ the app. This is the one you want.
+  FolderVideoPlayer.dmg ........ the same app, packaged to give to other people
   Readme.txt .............. this file
   player.py ............... the app's source code
   setup.py ................ the recipe that builds the app from that source

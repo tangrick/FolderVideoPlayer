@@ -1,4 +1,4 @@
-# Video Player
+# FolderVideoPlayer
 
 A native macOS media player that plays a whole folder back to back, loops
 forever, and keeps a persistent favorites list that plays the same way.
@@ -21,7 +21,7 @@ system ones.
 - **Open New…** returns to the opening menu to switch folders or jump to
   favorites, without restarting.
 
-Favorites persist in `~/Library/Application Support/Video Player/favorites.json`,
+Favorites persist in `~/Library/Application Support/FolderVideoPlayer/favorites.json`,
 outside the app bundle, so replacing the app never loses them.
 
 ## Controls
@@ -53,9 +53,9 @@ ID, so **the first launch is blocked by Gatekeeper**. To get past it once:
 
 1. Try to open it, dismiss the warning
 2. **System Settings → Privacy & Security**
-3. Click **Open Anyway** next to the Video Player message
+3. Click **Open Anyway** next to the FolderVideoPlayer message
 
-Or from Terminal: `xattr -d com.apple.quarantine "/Applications/Video Player.app"`
+Or from Terminal: `xattr -d com.apple.quarantine "/Applications/FolderVideoPlayer.app"`
 
 ### Videos on a NAS or external drive
 
@@ -74,15 +74,15 @@ a Mac with no Python installed.
 python3 -m venv venv
 ./venv/bin/pip install py2app pyobjc-framework-AVKit pyobjc-framework-AVFoundation
 ./venv/bin/python setup.py py2app
-codesign --force --deep --sign - "dist/Video Player.app"
+codesign --force --deep --sign - "dist/FolderVideoPlayer.app"
 ```
 
 To package a DMG, put the app, `Readme.txt` and a symlink to `/Applications`
 in one folder and run:
 
 ```sh
-hdiutil create -volname "Video Player" -srcfolder <that folder> \
-               -ov -format UDZO -fs HFS+ "Video Player.dmg"
+hdiutil create -volname "FolderVideoPlayer" -srcfolder <that folder> \
+               -ov -format UDZO -fs HFS+ "FolderVideoPlayer.dmg"
 ```
 
 Re-sign after changing anything inside the bundle or macOS will refuse to

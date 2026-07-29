@@ -1,4 +1,4 @@
-"""py2app build: produces a fully standalone Video Player.app.
+"""py2app build: produces a fully standalone FolderVideoPlayer.app.
 
 The result embeds its own Python and the PyObjC libraries, so it runs on a Mac
 that has no Python installed at all.
@@ -7,25 +7,25 @@ that has no Python installed at all.
 from setuptools import setup
 
 PLIST = {
-    "CFBundleName": "Video Player",
-    "CFBundleDisplayName": "Video Player",
-    "CFBundleIdentifier": "local.videoplayer",
-    "CFBundleShortVersionString": "2.1",
-    "CFBundleVersion": "2.1",
+    "CFBundleName": "FolderVideoPlayer",
+    "CFBundleDisplayName": "FolderVideoPlayer",
+    "CFBundleIdentifier": "local.foldervideoplayer",
+    "CFBundleShortVersionString": "2.2",
+    "CFBundleVersion": "2.2",
     "NSHumanReadableCopyright": "",
     "LSMinimumSystemVersion": "10.15",
     "NSHighResolutionCapable": True,
     "NSPrincipalClass": "NSApplication",
     "NSNetworkVolumesUsageDescription":
-        "Video Player needs access to network volumes to play videos stored on them.",
+        "FolderVideoPlayer needs access to network volumes to play videos stored on them.",
     "NSRemovableVolumesUsageDescription":
-        "Video Player needs access to removable volumes to play videos stored on them.",
+        "FolderVideoPlayer needs access to removable volumes to play videos stored on them.",
     "NSDesktopFolderUsageDescription":
-        "Video Player needs access to play videos stored on your Desktop.",
+        "FolderVideoPlayer needs access to play videos stored on your Desktop.",
     "NSDocumentsFolderUsageDescription":
-        "Video Player needs access to play videos stored in your Documents folder.",
+        "FolderVideoPlayer needs access to play videos stored in your Documents folder.",
     "NSDownloadsFolderUsageDescription":
-        "Video Player needs access to play videos stored in your Downloads folder.",
+        "FolderVideoPlayer needs access to play videos stored in your Downloads folder.",
 }
 
 setup(

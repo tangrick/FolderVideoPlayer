@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Video Player — a native macOS media player.
+"""FolderVideoPlayer — a native macOS media player.
 
 Plays every video in a folder back to back, loops at the end, and keeps a
 persistent favorites list that plays the same way.
@@ -59,7 +59,9 @@ from Cocoa import (
 )
 from PyObjCTools import AppHelper
 
-SUPPORT = os.path.expanduser("~/Library/Application Support/Video Player")
+APP_NAME = "FolderVideoPlayer"
+
+SUPPORT = os.path.expanduser("~/Library/Application Support/" + APP_NAME)
 FAV_FILE = os.path.join(SUPPORT, "favorites.json")
 
 # What AVFoundation can actually decode. .mkv and .avi are deliberately absent.
@@ -200,14 +202,14 @@ class AppDelegate(NSObject):
     def buildMenu(self):
         bar = NSMenu.alloc().init()
 
-        app = self.menu(bar, "Video Player")
+        app = self.menu(bar, APP_NAME)
         about = app.addItemWithTitle_action_keyEquivalent_(
-            "About Video Player", "orderFrontStandardAboutPanel:", "")
+            "About " + APP_NAME, "orderFrontStandardAboutPanel:", "")
         about.setTarget_(None)
         app.addItem_(NSMenuItem.separatorItem())
-        app.addItemWithTitle_action_keyEquivalent_("Hide Video Player", "hide:", "h")
+        app.addItemWithTitle_action_keyEquivalent_("Hide " + APP_NAME, "hide:", "h")
         app.addItem_(NSMenuItem.separatorItem())
-        app.addItemWithTitle_action_keyEquivalent_("Quit Video Player", "terminate:", "q")
+        app.addItemWithTitle_action_keyEquivalent_("Quit " + APP_NAME, "terminate:", "q")
 
         files = self.menu(bar, "File")
         self.add(files, "Open New…", "openNew:", "n", NSEventModifierFlagCommand)
@@ -411,7 +413,7 @@ class AppDelegate(NSObject):
         playing = bool(self.playlist)
 
         alert = NSAlert.alloc().init()
-        alert.setMessageText_("Video Player")
+        alert.setMessageText_(APP_NAME)
         alert.setInformativeText_(
             "Choose a folder and every video in it plays in order, then repeats.")
 
@@ -558,7 +560,7 @@ class AppDelegate(NSObject):
         self.revealCurrentRow()          # keep the highlight on what's playing
 
         if not path:
-            self.window.setTitle_("Video Player")
+            self.window.setTitle_(APP_NAME)
             self.favItem.setTitle_("Add to Favorites")
             self.favButton.setTitle_("☆  Favorite")
             return

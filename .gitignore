@@ -5,8 +5,8 @@ favorites.json.backup
 
 # Build output. The app is ~60MB and the DMG ~25MB; ship the DMG as a
 # GitHub Release asset instead of committing it.
-Video Player.app/
-Video Player.dmg
+FolderVideoPlayer.app/
+FolderVideoPlayer.dmg
 build/
 dist/
 venv/
