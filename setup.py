@@ -35,7 +35,8 @@ setup(
         "py2app": {
             "iconfile": "icon.icns",
             "plist": PLIST,
-            "packages": ["objc", "AVKit", "AVFoundation", "Cocoa", "Foundation", "AppKit"],
+            "packages": ["objc", "AVKit", "AVFoundation", "CoreMedia", "Cocoa",
+                         "Foundation", "AppKit"],
             # Only Tcl/Tk is safe to drop. Excluding stdlib modules such as
             # urllib breaks pathlib, which objc imports at startup.
             "excludes": ["tkinter", "_tkinter"],

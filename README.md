@@ -16,8 +16,8 @@ system ones.
   included. After the last one it wraps to the first and keeps going.
 - **Favorites.** Star anything while it's playing. Favorites can span any
   number of folders and play as one looping list.
-- **Playlist drawer.** Slides in from the right, highlights what's playing,
-  click any row to jump straight to it.
+- **Playlist drawer.** Slides in from the right, highlights what's playing.
+  Click a row, or arrow up and down it, to jump straight to that video.
 - **Open New…** returns to the opening menu to switch folders or jump to
   favorites, without restarting.
 
@@ -29,7 +29,8 @@ outside the app bundle, so replacing the app never loses them.
 | | |
 |---|---|
 | `⌘⇧D` | favorite / unfavorite the current video |
-| `⌘←` `⌘→` | previous / next |
+| `←` `→` | skip back / forward 15 seconds |
+| `⌘←` `⌘→` | previous / next video |
 | `⌘L` | show / hide the playlist |
 | `⌘N` | back to the opening menu |
 | `⌘O` | open a folder directly |

@@ -47,9 +47,10 @@ are involved.
   "☆ Favorite", "Open New…" and "Playlist" buttons. Everything they do is
   also available from the keyboard:
 
-  Cmd + Shift + D ............. add / remove the current video as a favorite
+  Left / Right arrow .......... skip back / forward 15 seconds
   Cmd + Right ................. next video
   Cmd + Left .................. previous video
+  Cmd + Shift + D ............. add / remove the current video as a favorite
   Cmd + L ..................... show / hide the playlist
   Cmd + N ..................... back to the opening menu (Open New)
   Cmd + O ..................... open a different folder directly
@@ -76,6 +77,9 @@ are involved.
 
     - The video playing right now is highlighted.
     - Click any row to jump straight to that video.
+    - With the list open, the up and down arrow keys walk through it and
+      play whatever you land on, so you can browse straight from the
+      keyboard.
     - The highlight follows along on its own as playback moves from one
       video to the next, and the list scrolls to keep it in view.
 

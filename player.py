@@ -20,6 +20,7 @@ from AVFoundation import (
     AVPlayerItemDidPlayToEndTimeNotification,
 )
 from AVKit import AVPlayerView
+from CoreMedia import CMTimeGetSeconds, CMTimeMakeWithSeconds, kCMTimeZero
 from Cocoa import (
     NSAlert,
     NSAnimationContext,
@@ -66,6 +67,8 @@ FAV_FILE = os.path.join(SUPPORT, "favorites.json")
 
 # What AVFoundation can actually decode. .mkv and .avi are deliberately absent.
 VIDEO_EXT = {".mp4", ".m4v", ".mov"}
+
+SKIP_SECONDS = 15
 
 CONTROLS_FLOATING = 1
 BAR_HEIGHT = 48
@@ -219,6 +222,10 @@ class AppDelegate(NSObject):
                  NSEventModifierFlagCommand | NSEventModifierFlagShift)
 
         play = self.menu(bar, "Playback")
+        # Bare arrows scrub within the video; add Command to change video.
+        self.add(play, "Skip Back %d Seconds" % SKIP_SECONDS, "skipBack:", LEFT_ARROW, 0)
+        self.add(play, "Skip Forward %d Seconds" % SKIP_SECONDS, "skipForward:", RIGHT_ARROW, 0)
+        play.addItem_(NSMenuItem.separatorItem())
         self.add(play, "Next Video", "nextItem:", RIGHT_ARROW, NSEventModifierFlagCommand)
         self.add(play, "Previous Video", "prevItem:", LEFT_ARROW, NSEventModifierFlagCommand)
         play.addItem_(NSMenuItem.separatorItem())
@@ -327,8 +334,9 @@ class AppDelegate(NSObject):
         self.table.setRowHeight_(24)
         self.table.setUsesAlternatingRowBackgroundColors_(True)
         self.table.setDataSource_(self)
-        self.table.setTarget_(self)
-        self.table.setAction_("rowClicked:")          # single click jumps
+        # Selection drives playback, so clicking and arrowing behave identically.
+        self.table.setDelegate_(self)
+        self.syncing = False
 
         scroll = NSScrollView.alloc().initWithFrame_(
             NSMakeRect(0, 0, SIDEBAR_W, height))
@@ -359,16 +367,24 @@ class AppDelegate(NSObject):
         NSAnimationContext.endGrouping()
         if self.sidebarOpen:
             self.revealCurrentRow()
+            # focus the list so the arrow keys drive it straight away
+            self.window.makeFirstResponder_(self.table)
+        else:
+            self.window.makeFirstResponder_(self.playerView)
 
     def windowDidResize_(self, notification):
         self.sidebar.setFrame_(self.sidebarFrame())
 
-    def rowClicked_(self, sender):
-        self.jumpToRow(self.table.clickedRow())
+    def tableViewSelectionDidChange_(self, notification):
+        # Ignore selection we set ourselves while following playback, otherwise
+        # every track change would re-trigger itself.
+        if self.syncing:
+            return
+        self.jumpToRow(self.table.selectedRow())
 
     @objc.python_method
     def jumpToRow(self, row):
-        if 0 <= row < len(self.playlist):
+        if 0 <= row < len(self.playlist) and row != self.index:
             self.playIndex(row)
 
     # NSTableView data source
@@ -384,9 +400,13 @@ class AppDelegate(NSObject):
     def revealCurrentRow(self):
         if not self.playlist:
             return
-        self.table.selectRowIndexes_byExtendingSelection_(
-            NSIndexSet.indexSetWithIndex_(self.index), False)
-        self.table.scrollRowToVisible_(self.index)
+        self.syncing = True
+        try:
+            self.table.selectRowIndexes_byExtendingSelection_(
+                NSIndexSet.indexSetWithIndex_(self.index), False)
+            self.table.scrollRowToVisible_(self.index)
+        finally:
+            self.syncing = False
 
     # -- choosing what to play -------------------------------------------
 
@@ -500,6 +520,29 @@ class AppDelegate(NSObject):
 
     def prevItem_(self, sender):
         self.playIndex(self.index - 1)
+
+    def skipBack_(self, sender):
+        self.seekBy(-SKIP_SECONDS)
+
+    def skipForward_(self, sender):
+        self.seekBy(SKIP_SECONDS)
+
+    @objc.python_method
+    def seekBy(self, seconds):
+        if self.item is None:
+            return
+        now = CMTimeGetSeconds(self.player.currentTime())
+        if now != now:                      # NaN until the item is ready
+            return
+        target = max(0.0, now + seconds)
+        total = CMTimeGetSeconds(self.item.duration())
+        if total == total and total > 0:    # clamp so we never seek past the end
+            target = min(target, max(0.0, total - 0.25))
+        # Zero tolerance, otherwise the seek snaps to the nearest keyframe and a
+        # "15 second" skip can land 20+ seconds away.
+        self.player.seekToTime_toleranceBefore_toleranceAfter_(
+            CMTimeMakeWithSeconds(target, 600), kCMTimeZero, kCMTimeZero)
+        return target
 
     def observeValueForKeyPath_ofObject_change_context_(self, keyPath, obj, change, ctx):
         if keyPath != "status":
