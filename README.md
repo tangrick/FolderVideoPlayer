@@ -41,7 +41,7 @@ Space plays and pauses.
 
 ## Updating
 
-**File → Check for Updates…** asks GitHub for the latest release. If one is
+**FolderVideoPlayer → Check for Updates…** asks GitHub for the latest release. If one is
 newer than the running version it offers to install it: the app downloads the
 disk image, quits, replaces itself and reopens. The check only runs when you
 ask for it.

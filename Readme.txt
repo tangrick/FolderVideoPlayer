@@ -130,7 +130,8 @@ are involved.
  UPDATING
 -------------------------------------------------------------------------------
 
-  File > Check for Updates... asks GitHub whether a newer release exists.
+  FolderVideoPlayer > Check for Updates... asks GitHub whether a newer
+  release exists.
 
   If there is one, you're told what version it is and asked whether to
   install it. Say yes and the app downloads the new disk image, quits,

@@ -227,6 +227,8 @@ class AppDelegate(NSObject):
             "About " + APP_NAME, "orderFrontStandardAboutPanel:", "")
         about.setTarget_(None)
         app.addItem_(NSMenuItem.separatorItem())
+        self.add(app, "Check for Updates…", "checkForUpdates:")
+        app.addItem_(NSMenuItem.separatorItem())
         app.addItemWithTitle_action_keyEquivalent_("Hide " + APP_NAME, "hide:", "h")
         app.addItem_(NSMenuItem.separatorItem())
         app.addItemWithTitle_action_keyEquivalent_("Quit " + APP_NAME, "terminate:", "q")
@@ -237,8 +239,6 @@ class AppDelegate(NSObject):
         self.add(files, "Open Folder…", "chooseFolder:", "o", NSEventModifierFlagCommand)
         self.add(files, "Play Favorites", "playFavorites:", "f",
                  NSEventModifierFlagCommand | NSEventModifierFlagShift)
-        files.addItem_(NSMenuItem.separatorItem())
-        self.add(files, "Check for Updates…", "checkForUpdates:")
 
         play = self.menu(bar, "Playback")
         # Bare arrows scrub within the video; add Command to change video.
