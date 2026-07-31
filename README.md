@@ -39,6 +39,17 @@ outside the app bundle, so replacing the app never loses them.
 
 Space plays and pauses.
 
+## Updating
+
+**File → Check for Updates…** asks GitHub for the latest release. If one is
+newer than the running version it offers to install it: the app downloads the
+disk image, quits, replaces itself and reopens. The check only runs when you
+ask for it.
+
+The version in `setup.py` must match the release tag — release `vN.M` ships
+`CFBundleShortVersionString` `N.M`. If they drift apart the comparison is
+meaningless and updates are never offered.
+
 ## Supported formats
 
 `.mp4` `.m4v` `.mov` — what AVFoundation can decode. `.mkv`, `.avi` and

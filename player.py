@@ -12,6 +12,16 @@ ones.
 import json
 import os
 import re
+import ssl
+import subprocess
+import tempfile
+import urllib.error
+import urllib.request
+
+try:
+    import certifi                  # bundled; python.org builds have no system CA file
+except ImportError:
+    certifi = None
 
 import objc
 from AVFoundation import (
@@ -25,6 +35,8 @@ from Cocoa import (
     NSAlert,
     NSAnimationContext,
     NSApplication,
+    NSAutoreleasePool,
+    NSBundle,
     NSApplicationActivationPolicyRegular,
     NSBackingStoreBuffered,
     NSBezelStyleRounded,
@@ -51,6 +63,7 @@ from Cocoa import (
     NSViewMinXMargin,
     NSViewWidthSizable,
     NSVisualEffectView,
+    NSWorkspace,
     NSWindow,
     NSWindowCollectionBehaviorFullScreenPrimary,
     NSWindowStyleMaskClosable,
@@ -61,6 +74,10 @@ from Cocoa import (
 from PyObjCTools import AppHelper
 
 APP_NAME = "FolderVideoPlayer"
+
+REPO = "tangrick/FolderVideoPlayer"
+API_LATEST = "https://api.github.com/repos/%s/releases/latest" % REPO
+RELEASES_PAGE = "https://github.com/%s/releases/latest" % REPO
 
 SUPPORT = os.path.expanduser("~/Library/Application Support/" + APP_NAME)
 FAV_FILE = os.path.join(SUPPORT, "favorites.json")
@@ -220,6 +237,8 @@ class AppDelegate(NSObject):
         self.add(files, "Open Folder…", "chooseFolder:", "o", NSEventModifierFlagCommand)
         self.add(files, "Play Favorites", "playFavorites:", "f",
                  NSEventModifierFlagCommand | NSEventModifierFlagShift)
+        files.addItem_(NSMenuItem.separatorItem())
+        self.add(files, "Check for Updates…", "checkForUpdates:")
 
         play = self.menu(bar, "Playback")
         # Bare arrows scrub within the video; add Command to change video.
@@ -582,6 +601,137 @@ class AppDelegate(NSObject):
             pass
         self.say("Cannot play these videos", detail)
 
+    # -- updates ---------------------------------------------------------
+
+    @objc.python_method
+    def currentVersion(self):
+        info = NSBundle.mainBundle().objectForInfoDictionaryKey_("CFBundleShortVersionString")
+        return str(info) if info else "0"
+
+    @objc.python_method
+    def versionTuple(self, text):
+        # "v1.2" and "1.2" must compare equal; missing parts count as zero
+        return tuple(int(n) for n in re.findall(r"\d+", text or "")) or (0,)
+
+    @objc.python_method
+    def sslContext(self):
+        if certifi is not None:
+            return ssl.create_default_context(cafile=certifi.where())
+        return ssl.create_default_context()
+
+    @objc.python_method
+    def fetchLatestRelease(self):
+        request = urllib.request.Request(API_LATEST, headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": APP_NAME,
+        })
+        with urllib.request.urlopen(request, timeout=20, context=self.sslContext()) as response:
+            return json.load(response)
+
+    def checkForUpdates_(self, sender):
+        try:
+            release = self.fetchLatestRelease()
+        except urllib.error.HTTPError as err:
+            if err.code in (401, 403, 404):
+                return self.offerBrowser(
+                    "Cannot check for updates",
+                    "The releases for %s could not be read. If the repository is "
+                    "private, the app cannot check on its own.\n\n"
+                    "Open the releases page in your browser instead?" % APP_NAME)
+            return self.say("Update check failed", "GitHub returned HTTP %d." % err.code)
+        except Exception as err:
+            return self.say("Update check failed",
+                            "Could not reach GitHub.\n\n%s" % err)
+
+        latest, here = release.get("tag_name", ""), self.currentVersion()
+        if self.versionTuple(latest) <= self.versionTuple(here):
+            return self.say("You're up to date",
+                            "%s %s is the latest version." % (APP_NAME, here))
+
+        asset = next((a for a in release.get("assets", [])
+                      if a.get("name", "").lower().endswith(".dmg")), None)
+        if asset is None:
+            return self.offerBrowser(
+                "Update available",
+                "%s is available, but that release has no disk image to install "
+                "automatically.\n\nOpen the releases page?" % latest)
+
+        if not self.confirm(
+                "Update available",
+                "%s is available — you have %s.\n\nDownload and install it now? "
+                "%s will quit, update itself and reopen."
+                % (latest, here, APP_NAME), "Update"):
+            return
+
+        self.pendingURL = asset["browser_download_url"]
+        self.window.setTitle_("Downloading update…")
+        self.performSelectorInBackground_withObject_("downloadUpdate:", None)
+
+    def downloadUpdate_(self, _):
+        # Runs off the main thread; a 25MB download would otherwise freeze the UI.
+        pool = NSAutoreleasePool.alloc().init()
+        try:
+            request = urllib.request.Request(self.pendingURL,
+                                             headers={"User-Agent": APP_NAME})
+            handle, path = tempfile.mkstemp(suffix=".dmg")
+            with urllib.request.urlopen(request, timeout=300,
+                                        context=self.sslContext()) as response, \
+                    os.fdopen(handle, "wb") as out:
+                while True:
+                    chunk = response.read(262144)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+            self.pendingDMG = path
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "applyUpdate:", None, False)
+        except Exception as err:
+            self.pendingError = str(err)
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "updateFailed:", None, False)
+        finally:
+            del pool
+
+    def updateFailed_(self, _):
+        self.updateUI()                       # puts the real title back
+        self.say("Update failed", "The download did not complete.\n\n%s"
+                 % getattr(self, "pendingError", ""))
+
+    @objc.python_method
+    def updateScript(self, dmg, app):
+        # An app cannot replace itself while running, so hand the swap to a
+        # detached script that waits for us to quit first.
+        return """#!/bin/bash
+APP=%s
+DMG=%s
+MOUNT=$(mktemp -d)
+
+while kill -0 %d 2>/dev/null; do sleep 0.2; done
+
+hdiutil attach "$DMG" -nobrowse -quiet -mountpoint "$MOUNT" || exit 1
+if [ ! -d "$MOUNT/%s.app" ]; then hdiutil detach "$MOUNT" -quiet; exit 1; fi
+
+rm -rf "$APP.new"
+cp -R "$MOUNT/%s.app" "$APP.new" || { hdiutil detach "$MOUNT" -quiet; exit 1; }
+hdiutil detach "$MOUNT" -quiet
+
+# Swap rather than delete-then-copy, so a failure never leaves you with no app.
+rm -rf "$APP.old"
+mv "$APP" "$APP.old" && mv "$APP.new" "$APP" && rm -rf "$APP.old"
+xattr -dr com.apple.quarantine "$APP" 2>/dev/null
+rm -f "$DMG"
+open "$APP"
+""" % (json.dumps(app), json.dumps(dmg), os.getpid(), APP_NAME, APP_NAME)
+
+    def applyUpdate_(self, _):
+        app = NSBundle.mainBundle().bundlePath()
+        script = tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False)
+        script.write(self.updateScript(self.pendingDMG, app))
+        script.close()
+        os.chmod(script.name, 0o755)
+        subprocess.Popen(["/bin/bash", script.name], start_new_session=True)
+        NSApplication.sharedApplication().terminate_(None)
+
     # -- chrome ----------------------------------------------------------
 
     @objc.python_method
@@ -591,6 +741,20 @@ class AppDelegate(NSObject):
         alert.setInformativeText_(detail)
         alert.addButtonWithTitle_("OK")
         alert.runModal()
+
+    @objc.python_method
+    def confirm(self, title, detail, proceed="OK"):
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(title)
+        alert.setInformativeText_(detail)
+        alert.addButtonWithTitle_(proceed)
+        alert.addButtonWithTitle_("Cancel")
+        return alert.runModal() == FIRST_BUTTON
+
+    @objc.python_method
+    def offerBrowser(self, title, detail):
+        if self.confirm(title, detail, "Open Releases Page"):
+            NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(RELEASES_PAGE))
 
     @objc.python_method
     def updateUI(self):

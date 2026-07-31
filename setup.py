@@ -6,12 +6,14 @@ that has no Python installed at all.
 
 from setuptools import setup
 
+# Keep this in step with the git tag: release vN.M must ship version "N.M",
+# otherwise Check for Updates compares mismatched numbering and never fires.
 PLIST = {
     "CFBundleName": "FolderVideoPlayer",
     "CFBundleDisplayName": "FolderVideoPlayer",
     "CFBundleIdentifier": "local.foldervideoplayer",
-    "CFBundleShortVersionString": "2.2",
-    "CFBundleVersion": "2.2",
+    "CFBundleShortVersionString": "1.3",
+    "CFBundleVersion": "1.3",
     "NSHumanReadableCopyright": "",
     "LSMinimumSystemVersion": "10.15",
     "NSHighResolutionCapable": True,
@@ -36,7 +38,7 @@ setup(
             "iconfile": "icon.icns",
             "plist": PLIST,
             "packages": ["objc", "AVKit", "AVFoundation", "CoreMedia", "Cocoa",
-                         "Foundation", "AppKit"],
+                         "Foundation", "AppKit", "certifi"],
             # Only Tcl/Tk is safe to drop. Excluding stdlib modules such as
             # urllib breaks pathlib, which objc imports at startup.
             "excludes": ["tkinter", "_tkinter"],

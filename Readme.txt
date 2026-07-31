@@ -127,6 +127,24 @@ are involved.
 
 
 -------------------------------------------------------------------------------
+ UPDATING
+-------------------------------------------------------------------------------
+
+  File > Check for Updates... asks GitHub whether a newer release exists.
+
+  If there is one, you're told what version it is and asked whether to
+  install it. Say yes and the app downloads the new disk image, quits,
+  swaps itself for the new copy and reopens. You don't have to do anything
+  else, and your favorites are untouched.
+
+  Nothing is downloaded or changed unless you agree to it, and the check
+  only happens when you ask for it — the app never phones home on its own.
+
+  If GitHub can't be reached, or the release has no disk image, you're
+  offered the releases page in your browser instead.
+
+
+-------------------------------------------------------------------------------
  WHICH VIDEOS PLAY
 -------------------------------------------------------------------------------
 
