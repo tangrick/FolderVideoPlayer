@@ -22,9 +22,14 @@ are involved.
 
   2. A dialog asks what you want to play:
 
+         Resume Holiday     carry on from the folder, video and moment
+                            you last quit on — press Return to take it
          Choose Folder…     pick any folder and start playing it
          Favorites (28)     play everything you've starred
          Quit
+
+     "Resume" only appears once you have played something; the first time
+     you open the app, it isn't there.
 
   3. That's it — playback starts on its own and never stops.
 
@@ -54,6 +59,7 @@ are involved.
   Cmd + L ..................... show / hide the playlist
   Cmd + N ..................... back to the opening menu (Open New)
   Cmd + O ..................... open a different folder directly
+  File > Open Recent .......... reopen one of the last eight folders
   Cmd + Shift + F ............. switch to playing your favorites
   Ctrl + Cmd + F .............. fullscreen
   Cmd + Q ..................... quit
@@ -85,6 +91,51 @@ are involved.
 
   Click "Hide List" or press Cmd+L again to slide it away. The list sits on
   top of the video, so hiding it gives you the full picture back.
+
+
+-------------------------------------------------------------------------------
+ PICKING UP WHERE YOU LEFT OFF
+-------------------------------------------------------------------------------
+
+  Every video remembers how far into it you got. Come back to it — later in
+  the same sitting, or days later after a restart — and it carries on from
+  there instead of starting again.
+
+  The app also remembers the last thing you were watching. Open it and the
+  first button in the dialog is "Resume <folder>", which reopens that folder,
+  jumps to the video you were on, and drops you back in at the right moment.
+  It is the default button, so pressing Return is enough.
+
+  Things worth knowing:
+
+    - The first 30 seconds and the last 30 seconds of a video are not
+      remembered on purpose. If you had barely started, or had all but
+      finished, starting over is the useful thing to do — and it means a
+      folder looping back around doesn't drop you at the end credits.
+
+    - Your position is saved as you watch, not only when you quit, so a
+      crash or a power cut costs half a minute at worst.
+
+    - If the folder changed while you were away, the app plays whatever is
+      there now. If the exact video you left off on is gone, it starts at
+      the top of the folder rather than complaining.
+
+    - Positions are kept for the 500 most recently watched videos. Beyond
+      that the oldest are forgotten, so the file can't grow forever.
+
+
+-------------------------------------------------------------------------------
+ RECENT FOLDERS
+-------------------------------------------------------------------------------
+
+  File > Open Recent lists the last eight folders you played, newest first,
+  so going back to one is two clicks rather than a trip through the file
+  picker. Hovering a name shows the full path, which tells apart two folders
+  that happen to be called the same thing.
+
+  Picking a folder that has since been renamed, moved, or that lives on a
+  drive you haven't plugged in says so and drops it from the list. "Clear
+  Menu" at the bottom empties the list.
 
 
 -------------------------------------------------------------------------------
@@ -294,5 +345,13 @@ are involved.
   The one time it uses the network is when you click Check for Updates: it
   asks GitHub for the latest release, and downloads it only if you agree.
   It never does this on its own.
+
+  It does keep a record on this Mac of what you have watched: the paths of
+  recently played folders and how far into recent videos you got, in
+
+      ~/Library/Application Support/FolderVideoPlayer/state.json
+
+  Quit the player and delete that file to clear the lot; the app makes a
+  fresh one next time and simply won't offer to resume anything.
 
 ===============================================================================

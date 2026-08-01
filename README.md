@@ -14,6 +14,11 @@ system ones.
 
 - **Pick a folder → it plays.** Every video in it, in order, subfolders
   included. After the last one it wraps to the first and keeps going.
+- **Picks up where you left off.** Each video remembers how far in you got,
+  and the opening dialog offers to resume the folder and the video you quit
+  on — press Return and you are back exactly where you were.
+- **Recent folders.** **File → Open Recent** lists the last eight folders you
+  played, so a folder you come back to is two clicks away.
 - **Favorites.** Star anything while it's playing. Favorites can span any
   number of folders and play as one looping list.
 - **Playlist drawer.** Slides in from the right, highlights what's playing.
@@ -21,8 +26,10 @@ system ones.
 - **Open New…** returns to the opening menu to switch folders or jump to
   favorites, without restarting.
 
-Favorites persist in `~/Library/Application Support/FolderVideoPlayer/favorites.json`,
-outside the app bundle, so replacing the app never loses them.
+Everything the app remembers lives in
+`~/Library/Application Support/FolderVideoPlayer/`, outside the app bundle, so
+replacing the app never loses it: `favorites.json` for the starred list, and
+`state.json` for recent folders, resume positions and the last session.
 
 ## Controls
 
@@ -38,6 +45,18 @@ outside the app bundle, so replacing the app never loses them.
 | `⌃⌘F` | fullscreen |
 
 Space plays and pauses.
+
+## Resuming
+
+A video you leave part-way through is remembered, and starts from there the
+next time you reach it — whether that is later in the same session, or after a
+relaunch. Positions are sampled every few seconds while playing and written to
+disk periodically, so a crash costs at most half a minute.
+
+Two ends of a video are deliberately not remembered: the first 30 seconds,
+and the last 30. Barely-started and just-finished both mean "start from the
+beginning", which is what you want when a folder loops around to a video you
+have already watched.
 
 ## Updating
 

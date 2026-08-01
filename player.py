@@ -56,6 +56,7 @@ from Cocoa import (
     NSScrollView,
     NSTableColumn,
     NSTableView,
+    NSTimer,
     NSURL,
     NSView,
     NSViewHeightSizable,
@@ -81,11 +82,19 @@ RELEASES_PAGE = "https://github.com/%s/releases/latest" % REPO
 
 SUPPORT = os.path.expanduser("~/Library/Application Support/" + APP_NAME)
 FAV_FILE = os.path.join(SUPPORT, "favorites.json")
+STATE_FILE = os.path.join(SUPPORT, "state.json")
 
 # What AVFoundation can actually decode. .mkv and .avi are deliberately absent.
 VIDEO_EXT = {".mp4", ".m4v", ".mov"}
 
 SKIP_SECONDS = 15
+
+PROGRESS_TICK = 5.0           # seconds between samples of the playhead
+PROGRESS_FLUSH = 6            # ...and samples between writes to disk
+RESUME_MIN = 30               # a video barely started just starts over
+RESUME_TAIL = 30              # ...and so does one that was all but finished
+RECENT_MAX = 8
+PROGRESS_MAX = 500            # newest positions win; older ones age out
 
 CONTROLS_FLOATING = 1
 BAR_HEIGHT = 48
@@ -123,6 +132,26 @@ def scan(root):
     return found
 
 
+@objc.python_method
+def load_json(path, fallback):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return fallback
+    # A file hand-edited into the wrong shape must not take the app down
+    return data if isinstance(data, type(fallback)) else fallback
+
+
+@objc.python_method
+def save_json(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=1)
+    os.replace(tmp, path)         # never leave a half-written file
+
+
 class AppDelegate(NSObject):
 
     # -- lifecycle -------------------------------------------------------
@@ -131,14 +160,21 @@ class AppDelegate(NSObject):
         self.playlist = []
         self.index = 0
         self.mode = "folder"
+        self.root = None
         self.item = None
+        self.itemPath = None
         self.failures = 0
+        self.pendingResume = 0
+        self.ticks = 0
         self.favorites = self.loadFavorites()
+        self.loadState()
 
         self.setDockIcon()
         self.buildMenu()
         self.buildWindow()
         self.updateUI()
+        self.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            PROGRESS_TICK, self, "recordProgress:", None, True)
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         self.performSelector_withObject_afterDelay_("showOpeningChoice", None, 0.1)
 
@@ -146,6 +182,9 @@ class AppDelegate(NSObject):
         return True
 
     def applicationWillTerminate_(self, notification):
+        self.notePosition()
+        self.saveState()
+        self.timer.invalidate()
         self.detachItem()
 
     @objc.python_method
@@ -163,19 +202,46 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def loadFavorites(self):
-        try:
-            with open(FAV_FILE) as f:
-                return json.load(f)
-        except (OSError, ValueError):
-            return []
+        return load_json(FAV_FILE, [])
 
     @objc.python_method
     def saveFavorites(self):
-        os.makedirs(SUPPORT, exist_ok=True)
-        tmp = FAV_FILE + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(self.favorites, f, indent=1)
-        os.replace(tmp, FAV_FILE)     # never leave a half-written file
+        save_json(FAV_FILE, self.favorites)
+
+    # -- resume positions, recent folders, last session ------------------
+
+    @objc.python_method
+    def loadState(self):
+        """Everything the app remembers between launches, bar favorites.
+
+        Nothing here is checked against the filesystem on the way in: a folder
+        on an unmounted NAS would stat slowly, or hang, and that would show up
+        as a stall on every launch. Dead entries are dropped when something
+        actually tries to use them.
+        """
+        state = load_json(STATE_FILE, {})
+        try:
+            self.recent = [p for p in state.get("recent", []) if isinstance(p, str)]
+            self.progress = {p: t for p, t in state.get("progress", {}).items()
+                             if isinstance(t, (int, float))}
+            session = state.get("session") or {}
+            self.session = session if isinstance(session, dict) else {}
+        except (AttributeError, TypeError):
+            # A file this badly mangled is not worth salvaging, but it must not
+            # stop the app launching — there would be no way back from that.
+            self.recent, self.progress, self.session = [], {}, {}
+
+    @objc.python_method
+    def saveState(self):
+        path = self.currentPath()
+        session = {"mode": self.mode, "root": self.root, "path": path} if path else {}
+        save_json(STATE_FILE, {
+            "recent": self.recent[:RECENT_MAX],
+            # dicts keep insertion order, and notePosition re-inserts, so the
+            # tail of this is exactly the most recently watched
+            "progress": dict(list(self.progress.items())[-PROGRESS_MAX:]),
+            "session": session,
+        })
 
     @objc.python_method
     def currentPath(self):
@@ -205,6 +271,9 @@ class AppDelegate(NSObject):
     @objc.python_method
     def menu(self, parent, title):
         holder = NSMenuItem.alloc().init()
+        # Menu bar items take their name from the submenu, but a nested one is
+        # labelled by the item that holds it, so both need setting.
+        holder.setTitle_(title)
         parent.addItem_(holder)
         sub = NSMenu.alloc().initWithTitle_(title)
         holder.setSubmenu_(sub)
@@ -237,6 +306,8 @@ class AppDelegate(NSObject):
         self.add(files, "Open New…", "openNew:", "n", NSEventModifierFlagCommand)
         files.addItem_(NSMenuItem.separatorItem())
         self.add(files, "Open Folder…", "chooseFolder:", "o", NSEventModifierFlagCommand)
+        self.recentMenu = self.menu(files, "Open Recent")
+        self.rebuildRecentMenu()
         self.add(files, "Play Favorites", "playFavorites:", "f",
                  NSEventModifierFlagCommand | NSEventModifierFlagShift)
 
@@ -433,15 +504,68 @@ class AppDelegate(NSObject):
         self.showOpeningChoice()
 
     @objc.python_method
+    def rebuildRecentMenu(self):
+        self.recentMenu.removeAllItems()
+        for path in self.recent:
+            # Several folders can share a basename, so the full path is the
+            # tooltip rather than the title, which would be unreadably long.
+            item = self.add(self.recentMenu, os.path.basename(path) or path, "openRecent:")
+            item.setRepresentedObject_(path)
+            item.setToolTip_(path)
+        if not self.recent:
+            # No action means AppKit greys it out for us
+            self.recentMenu.addItemWithTitle_action_keyEquivalent_(
+                "No Recent Folders", None, "")
+            return
+        self.recentMenu.addItem_(NSMenuItem.separatorItem())
+        self.add(self.recentMenu, "Clear Menu", "clearRecent:")
+
+    @objc.python_method
+    def rememberFolder(self, root):
+        self.recent = [root] + [p for p in self.recent if p != root]
+        del self.recent[RECENT_MAX:]
+        self.rebuildRecentMenu()
+
+    @objc.python_method
+    def forgetFolder(self, root):
+        self.recent = [p for p in self.recent if p != root]
+        self.rebuildRecentMenu()
+        self.saveState()
+
+    def openRecent_(self, sender):
+        self.openFolder(str(sender.representedObject()))
+
+    def clearRecent_(self, sender):
+        self.recent = []
+        self.rebuildRecentMenu()
+        self.saveState()
+
+    @objc.python_method
+    def sessionLabel(self):
+        """What the last session would be called, or None if it cannot resume."""
+        if not self.session.get("path"):
+            return None
+        if self.session.get("mode") == "favorites":
+            return "Favorites" if self.favorites else None
+        root = self.session.get("root")
+        return (os.path.basename(root) or root) if root else None
+
+    @objc.python_method
     def openingChoices(self):
         """Buttons for the opening dialog, paired with what each one does.
 
-        The favorites button only exists when there is something to play, so
-        the positions shift; keeping titles and actions together avoids
-        matching on button index.
+        Neither the resume nor the favorites button always exists, so the
+        positions shift; keeping titles and actions together avoids matching
+        on button index.
         """
         live = [p for p in self.favorites if os.path.isfile(p)]
-        choices = [("Choose Folder…", "folder")]
+        choices = []
+        # Only worth offering at startup — mid-playback the last session is
+        # whatever is already on screen.
+        resume = self.sessionLabel() if not self.playlist else None
+        if resume:
+            choices.append(("Resume %s" % resume, "resume"))
+        choices.append(("Choose Folder…", "folder"))
         if live:
             choices.append(("Favorites (%d)" % len(live), "favorites"))
         # Backing out mid-playback must not kill the app, only at startup.
@@ -451,22 +575,43 @@ class AppDelegate(NSObject):
     def showOpeningChoice(self):
         playing = bool(self.playlist)
 
-        alert = NSAlert.alloc().init()
-        alert.setMessageText_(APP_NAME)
-        alert.setInformativeText_(
-            "Choose a folder and every video in it plays in order, then repeats.")
+        # At startup there is nothing behind this dialog, so a choice that ends
+        # with nothing playing — an empty folder, a drive that isn't mounted,
+        # a cancelled file picker — has to ask again rather than leave a dead
+        # window. Mid-playback there is always something to fall back to.
+        while True:
+            alert = NSAlert.alloc().init()
+            alert.setMessageText_(APP_NAME)
+            alert.setInformativeText_(
+                "Choose a folder and every video in it plays in order, then repeats.")
 
-        choices = self.openingChoices()
-        for title, _ in choices:
-            alert.addButtonWithTitle_(title)
+            choices = self.openingChoices()
+            for title, _ in choices:
+                alert.addButtonWithTitle_(title)
 
-        choice = choices[alert.runModal() - FIRST_BUTTON][1]
-        if choice == "folder":
-            self.chooseFolder_(None)
-        elif choice == "favorites":
-            self.playFavorites_(None)
-        elif not playing:
-            NSApplication.sharedApplication().terminate_(None)
+            choice = choices[alert.runModal() - FIRST_BUTTON][1]
+            if choice == "resume":
+                self.resumeSession()
+            elif choice == "folder":
+                self.chooseFolder_(None)
+            elif choice == "favorites":
+                self.playFavorites_(None)
+            elif not playing:
+                return NSApplication.sharedApplication().terminate_(None)
+            else:
+                return                    # Cancel, with something already on
+            if playing or self.playlist:
+                return
+
+    @objc.python_method
+    def resumeSession(self):
+        """Pick up the folder, the video and the position we left off at."""
+        session, self.session = self.session, {}
+        # One attempt only: if that folder has gone, the dialog comes back
+        # without a Resume button rather than offering it over and over.
+        if session.get("mode") == "favorites":
+            return self.startFavorites(session.get("path"))
+        self.openFolder(session.get("root"), session.get("path"))
 
     def chooseFolder_(self, sender):
         panel = NSOpenPanel.openPanel()
@@ -477,28 +622,47 @@ class AppDelegate(NSObject):
         panel.setPrompt_("Play")
         if panel.runModal() != NS_OK:
             return
-        root = panel.URL().path()
+        self.openFolder(panel.URL().path())
+
+    @objc.python_method
+    def openFolder(self, root, resume=None):
+        root = str(root)
+        if not os.path.isdir(root):
+            self.forgetFolder(root)
+            return self.say("That folder is not available.",
+                            "%s could not be opened. It may have been renamed or "
+                            "moved, or it may be on a drive that is not mounted "
+                            "right now." % root)
         found = scan(root)
         if not found:
             return self.say("No playable videos in that folder.",
                             "Looked for %s files, including subfolders."
                             % ", ".join(sorted(VIDEO_EXT)))
-        self.startPlaylist(found, "folder")
+        self.rememberFolder(root)
+        self.startPlaylist(found, "folder", root, resume)
 
     def playFavorites_(self, sender):
+        self.startFavorites()
+
+    @objc.python_method
+    def startFavorites(self, resume=None):
         live = [p for p in self.favorites if os.path.isfile(p)]
         if not live:
             return self.say("No favorites yet.",
-                            "Press ⌘D while a video is playing to add it.")
-        self.startPlaylist(live, "favorites")
+                            "Press ⌘⇧D while a video is playing to add it.")
+        self.startPlaylist(live, "favorites", None, resume)
 
     @objc.python_method
-    def startPlaylist(self, items, mode):
+    def startPlaylist(self, items, mode, root=None, resume=None):
         self.playlist = items
         self.mode = mode
+        self.root = root
         self.failures = 0
         self.table.reloadData()
-        self.playIndex(0)
+        # A folder can change between sessions; falling back to the top is the
+        # only sane answer when the video we left off on is gone.
+        self.playIndex(items.index(resume) if resume in items else 0)
+        self.saveState()
 
     # -- playback --------------------------------------------------------
 
@@ -518,10 +682,13 @@ class AppDelegate(NSObject):
     def playIndex(self, i):
         if not self.playlist:
             return
+        self.notePosition()             # the outgoing video keeps its place
         self.index = i % len(self.playlist)
         self.detachItem()
 
-        url = NSURL.fileURLWithPath_(self.playlist[self.index])
+        self.itemPath = self.playlist[self.index]
+        self.pendingResume = self.progress.get(self.itemPath, 0)
+        url = NSURL.fileURLWithPath_(self.itemPath)
         self.item = AVPlayerItem.playerItemWithURL_(url)
         self.item.addObserver_forKeyPath_options_context_(self, "status", 0, None)
         NSNotificationCenter.defaultCenter().addObserver_selector_name_object_(
@@ -564,12 +731,52 @@ class AppDelegate(NSObject):
         return target
 
     def observeValueForKeyPath_ofObject_change_context_(self, keyPath, obj, change, ctx):
-        if keyPath != "status":
+        # A notification already in flight when we moved on must not be acted on
+        if keyPath != "status" or self.item is None or not obj.isEqual_(self.item):
             return
         if obj.status() == STATUS_READY:
             self.failures = 0
+            self.applyResume()
         elif obj.status() == STATUS_FAILED:
             self.skipBroken()
+
+    # -- remembering where each video got to -----------------------------
+
+    def recordProgress_(self, timer):
+        self.notePosition()
+        self.ticks += 1
+        # Sampling is cheap, writing is not; a crash costs half a minute at most
+        if self.ticks % PROGRESS_FLUSH == 0:
+            self.saveState()
+
+    @objc.python_method
+    def notePosition(self):
+        path = self.itemPath
+        if path is None or self.item is None or self.item.status() != STATUS_READY:
+            return
+        now = CMTimeGetSeconds(self.player.currentTime())
+        if now != now:                      # NaN while the item is still loading
+            return
+        total = CMTimeGetSeconds(self.item.duration())
+        finished = total == total and total > 0 and now > total - RESUME_TAIL
+        # Only the middle of a video is worth remembering: at either end the
+        # right thing to do next time is start from the beginning. Re-inserting
+        # rather than assigning keeps the newest entries at the end of the dict,
+        # which is what saveState trims against.
+        self.progress.pop(path, None)
+        if now >= RESUME_MIN and not finished:
+            self.progress[path] = round(now, 1)
+
+    @objc.python_method
+    def applyResume(self):
+        seconds, self.pendingResume = self.pendingResume, 0
+        if seconds < RESUME_MIN:
+            return
+        total = CMTimeGetSeconds(self.item.duration())
+        if total == total and total > 0:
+            seconds = min(seconds, max(0.0, total - 0.25))
+        self.player.seekToTime_toleranceBefore_toleranceAfter_(
+            CMTimeMakeWithSeconds(seconds, 600), kCMTimeZero, kCMTimeZero)
 
     @objc.python_method
     def skipBroken(self):
