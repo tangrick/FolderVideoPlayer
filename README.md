@@ -108,7 +108,3 @@ launch it.
 | `setup.py` | py2app build recipe |
 | `icon.icns` | app icon |
 | `Readme.txt` | full end-user documentation, shipped inside the DMG |
-
-`serve.py`, `app.html`, `player.html` and `Video Player.command` are an
-earlier browser-based implementation, kept only as a fallback. They are not
-used by the app.

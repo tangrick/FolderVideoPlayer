@@ -276,29 +276,23 @@ are involved.
   player.py ............... the app's source code
   setup.py ................ the recipe that builds the app from that source
 
-  Everything below is the earlier browser-based version, kept only as a
-  fallback. It works, but it plays video in a browser tab rather than in a
-  real window. It shares the same favorites list as the app. Safe to delete
-  if you don't want it:
+  icon.icns ............... the app icon, used when building
 
-      Video Player.command .... launcher (opens a Terminal window that must
-                                stay open while watching)
-      serve.py ................ the local server it runs
-      app.html ................ the web interface it serves
-      player.html ............. the original standalone page, no favorites
-
-  favorites.json .......... your favorites in their original location, now
-  favorites.json.backup ... superseded by the copy in Application Support.
-                            Both are backups; deleting them is safe.
+  favorites.json .......... older copies of your favorites, superseded by
+  favorites.json.backup ... the live one in Application Support. Both are
+                            just backups; deleting them is safe.
 
 
 -------------------------------------------------------------------------------
  PRIVACY
 -------------------------------------------------------------------------------
 
-  Everything happens on this Mac. Nothing is uploaded, no network
-  connection is made, and — unlike the older browser version — nothing
+  Your videos never leave this Mac. Nothing is uploaded, and nothing
   listens on any port. The app only ever reads the folders you point it at
   and the files in your favorites list.
+
+  The one time it uses the network is when you click Check for Updates: it
+  asks GitHub for the latest release, and downloads it only if you agree.
+  It never does this on its own.
 
 ===============================================================================
