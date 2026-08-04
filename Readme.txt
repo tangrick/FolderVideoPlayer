@@ -61,7 +61,9 @@ are involved.
   Cmd + O ..................... open a different folder directly
   File > Open Recent .......... reopen one of the last eight folders
   File > Manage Favorites ..... tidy up the favorites list
+  Cmd + T ..................... tag the current video, or a selection
   Playback menu ............... repeat / shuffle, and playback speed
+  Tags menu ................... tag, filter and play by keyword
   Cmd + Shift + F ............. switch to playing your favorites
   Ctrl + Cmd + F .............. fullscreen
   Cmd + Q ..................... quit
@@ -134,6 +136,70 @@ are involved.
   Both settings are remembered. Whenever either is set to something other
   than the plain default, the window title says so, so a folder playing out
   of order or sounding odd is never a mystery.
+
+
+-------------------------------------------------------------------------------
+ TAGS AND KEYWORDS
+-------------------------------------------------------------------------------
+
+  Favorites answer "do I like this?". Tags answer "what is this?" — label a
+  video with any keywords you like, as many as you like, and find it again
+  later without remembering which folder it lives in.
+
+  TAGGING
+
+  Press Cmd+T while something is playing. Type your keywords separated by
+  commas — "beach, summer 2026, family" is three tags; spaces inside a tag
+  are fine. Capitalisation doesn't matter for matching, so "Beach" and
+  "beach" are the same tag.
+
+  The box shows what the video already has, and what's in the box is what
+  the video ends up with. Delete a word to remove that tag; empty the box
+  to remove them all.
+
+  To tag a batch, open the playlist (Cmd+L), click the first video, then
+  shift-click or Cmd-click the others, and press Cmd+T. This case *adds*
+  the tags you type to whatever each video already has — it never replaces,
+  because that would quietly wipe tags the other videos had and the one you
+  were looking at didn't. Selecting a range doesn't disturb what's playing;
+  only clicking a single row jumps to it.
+
+  Quickest of all: the Tags menu lists every tag you've ever used, with a
+  tick beside the ones the playing video carries. Clicking one adds or
+  removes it there and then, no typing.
+
+  FINDING THINGS AGAIN
+
+  Tags > Play Tag plays everything carrying a tag, from every folder, as one
+  looping queue — exactly the way Favorites plays. The number beside each
+  name is how many videos carry it.
+
+  The filter box at the top of the playlist searches tags as well as
+  filenames, so typing "beach" finds videos named beach-something *and*
+  videos tagged beach.
+
+  MANAGING TAGS
+
+  Tags > Manage Tags… lists every tag and how many videos carry it.
+
+    - Rename… changes it on every video at once. Renaming a tag onto one
+      that already exists merges them, which is the easy way to fix
+      "holiday" and "holidays" having drifted apart.
+
+    - Delete removes the tag from every video. The videos are untouched.
+
+    - Tags are stored against the video's full path, so renaming or moving
+      a video leaves its tags pointing at nothing. Those show up in red as
+      "missing", and "Clear Missing (n)" tidies them away.
+
+  As with favorites, clearing missing tags is something you have to ask for
+  and never happens on its own — an unmounted drive makes every file on it
+  look deleted, and tidying up at that moment would throw away tags that are
+  perfectly fine.
+
+  Tags live in this file, well away from the app:
+
+      ~/Library/Application Support/FolderVideoPlayer/tags.json
 
 
 -------------------------------------------------------------------------------
@@ -417,6 +483,7 @@ are involved.
       ~/Library/Application Support/FolderVideoPlayer/state.json
 
   Quit the player and delete that file to clear the lot; the app makes a
-  fresh one next time and simply won't offer to resume anything.
+  fresh one next time and simply won't offer to resume anything. Any tags
+  you have typed live beside it in tags.json, and go the same way.
 
 ===============================================================================

@@ -90,6 +90,7 @@ RELEASES_PAGE = "https://github.com/%s/releases/latest" % REPO
 SUPPORT = os.path.expanduser("~/Library/Application Support/" + APP_NAME)
 FAV_FILE = os.path.join(SUPPORT, "favorites.json")
 STATE_FILE = os.path.join(SUPPORT, "state.json")
+TAGS_FILE = os.path.join(SUPPORT, "tags.json")
 
 # What AVFoundation can actually decode. .mkv and .avi are deliberately absent.
 VIDEO_EXT = {".mp4", ".m4v", ".mov"}
@@ -170,6 +171,22 @@ def load_json(path, fallback):
 
 
 @objc.python_method
+def parse_tags(text):
+    """Split what someone typed into clean tag names, in the order given.
+
+    Commas or semicolons separate, runs of whitespace collapse, and a name
+    repeated in different case counts once — "Beach, beach" is one tag.
+    """
+    seen, names = set(), []
+    for part in text.replace(";", ",").split(","):
+        name = " ".join(part.split())
+        if name and name.lower() not in seen:
+            seen.add(name.lower())
+            names.append(name)
+    return names
+
+
+@objc.python_method
 def clock(seconds):
     """Seconds as 4:07, or 1:02:30 once there is an hour to show."""
     seconds = int(seconds)
@@ -210,7 +227,13 @@ class AppDelegate(NSObject):
         self.durationGen = 0
         self.favWindow = None
         self.favTable = None
+        self.tagName = None           # which tag is playing, in tag mode
+        self.tagWindow = None
+        self.tagTable = None
+        self.tagRows = []
+        self.tagItems = []
         self.favorites = self.loadFavorites()
+        self.loadTags()
         self.loadState()
 
         self.setDockIcon()
@@ -257,6 +280,58 @@ class AppDelegate(NSObject):
     def saveFavorites(self):
         save_json(FAV_FILE, self.favorites)
 
+    # -- tags ------------------------------------------------------------
+    #
+    # Kept in their own file, keyed on the video's path, and never trimmed:
+    # a resume position that ages out costs you nothing, a tag you typed is
+    # work. The cost of keying on path is that renaming a video orphans its
+    # tags, which is what Manage Tags is there to clean up.
+
+    @objc.python_method
+    def loadTags(self):
+        stored = load_json(TAGS_FILE, {})
+        self.tags = {}
+        for path, names in stored.items():
+            if isinstance(names, list):
+                clean = parse_tags(",".join(str(n) for n in names))
+                if clean:
+                    self.tags[path] = clean
+
+    @objc.python_method
+    def saveTags(self):
+        save_json(TAGS_FILE, self.tags)
+
+    @objc.python_method
+    def tagsFor(self, path):
+        return self.tags.get(path, [])
+
+    @objc.python_method
+    def setTagsFor(self, path, names):
+        if names:
+            self.tags[path] = names
+        else:
+            self.tags.pop(path, None)     # no empty lists left lying around
+
+    @objc.python_method
+    def knownTags(self):
+        """Every tag in use, case-insensitively unique, alphabetical."""
+        seen = {}
+        for names in self.tags.values():
+            for name in names:
+                seen.setdefault(name.lower(), name)
+        return [seen[key] for key in sorted(seen)]
+
+    @objc.python_method
+    def taggedWith(self, tag):
+        wanted = tag.lower()
+        return [path for path, names in self.tags.items()
+                if any(n.lower() == wanted for n in names)]
+
+    @objc.python_method
+    def hasTag(self, path, tag):
+        wanted = tag.lower()
+        return any(n.lower() == wanted for n in self.tagsFor(path))
+
     # -- resume positions, recent folders, last session ------------------
 
     @objc.python_method
@@ -291,7 +366,8 @@ class AppDelegate(NSObject):
     @objc.python_method
     def saveState(self):
         path = self.currentPath()
-        session = {"mode": self.mode, "root": self.root, "path": path} if path else {}
+        session = {"mode": self.mode, "root": self.root, "path": path,
+                   "tag": self.tagName} if path else {}
         save_json(STATE_FILE, {
             "recent": self.recent[:RECENT_MAX],
             # dicts keep insertion order, and notePosition re-inserts, so the
@@ -404,6 +480,9 @@ class AppDelegate(NSObject):
                                 NSEventModifierFlagCommand | NSEventModifierFlagShift)
         self.syncPlaybackMenu()
 
+        self.tagsMenu = self.menu(bar, "Tags")
+        self.rebuildTagsMenu()
+
         view = self.menu(bar, "View")
         self.listItem = self.add(view, "Show Playlist", "togglePlaylist:", "l",
                                  NSEventModifierFlagCommand)
@@ -514,6 +593,10 @@ class AppDelegate(NSObject):
         self.table.setHeaderView_(None)
         self.table.setRowHeight_(ROW_H)
         self.table.setUsesAlternatingRowBackgroundColors_(True)
+        # Several rows can be picked so they can be tagged together; playback
+        # only follows a selection of exactly one, so shift-clicking a range
+        # does not send the player chasing down the list.
+        self.table.setAllowsMultipleSelection_(True)
         self.table.setDataSource_(self)
         # Selection drives playback, so clicking and arrowing behave identically.
         self.table.setDelegate_(self)
@@ -561,9 +644,11 @@ class AppDelegate(NSObject):
     def tableViewSelectionDidChange_(self, notification):
         # Ignore selection we set ourselves while following playback, otherwise
         # every track change would re-trigger itself.
-        if self.syncing or self.isFavTable(notification.object()):
+        table = notification.object()
+        if self.syncing or self.isFavTable(table) or self.isTagTable(table):
             return
-        self.jumpToRow(self.table.selectedRow())
+        if self.table.numberOfSelectedRows() == 1:
+            self.jumpToRow(self.table.selectedRow())
 
     @objc.python_method
     def jumpToRow(self, row):
@@ -589,13 +674,19 @@ class AppDelegate(NSObject):
         return os.path.basename(folder) or folder
 
     @objc.python_method
+    def matches(self, path, name, needle):
+        """The filter box searches names and tags together, as a search box should."""
+        return needle in name.lower() or any(needle in n.lower()
+                                             for n in self.tagsFor(path))
+
+    @objc.python_method
     def rebuildRows(self):
         needle = self.filterText.lower()
         self.rows = []
         heading = object()            # a sentinel no real label can equal
         for i, path in enumerate(self.playlist):
             name = os.path.basename(path)
-            if needle and needle not in name.lower():
+            if needle and not self.matches(path, name, needle):
                 continue
             label = self.groupLabel(path)
             if label != heading:
@@ -636,6 +727,8 @@ class AppDelegate(NSObject):
     def numberOfRowsInTableView_(self, tableView):
         if self.isFavTable(tableView):
             return len(self.favorites)
+        if self.isTagTable(tableView):
+            return len(self.tagRows)
         return len(self.rows)
 
     def tableView_isGroupRow_(self, tableView, row):
@@ -650,8 +743,8 @@ class AppDelegate(NSObject):
     @objc.python_method
     def isPlainRow(self, tableView, row):
         """The playlist index for a selectable row, or None for a heading."""
-        if self.isFavTable(tableView):
-            return row
+        if self.isFavTable(tableView) or self.isTagTable(tableView):
+            return row                    # those lists are all plain rows
         if not 0 <= row < len(self.rows):
             return None
         return self.rows[row][0]
@@ -659,6 +752,8 @@ class AppDelegate(NSObject):
     def tableView_viewForTableColumn_row_(self, tableView, column, row):
         if self.isFavTable(tableView):
             return self.favoriteRow(tableView, row)
+        if self.isTagTable(tableView):
+            return self.tagManagerRow(tableView, row)
         if not 0 <= row < len(self.rows):
             return None
         index, label = self.rows[row]
@@ -821,8 +916,12 @@ class AppDelegate(NSObject):
         """What the last session would be called, or None if it cannot resume."""
         if not self.session.get("path"):
             return None
-        if self.session.get("mode") == "favorites":
+        mode = self.session.get("mode")
+        if mode == "favorites":
             return "Favorites" if self.favorites else None
+        if mode == "tag":
+            tag = self.session.get("tag")
+            return "“%s”" % tag if tag and self.taggedWith(tag) else None
         root = self.session.get("root")
         return (os.path.basename(root) or root) if root else None
 
@@ -887,6 +986,8 @@ class AppDelegate(NSObject):
         # without a Resume button rather than offering it over and over.
         if session.get("mode") == "favorites":
             return self.startFavorites(session.get("path"))
+        if session.get("mode") == "tag":
+            return self.startTag(session.get("tag"), session.get("path"))
         self.openFolder(session.get("root"), session.get("path"))
 
     def chooseFolder_(self, sender):
@@ -917,6 +1018,22 @@ class AppDelegate(NSObject):
         self.rememberFolder(root)
         self.startPlaylist(found, "folder", root, resume)
 
+    def playTag_(self, sender):
+        self.startTag(str(sender.representedObject()))
+
+    @objc.python_method
+    def startTag(self, tag, resume=None):
+        live = [p for p in self.taggedWith(tag) if os.path.isfile(p)]
+        if not live:
+            return self.say(
+                "Nothing to play for “%s”" % tag,
+                "Every video with that tag has been moved, renamed or deleted. "
+                "Manage Tags will clear out the entries that no longer point "
+                "at anything.")
+        live.sort(key=lambda p: natural_key(os.path.basename(p)))
+        self.tagName = tag
+        self.startPlaylist(live, "tag", None, resume)
+
     def playFavorites_(self, sender):
         self.startFavorites()
 
@@ -933,6 +1050,8 @@ class AppDelegate(NSObject):
         self.playlist = items
         self.mode = mode
         self.root = root
+        if mode != "tag":
+            self.tagName = None
         self.failures = 0
         self.reshuffle()
         self.filterText = ""
@@ -1308,6 +1427,254 @@ open "$APP"
         subprocess.Popen(["/bin/bash", script.name], start_new_session=True)
         NSApplication.sharedApplication().terminate_(None)
 
+    # -- tagging ---------------------------------------------------------
+
+    @objc.python_method
+    def selectedPaths(self):
+        """What a tag command should act on: the drawer's selection, or what's playing."""
+        rows = [self.rows[r][0] for r in self.table.selectedRowIndexes()
+                if 0 <= r < len(self.rows) and self.rows[r][0] is not None]
+        if len(rows) > 1:
+            return [self.playlist[i] for i in rows]
+        path = self.currentPath()
+        return [path] if path else []
+
+    @objc.python_method
+    def rebuildTagsMenu(self):
+        """Every known tag, ticked when the playing video carries it."""
+        self.tagsMenu.removeAllItems()
+        self.add(self.tagsMenu, "Edit Tags…", "editTags:", "t", NSEventModifierFlagCommand)
+
+        known = self.knownTags()
+        self.tagItems = []
+        if known:
+            self.tagsMenu.addItem_(NSMenuItem.separatorItem())
+            for name in known:
+                # Ticking one here toggles it on whatever is playing, which is
+                # the quick path; the dialog is for anything more involved.
+                item = self.add(self.tagsMenu, name, "toggleTag:")
+                item.setRepresentedObject_(name)
+                self.tagItems.append(item)
+            self.syncTagsMenu()
+
+            self.tagsMenu.addItem_(NSMenuItem.separatorItem())
+            play = self.menu(self.tagsMenu, "Play Tag")
+            for name in known:
+                item = self.add(play, "%s (%d)" % (name, len(self.taggedWith(name))),
+                                "playTag:")
+                item.setRepresentedObject_(name)
+
+        self.tagsMenu.addItem_(NSMenuItem.separatorItem())
+        self.add(self.tagsMenu, "Manage Tags…", "manageTags:")
+
+    @objc.python_method
+    def syncTagsMenu(self):
+        """Tick the tags the playing video carries. Cheap enough per track change."""
+        playing = self.currentPath()
+        for item in self.tagItems:
+            item.setState_(
+                STATE_ON if playing and self.hasTag(playing, str(item.representedObject()))
+                else STATE_OFF)
+
+    def editTags_(self, sender):
+        paths = self.selectedPaths()
+        if not paths:
+            return self.say("Nothing to tag", "Play a video first, or pick rows "
+                                              "in the playlist.")
+        if len(paths) == 1:
+            # One video: show what it has and let the field be the truth, so
+            # clearing the box removes its tags.
+            typed = self.askText(
+                "Tags for %s" % os.path.basename(paths[0]),
+                "Separate tags with commas. Clearing the box removes them all.",
+                ", ".join(self.tagsFor(paths[0])))
+            if typed is None:
+                return
+            self.setTagsFor(paths[0], parse_tags(typed))
+        else:
+            # Several: adding is the only safe reading, since replacing would
+            # silently wipe tags the others had and this one did not.
+            typed = self.askText(
+                "Tag %d videos" % len(paths),
+                "Separate tags with commas. These are added to whatever each "
+                "video already has.", "")
+            if typed is None:
+                return
+            for name in parse_tags(typed):
+                for path in paths:
+                    if not self.hasTag(path, name):
+                        self.setTagsFor(path, self.tagsFor(path) + [name])
+        self.tagsChanged()
+
+    def toggleTag_(self, sender):
+        path = self.currentPath()
+        if not path:
+            return
+        name = str(sender.representedObject())
+        if self.hasTag(path, name):
+            self.setTagsFor(path, [n for n in self.tagsFor(path)
+                                   if n.lower() != name.lower()])
+        else:
+            self.setTagsFor(path, self.tagsFor(path) + [name])
+        self.tagsChanged()
+
+    @objc.python_method
+    def tagsChanged(self):
+        self.saveTags()
+        self.rebuildTagsMenu()
+        self.refreshTagManager()
+        # A tag is part of what the filter matches, so the rows can change
+        self.rebuildRows()
+        self.updateUI()
+
+    # -- the tag manager -------------------------------------------------
+
+    @objc.python_method
+    def orphanedTags(self):
+        """Tagged videos that are no longer where we left them."""
+        return [p for p in self.tags if not os.path.isfile(p)]
+
+    def manageTags_(self, sender):
+        if self.tagWindow is not None:
+            self.refreshTagManager()
+            return self.tagWindow.makeKeyAndOrderFront_(None)
+
+        rect = NSMakeRect(0, 0, FAV_W, FAV_H)
+        self.tagWindow = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            rect, NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+            | NSWindowStyleMaskResizable, NSBackingStoreBuffered, False)
+        self.tagWindow.setTitle_("Tags")
+        self.tagWindow.setMinSize_(NSMakeSize(360, 240))
+        self.tagWindow.center()
+        self.tagWindow.setReleasedWhenClosed_(False)
+        self.tagWindow.setDelegate_(self)
+
+        content = NSView.alloc().initWithFrame_(rect)
+        self.tagTable = NSTableView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, FAV_W, rect.size.height - BAR_HEIGHT))
+        column = NSTableColumn.alloc().initWithIdentifier_("name")
+        column.setWidth_(FAV_W - 24)
+        self.tagTable.addTableColumn_(column)
+        self.tagTable.setHeaderView_(None)
+        self.tagTable.setRowHeight_(ROW_H)
+        self.tagTable.setUsesAlternatingRowBackgroundColors_(True)
+        self.tagTable.setDataSource_(self)
+        self.tagTable.setDelegate_(self)
+
+        scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(0, BAR_HEIGHT, FAV_W, rect.size.height - BAR_HEIGHT))
+        scroll.setDocumentView_(self.tagTable)
+        scroll.setHasVerticalScroller_(True)
+        scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        content.addSubview_(scroll)
+
+        bar = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, FAV_W, BAR_HEIGHT))
+        bar.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
+        bar.addSubview_(self.barButton("Rename…", "renameTag:", 14))
+        bar.addSubview_(self.barButton("Delete", "deleteTag:", 14 + BUTTON_W + 8))
+        self.orphanButton = self.barButton("Clear Missing", "clearOrphans:",
+                                           14 + 2 * (BUTTON_W + 8))
+        self.orphanButton.setFrame_(NSMakeRect(14 + 2 * (BUTTON_W + 8),
+                                               (BAR_HEIGHT - BUTTON_H) / 2,
+                                               BUTTON_W + 30, BUTTON_H))
+        bar.addSubview_(self.orphanButton)
+        content.addSubview_(bar)
+
+        self.tagWindow.setContentView_(content)
+        self.refreshTagManager()
+        self.tagWindow.makeKeyAndOrderFront_(None)
+
+    @objc.python_method
+    def refreshTagManager(self):
+        if self.tagTable is None:
+            return
+        self.tagRows = self.knownTags()
+        self.tagTable.reloadData()
+        orphans = len(self.orphanedTags())
+        self.orphanButton.setTitle_("Clear Missing (%d)" % orphans if orphans
+                                    else "Clear Missing")
+        self.orphanButton.setEnabled_(bool(orphans))
+
+    @objc.python_method
+    def isTagTable(self, view):
+        return self.tagTable is not None and view.isEqual_(self.tagTable)
+
+    @objc.python_method
+    def tagManagerRow(self, tableView, row):
+        view = self.reuse(tableView, "tagrow", self.buildFavoriteRow)
+        name = self.tagRows[row]
+        paths = self.taggedWith(name)
+        missing = sum(1 for p in paths if not os.path.isfile(p))
+        view.viewWithTag_(NAME_TAG).setStringValue_(name)
+        note = view.viewWithTag_(TIME_TAG)
+        note.setStringValue_("%d video%s%s" % (
+            len(paths), "" if len(paths) == 1 else "s",
+            ", %d missing" % missing if missing else ""))
+        note.setTextColor_(NSColor.systemRedColor() if missing
+                           else NSColor.secondaryLabelColor())
+        return view
+
+    @objc.python_method
+    def selectedTag(self):
+        row = self.tagTable.selectedRow()
+        return self.tagRows[row] if 0 <= row < len(self.tagRows) else None
+
+    def renameTag_(self, sender):
+        old = self.selectedTag()
+        if old is None:
+            return self.say("Nothing selected", "Pick a tag to rename first.")
+        typed = self.askText("Rename “%s”" % old,
+                             "Every video carrying it is updated. Renaming onto "
+                             "an existing tag merges the two.", old)
+        if typed is None:
+            return
+        names = parse_tags(typed)
+        if not names:
+            return
+        new = names[0]
+        for path, current in list(self.tags.items()):
+            if any(n.lower() == old.lower() for n in current):
+                kept = [n for n in current if n.lower() != old.lower()]
+                if not any(n.lower() == new.lower() for n in kept):
+                    kept.append(new)
+                self.setTagsFor(path, kept)
+        self.tagsChanged()
+
+    def deleteTag_(self, sender):
+        name = self.selectedTag()
+        if name is None:
+            return self.say("Nothing selected", "Pick a tag to delete first.")
+        paths = self.taggedWith(name)
+        if not self.confirm(
+                "Delete the tag “%s”?" % name,
+                "It is removed from %d video%s. The videos themselves are not "
+                "touched." % (len(paths), "" if len(paths) == 1 else "s"),
+                "Delete"):
+            return
+        for path in paths:
+            self.setTagsFor(path, [n for n in self.tagsFor(path)
+                                   if n.lower() != name.lower()])
+        self.tagsChanged()
+
+    def clearOrphans_(self, sender):
+        orphans = self.orphanedTags()
+        if not orphans:
+            return
+        # Same hazard as pruning favorites, and the same answer: never do it
+        # unasked, because an unmounted drive looks exactly like a deletion.
+        if not self.confirm(
+                "Clear tags for %d missing video%s?"
+                % (len(orphans), "" if len(orphans) == 1 else "s"),
+                "These files are no longer where they were tagged:\n\n%s\n\n"
+                "If they are on a drive that is not mounted, plug it in first "
+                "— the tags are fine, the files just cannot be seen."
+                % "\n".join(os.path.basename(p) for p in orphans[:12]),
+                "Clear"):
+            return
+        for path in orphans:
+            self.tags.pop(path, None)
+        self.tagsChanged()
+
     # -- managing favorites without playing them -------------------------
 
     @objc.python_method
@@ -1373,10 +1740,15 @@ open "$APP"
             # Drop the table first: every shared table callback keys off it
             self.favTable = None
             self.favWindow = None
-        elif closing.isEqual_(self.window) and self.favWindow is not None:
+        elif self.tagWindow is not None and closing.isEqual_(self.tagWindow):
+            self.tagTable = None
+            self.tagWindow = None
+        elif closing.isEqual_(self.window):
             # Otherwise closing the player would leave the app alive behind a
-            # stray favorites window instead of quitting.
-            self.favWindow.close()
+            # stray utility window instead of quitting.
+            for window in [self.favWindow, self.tagWindow]:
+                if window is not None:
+                    window.close()
 
     @objc.python_method
     def refreshFavorites(self):
@@ -1491,6 +1863,23 @@ open "$APP"
         return alert.runModal() == FIRST_BUTTON
 
     @objc.python_method
+    def askText(self, title, detail, initial=""):
+        """A one-line text prompt. Returns None if it was cancelled."""
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(title)
+        alert.setInformativeText_(detail)
+        alert.addButtonWithTitle_("Save")
+        alert.addButtonWithTitle_("Cancel")
+        field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 300, 24))
+        field.setStringValue_(initial)
+        alert.setAccessoryView_(field)
+        # Otherwise the buttons take focus and you have to click into the box
+        alert.window().setInitialFirstResponder_(field)
+        if alert.runModal() != FIRST_BUTTON:
+            return None
+        return str(field.stringValue())
+
+    @objc.python_method
     def offerBrowser(self, title, detail):
         if self.confirm(title, detail, "Open Releases Page"):
             NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(RELEASES_PAGE))
@@ -1504,6 +1893,7 @@ open "$APP"
         self.listButton.setEnabled_(bool(self.playlist))
         self.favButton.setEnabled_(bool(self.playlist))
         self.revealCurrentRow()          # keep the highlight on what's playing
+        self.syncTagsMenu()              # ...and the ticks on its tags
 
         if not path:
             self.window.setTitle_(APP_NAME)
@@ -1512,7 +1902,8 @@ open "$APP"
             return
 
         starred = path in self.favorites
-        label = "Favorites" if self.mode == "favorites" else "Folder"
+        label = {"favorites": "Favorites",
+                 "tag": "“%s”" % (self.tagName or "")}.get(self.mode, "Folder")
         # Anything other than the plain defaults is worth saying out loud, so
         # nobody wonders why a folder is playing out of order or sounds odd.
         if self.repeat != REPEAT_ALL:

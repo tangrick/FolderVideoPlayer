@@ -23,6 +23,9 @@ system ones.
   into a random order and plays all of it before anything comes round again.
 - **Speed from 0.5× to 2×**, and it stays put across track changes and the
   system play/pause controls.
+- **Tags.** Label videos with any keywords you like, one at a time or a
+  whole selection at once, then filter by them or play everything carrying a
+  tag as one queue across folders.
 - **Favorites.** Star anything while it's playing. Favorites can span any
   number of folders and play as one looping list, and **File → Manage
   Favorites…** prunes them without playing anything.
@@ -35,14 +38,16 @@ system ones.
 
 Everything the app remembers lives in
 `~/Library/Application Support/FolderVideoPlayer/`, outside the app bundle, so
-replacing the app never loses it: `favorites.json` for the starred list, and
-`state.json` for recent folders, resume positions and the last session.
+replacing the app never loses it: `favorites.json` for the starred list,
+`tags.json` for tags, and `state.json` for recent folders, resume positions
+and the last session.
 
 ## Controls
 
 | | |
 |---|---|
 | `⌘⇧D` | favorite / unfavorite the current video |
+| `⌘T` | tag the current video, or the drawer's selection |
 | `←` `→` | skip back / forward 15 seconds |
 | `⌘←` `⌘→` | previous / next video |
 | `⌘L` | show / hide the playlist |
@@ -101,6 +106,33 @@ filename; headings with nothing left under them disappear with their files.
 Running times are measured in the background when a folder opens, so the list
 appears immediately and fills in its numbers a moment later. They are not
 cached between launches.
+
+## Tags
+
+`⌘T` tags whatever is playing. Type keywords separated by commas; the box
+shows what the video already has, and it is the whole truth, so deleting a
+word removes that tag and emptying the box removes them all.
+
+Select several rows in the playlist drawer and `⌘T` tags them together. That
+case *adds* rather than replaces — replacing would silently wipe tags the
+other videos had and this one didn't. Selecting a range never disturbs
+playback; only a selection of exactly one row jumps the player to it.
+
+The **Tags** menu lists every tag you have used, ticked when the playing
+video carries it, so clicking one is the quick way to tag without a dialog.
+**Tags → Play Tag** plays everything carrying a tag as one looping queue
+across folders, in filename order, the way Favorites works. Typing a tag into
+the drawer's filter box narrows the list — the box searches names and tags
+together.
+
+**Tags → Manage Tags…** lists every tag with how many videos carry it.
+Rename one and every video updates; renaming onto an existing tag merges the
+two. Delete removes the tag from every video without touching the videos.
+
+Tags live in `tags.json` keyed on the video's path, which means renaming or
+moving a video orphans its tags. The manager flags those and **Clear
+Missing** removes them — deliberately manual, for the same reason as
+favorites: an unmounted drive makes every file on it look deleted.
 
 ## Managing favorites
 
