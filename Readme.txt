@@ -60,6 +60,8 @@ are involved.
   Cmd + N ..................... back to the opening menu (Open New)
   Cmd + O ..................... open a different folder directly
   File > Open Recent .......... reopen one of the last eight folders
+  File > Manage Favorites ..... tidy up the favorites list
+  Playback menu ............... repeat / shuffle, and playback speed
   Cmd + Shift + F ............. switch to playing your favorites
   Ctrl + Cmd + F .............. fullscreen
   Cmd + Q ..................... quit
@@ -88,9 +90,72 @@ are involved.
       keyboard.
     - The highlight follows along on its own as playback moves from one
       video to the next, and the list scrolls to keep it in view.
+    - A ★ on a row means that video is one of your favorites.
+    - The running time sits on the right of each row. These are measured in
+      the background when the folder opens, so a big folder shows up
+      straight away and fills in its times a moment later.
+    - Videos in subfolders sit under a heading naming the subfolder. In
+      Favorites mode the heading names the folder each file came from,
+      which is often the only way to tell two same-named files apart.
+
+  The box at the top filters the list as you type — useful when a folder
+  runs to hundreds of files. It matches on the filename, and headings with
+  nothing left underneath them disappear along with their files. Clear the
+  box to get everything back.
 
   Click "Hide List" or press Cmd+L again to slide it away. The list sits on
   top of the video, so hiding it gives you the full picture back.
+
+
+-------------------------------------------------------------------------------
+ ORDER AND SPEED
+-------------------------------------------------------------------------------
+
+  The Playback menu decides what happens when a video ends:
+
+      Repeat All .... the whole folder in order, then round again. This is
+                      the default, and how the player has always behaved.
+      Repeat One .... the current video over and over
+      Shuffle ....... a random order
+      Play Once ..... stop after the last video
+
+  Shuffle deals the whole folder into a shuffled order rather than picking a
+  video at random each time. That means everything gets played before
+  anything comes round a second time — which is what people usually want and
+  almost never what picking at random gives you. When a pass finishes it
+  deals again, and never opens the new pass with the video that just ended
+  the last one. Next and Previous follow the shuffled order too.
+
+  Playback > Speed runs from 0.5× up to 2×, which is what you want for a
+  recorded talk or lecture. macOS resets playback to normal speed every time
+  it resumes, so the player quietly puts your choice back: it survives
+  changing video, pausing, and the floating on-screen controls.
+
+  Both settings are remembered. Whenever either is set to something other
+  than the plain default, the window title says so, so a folder playing out
+  of order or sounding odd is never a mystery.
+
+
+-------------------------------------------------------------------------------
+ MANAGING FAVORITES
+-------------------------------------------------------------------------------
+
+  File > Manage Favorites… opens a list of everything you've starred,
+  without playing any of it. Each row shows the filename and the folder it
+  came from.
+
+  Select any number of rows and click "Remove" to drop them.
+
+  Favorites are stored as full file paths, so renaming or moving a video
+  orphans its entry — the file is still there, but the player can no longer
+  find it. Those rows are marked "missing" in red, and "Remove Missing (n)"
+  clears them all out in one go.
+
+  Removing missing favorites is deliberately something you have to ask for,
+  and the player never does it on its own. A network share or an external
+  drive that simply isn't mounted makes every file on it look deleted, and
+  pruning at that moment would throw away favorites that are perfectly
+  fine. Plug the drive in first, then tidy up.
 
 
 -------------------------------------------------------------------------------

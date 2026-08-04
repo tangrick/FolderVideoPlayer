@@ -11,6 +11,7 @@ ones.
 
 import json
 import os
+import random
 import re
 import ssl
 import subprocess
@@ -28,6 +29,7 @@ from AVFoundation import (
     AVPlayer,
     AVPlayerItem,
     AVPlayerItemDidPlayToEndTimeNotification,
+    AVURLAsset,
 )
 from AVKit import AVPlayerView
 from CoreMedia import CMTimeGetSeconds, CMTimeMakeWithSeconds, kCMTimeZero
@@ -45,6 +47,8 @@ from Cocoa import (
     NSEventModifierFlagCommand,
     NSEventModifierFlagControl,
     NSEventModifierFlagShift,
+    NSColor,
+    NSFont,
     NSMakeRect,
     NSMakeSize,
     NSImage,
@@ -54,14 +58,17 @@ from Cocoa import (
     NSObject,
     NSOpenPanel,
     NSScrollView,
+    NSSearchField,
     NSTableColumn,
     NSTableView,
+    NSTextField,
     NSTimer,
     NSURL,
     NSView,
     NSViewHeightSizable,
     NSViewMaxYMargin,
     NSViewMinXMargin,
+    NSViewMinYMargin,
     NSViewWidthSizable,
     NSVisualEffectView,
     NSWorkspace,
@@ -96,17 +103,36 @@ RESUME_TAIL = 30              # ...and so does one that was all but finished
 RECENT_MAX = 8
 PROGRESS_MAX = 500            # newest positions win; older ones age out
 
+# What happens when a video ends.
+REPEAT_ALL, REPEAT_ONE, SHUFFLE, PLAY_ONCE = "all", "one", "shuffle", "once"
+ORDERS = [("Repeat All", REPEAT_ALL), ("Repeat One", REPEAT_ONE),
+          ("Shuffle", SHUFFLE), ("Play Once", PLAY_ONCE)]
+ORDER_NAMES = {value: title for title, value in ORDERS}
+
+SPEEDS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+NORMAL_SPEED = 1.0
+
 CONTROLS_FLOATING = 1
 BAR_HEIGHT = 48
 BUTTON_W, BUTTON_H = 116, 30
 SIDEBAR_W = 320
 SIDEBAR_SLIDE = 0.22          # seconds
+FILTER_H = 24
+ROW_H, GROUP_H = 22, 20
+DURATION_W = 52
+NAME_TAG, TIME_TAG = 1, 2
+DURATION_BATCH = 25           # rows to measure between table refreshes
+FAV_W, FAV_H = 460, 420
+FAV_NOTE_W = 130
 
 VIBRANCY_SIDEBAR = 7          # NSVisualEffectMaterialSidebar
 VIBRANCY_ACTIVE = 0           # NSVisualEffectStateFollowsWindowActiveState
 STATUS_READY, STATUS_FAILED = 1, 2
 NS_OK = 1
 FIRST_BUTTON = 1000
+STATE_ON, STATE_OFF = 1, 0    # NSControlStateValue
+ALIGN_RIGHT = 2               # NSTextAlignmentRight
+NS_TRUNCATE_TAIL = 4          # NSLineBreakByTruncatingTail
 
 RIGHT_ARROW = chr(0xF703)
 LEFT_ARROW = chr(0xF702)
@@ -144,6 +170,17 @@ def load_json(path, fallback):
 
 
 @objc.python_method
+def clock(seconds):
+    """Seconds as 4:07, or 1:02:30 once there is an hour to show."""
+    seconds = int(seconds)
+    hours, rest = divmod(seconds, 3600)
+    minutes, seconds = divmod(rest, 60)
+    if hours:
+        return "%d:%02d:%02d" % (hours, minutes, seconds)
+    return "%d:%02d" % (minutes, seconds)
+
+
+@objc.python_method
 def save_json(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
@@ -166,6 +203,13 @@ class AppDelegate(NSObject):
         self.failures = 0
         self.pendingResume = 0
         self.ticks = 0
+        self.bag = []                 # playlist indices, shuffled
+        self.rows = []                # what the sidebar actually shows
+        self.filterText = ""
+        self.durations = {}
+        self.durationGen = 0
+        self.favWindow = None
+        self.favTable = None
         self.favorites = self.loadFavorites()
         self.loadState()
 
@@ -185,7 +229,12 @@ class AppDelegate(NSObject):
         self.notePosition()
         self.saveState()
         self.timer.invalidate()
+        self.durationGen += 1         # tell any duration scan to give up
         self.detachItem()
+        try:
+            self.player.removeObserver_forKeyPath_(self, "rate")
+        except Exception:
+            pass
 
     @objc.python_method
     def setDockIcon(self):
@@ -230,6 +279,14 @@ class AppDelegate(NSObject):
             # A file this badly mangled is not worth salvaging, but it must not
             # stop the app launching — there would be no way back from that.
             self.recent, self.progress, self.session = [], {}, {}
+        # Both fall back to the old hardcoded behaviour if they are anything
+        # other than a value the app actually offers.
+        self.repeat = state.get("repeat")
+        if self.repeat not in [value for _, value in ORDERS]:
+            self.repeat = REPEAT_ALL
+        self.speed = state.get("speed")
+        if self.speed not in SPEEDS:
+            self.speed = NORMAL_SPEED
 
     @objc.python_method
     def saveState(self):
@@ -241,6 +298,8 @@ class AppDelegate(NSObject):
             # tail of this is exactly the most recently watched
             "progress": dict(list(self.progress.items())[-PROGRESS_MAX:]),
             "session": session,
+            "repeat": self.repeat,
+            "speed": self.speed,
         })
 
     @objc.python_method
@@ -259,11 +318,13 @@ class AppDelegate(NSObject):
                 if self.index >= len(self.playlist):
                     self.index = 0
                 self.saveFavorites()
-                self.table.reloadData()
+                self.reshuffle()
+                self.rebuildRows()
                 return self.playIndex(self.index)
         else:
             self.favorites.append(path)
         self.saveFavorites()
+        self.refreshRows()
         self.updateUI()
 
     # -- building the UI -------------------------------------------------
@@ -310,6 +371,7 @@ class AppDelegate(NSObject):
         self.rebuildRecentMenu()
         self.add(files, "Play Favorites", "playFavorites:", "f",
                  NSEventModifierFlagCommand | NSEventModifierFlagShift)
+        self.add(files, "Manage Favorites…", "manageFavorites:")
 
         play = self.menu(bar, "Playback")
         # Bare arrows scrub within the video; add Command to change video.
@@ -318,11 +380,29 @@ class AppDelegate(NSObject):
         play.addItem_(NSMenuItem.separatorItem())
         self.add(play, "Next Video", "nextItem:", RIGHT_ARROW, NSEventModifierFlagCommand)
         self.add(play, "Previous Video", "prevItem:", LEFT_ARROW, NSEventModifierFlagCommand)
+
+        play.addItem_(NSMenuItem.separatorItem())
+        self.orderItems = []
+        for title, value in ORDERS:
+            item = self.add(play, title, "setOrder:")
+            item.setRepresentedObject_(value)
+            self.orderItems.append(item)
+
+        play.addItem_(NSMenuItem.separatorItem())
+        speeds = self.menu(play, "Speed")
+        self.speedItems = []
+        for rate in SPEEDS:
+            item = self.add(speeds, "Normal" if rate == NORMAL_SPEED else "%g×" % rate,
+                            "setSpeed:")
+            item.setRepresentedObject_(rate)
+            self.speedItems.append(item)
+
         play.addItem_(NSMenuItem.separatorItem())
         # Shift is deliberate: plain Cmd+D is claimed by the system in several
         # contexts, so the app never reliably received it.
         self.favItem = self.add(play, "Add to Favorites", "toggleFavorite:", "d",
                                 NSEventModifierFlagCommand | NSEventModifierFlagShift)
+        self.syncPlaybackMenu()
 
         view = self.menu(bar, "View")
         self.listItem = self.add(view, "Show Playlist", "togglePlaylist:", "l",
@@ -370,6 +450,7 @@ class AppDelegate(NSObject):
         self.playerView.setVideoGravity_("AVLayerVideoGravityResizeAspect")
 
         self.player = AVPlayer.alloc().init()
+        self.player.addObserver_forKeyPath_options_context_(self, "rate", 0, None)
         self.playerView.setPlayer_(self.player)
         content.addSubview_(self.playerView)
 
@@ -415,13 +496,23 @@ class AppDelegate(NSObject):
         self.sidebar.setState_(VIBRANCY_ACTIVE)
         self.sidebar.setAutoresizingMask_(NSViewHeightSizable | NSViewMinXMargin)
 
+        # Filter pinned to the top of the drawer. A folder of 300 files is not
+        # navigable by scrolling alone.
+        self.filterField = NSSearchField.alloc().initWithFrame_(
+            NSMakeRect(8, height - FILTER_H - 8, SIDEBAR_W - 16, FILTER_H))
+        self.filterField.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
+        self.filterField.setPlaceholderString_("Filter")
+        self.filterField.setDelegate_(self)
+        self.sidebar.addSubview_(self.filterField)
+
+        listHeight = height - FILTER_H - 16
         self.table = NSTableView.alloc().initWithFrame_(
-            NSMakeRect(0, 0, SIDEBAR_W, height))
+            NSMakeRect(0, 0, SIDEBAR_W, listHeight))
         column = NSTableColumn.alloc().initWithIdentifier_("name")
         column.setWidth_(SIDEBAR_W - 24)
         self.table.addTableColumn_(column)
         self.table.setHeaderView_(None)
-        self.table.setRowHeight_(24)
+        self.table.setRowHeight_(ROW_H)
         self.table.setUsesAlternatingRowBackgroundColors_(True)
         self.table.setDataSource_(self)
         # Selection drives playback, so clicking and arrowing behave identically.
@@ -429,7 +520,7 @@ class AppDelegate(NSObject):
         self.syncing = False
 
         scroll = NSScrollView.alloc().initWithFrame_(
-            NSMakeRect(0, 0, SIDEBAR_W, height))
+            NSMakeRect(0, 0, SIDEBAR_W, listHeight))
         scroll.setDocumentView_(self.table)
         scroll.setHasVerticalScroller_(True)
         scroll.setDrawsBackground_(False)
@@ -463,40 +554,225 @@ class AppDelegate(NSObject):
             self.window.makeFirstResponder_(self.playerView)
 
     def windowDidResize_(self, notification):
-        self.sidebar.setFrame_(self.sidebarFrame())
+        # The favorites window shares this delegate and lays itself out
+        if notification.object().isEqual_(self.window):
+            self.sidebar.setFrame_(self.sidebarFrame())
 
     def tableViewSelectionDidChange_(self, notification):
         # Ignore selection we set ourselves while following playback, otherwise
         # every track change would re-trigger itself.
-        if self.syncing:
+        if self.syncing or self.isFavTable(notification.object()):
             return
         self.jumpToRow(self.table.selectedRow())
 
     @objc.python_method
     def jumpToRow(self, row):
-        if 0 <= row < len(self.playlist) and row != self.index:
-            self.playIndex(row)
+        if not 0 <= row < len(self.rows):
+            return
+        index = self.rows[row][0]
+        if index is not None and index != self.index:
+            self.playIndex(index)
 
-    # NSTableView data source
-    def numberOfRowsInTableView_(self, tableView):
-        return len(self.playlist)
+    # -- what the drawer actually shows ----------------------------------
+    #
+    # Filtering and folder headings mean a table row is no longer a playlist
+    # index, so self.rows maps one to the other: (index, name) for a video,
+    # (None, label) for a folder heading.
 
-    def tableView_objectValueForTableColumn_row_(self, tableView, column, row):
-        if 0 <= row < len(self.playlist):
-            return os.path.basename(self.playlist[row])
-        return ""
+    @objc.python_method
+    def groupLabel(self, path):
+        """The folder a file should be filed under, or None if it needs none."""
+        folder = os.path.dirname(path)
+        if self.mode == "folder" and self.root:
+            rel = os.path.relpath(folder, self.root)
+            return None if rel == "." else rel
+        return os.path.basename(folder) or folder
+
+    @objc.python_method
+    def rebuildRows(self):
+        needle = self.filterText.lower()
+        self.rows = []
+        heading = object()            # a sentinel no real label can equal
+        for i, path in enumerate(self.playlist):
+            name = os.path.basename(path)
+            if needle and needle not in name.lower():
+                continue
+            label = self.groupLabel(path)
+            if label != heading:
+                heading = label
+                if label is not None:
+                    self.rows.append((None, label))
+            self.rows.append((i, name))
+        self.table.reloadData()
+        self.revealCurrentRow()
+
+    def controlTextDidChange_(self, notification):
+        if not notification.object().isEqual_(self.filterField):
+            return
+        self.filterText = str(self.filterField.stringValue())
+        self.rebuildRows()
 
     @objc.python_method
     def revealCurrentRow(self):
-        if not self.playlist:
-            return
+        """Highlight whatever is playing — unless the filter has hidden it."""
+        row = next((r for r, (i, _) in enumerate(self.rows) if i == self.index), None)
         self.syncing = True
         try:
-            self.table.selectRowIndexes_byExtendingSelection_(
-                NSIndexSet.indexSetWithIndex_(self.index), False)
-            self.table.scrollRowToVisible_(self.index)
+            if row is None:
+                self.table.deselectAll_(None)
+            else:
+                self.table.selectRowIndexes_byExtendingSelection_(
+                    NSIndexSet.indexSetWithIndex_(row), False)
+                self.table.scrollRowToVisible_(row)
         finally:
             self.syncing = False
+
+    # -- table plumbing, shared with the favorites window ----------------
+
+    @objc.python_method
+    def isFavTable(self, view):
+        return self.favTable is not None and view.isEqual_(self.favTable)
+
+    def numberOfRowsInTableView_(self, tableView):
+        if self.isFavTable(tableView):
+            return len(self.favorites)
+        return len(self.rows)
+
+    def tableView_isGroupRow_(self, tableView, row):
+        return self.isPlainRow(tableView, row) is None
+
+    def tableView_shouldSelectRow_(self, tableView, row):
+        return self.isPlainRow(tableView, row) is not None
+
+    def tableView_heightOfRow_(self, tableView, row):
+        return ROW_H if self.isPlainRow(tableView, row) is not None else GROUP_H
+
+    @objc.python_method
+    def isPlainRow(self, tableView, row):
+        """The playlist index for a selectable row, or None for a heading."""
+        if self.isFavTable(tableView):
+            return row
+        if not 0 <= row < len(self.rows):
+            return None
+        return self.rows[row][0]
+
+    def tableView_viewForTableColumn_row_(self, tableView, column, row):
+        if self.isFavTable(tableView):
+            return self.favoriteRow(tableView, row)
+        if not 0 <= row < len(self.rows):
+            return None
+        index, label = self.rows[row]
+        if index is None:
+            return self.headingRow(tableView, label)
+        return self.videoRow(tableView, index, label)
+
+    @objc.python_method
+    def label(self, frame, size, tag, align=None, dim=False, bold=False):
+        field = NSTextField.alloc().initWithFrame_(frame)
+        field.setBezeled_(False)
+        field.setDrawsBackground_(False)
+        field.setEditable_(False)
+        field.setSelectable_(False)
+        field.setLineBreakMode_(NS_TRUNCATE_TAIL)
+        field.setFont_(NSFont.boldSystemFontOfSize_(size) if bold
+                       else NSFont.systemFontOfSize_(size))
+        field.setTag_(tag)
+        if align is not None:
+            field.setAlignment_(align)
+        if dim:
+            field.setTextColor_(NSColor.secondaryLabelColor())
+        return field
+
+    @objc.python_method
+    def reuse(self, tableView, identifier, build):
+        view = tableView.makeViewWithIdentifier_owner_(identifier, self)
+        if view is None:
+            view = build()
+            view.setIdentifier_(identifier)
+        return view
+
+    @objc.python_method
+    def buildVideoRow(self):
+        view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, SIDEBAR_W, ROW_H))
+        name = self.label(NSMakeRect(8, 1, SIDEBAR_W - DURATION_W - 40, ROW_H - 2),
+                          12, NAME_TAG)
+        name.setAutoresizingMask_(NSViewWidthSizable)
+        length = self.label(
+            NSMakeRect(SIDEBAR_W - DURATION_W - 24, 1, DURATION_W, ROW_H - 2),
+            11, TIME_TAG, align=ALIGN_RIGHT, dim=True)
+        length.setAutoresizingMask_(NSViewMinXMargin)
+        view.addSubview_(name)
+        view.addSubview_(length)
+        return view
+
+    @objc.python_method
+    def videoRow(self, tableView, index, name):
+        view = self.reuse(tableView, "video", self.buildVideoRow)
+        path = self.playlist[index]
+        view.viewWithTag_(NAME_TAG).setStringValue_(
+            ("★  " if path in self.favorites else "") + name)
+        seconds = self.durations.get(path)
+        view.viewWithTag_(TIME_TAG).setStringValue_(clock(seconds) if seconds else "")
+        return view
+
+    @objc.python_method
+    def buildHeadingRow(self):
+        view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, SIDEBAR_W, GROUP_H))
+        field = self.label(NSMakeRect(8, 0, SIDEBAR_W - 16, GROUP_H - 2), 11,
+                           NAME_TAG, dim=True, bold=True)
+        field.setAutoresizingMask_(NSViewWidthSizable)
+        view.addSubview_(field)
+        return view
+
+    @objc.python_method
+    def headingRow(self, tableView, label):
+        view = self.reuse(tableView, "heading", self.buildHeadingRow)
+        view.viewWithTag_(NAME_TAG).setStringValue_(label)
+        return view
+
+    # -- measuring how long each video is --------------------------------
+
+    @objc.python_method
+    def loadDurations(self):
+        # Reading 300 files' headers on the main thread would lock the window,
+        # so it happens on a worker and the table refreshes as answers arrive.
+        self.durationGen += 1
+        self.performSelectorInBackground_withObject_("scanDurations:", self.durationGen)
+
+    def scanDurations_(self, generation):
+        pool = NSAutoreleasePool.alloc().init()
+        try:
+            generation = int(generation)
+            todo = [p for p in self.playlist if p not in self.durations]
+            for n, path in enumerate(todo):
+                if generation != self.durationGen:
+                    return                # the playlist moved on; drop this pass
+                asset = AVURLAsset.URLAssetWithURL_options_(
+                    NSURL.fileURLWithPath_(path), None)
+                seconds = CMTimeGetSeconds(asset.duration())
+                self.durations[path] = seconds if seconds == seconds and seconds > 0 else 0
+                if n % DURATION_BATCH == DURATION_BATCH - 1:
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "durationsArrived:", None, False)
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "durationsArrived:", None, False)
+        finally:
+            del pool
+
+    def durationsArrived_(self, _):
+        self.refreshRows()
+
+    @objc.python_method
+    def refreshRows(self):
+        """Redraw the rows we already have — a star changed, or a duration."""
+        self.syncing = True           # reloading must not look like a click
+        try:
+            self.table.reloadData()
+        finally:
+            self.syncing = False
+        self.revealCurrentRow()
+        if self.favTable is not None:
+            self.favTable.reloadData()
 
     # -- choosing what to play -------------------------------------------
 
@@ -658,10 +934,20 @@ class AppDelegate(NSObject):
         self.mode = mode
         self.root = root
         self.failures = 0
-        self.table.reloadData()
-        # A folder can change between sessions; falling back to the top is the
-        # only sane answer when the video we left off on is gone.
-        self.playIndex(items.index(resume) if resume in items else 0)
+        self.reshuffle()
+        self.filterText = ""
+        self.filterField.setStringValue_("")
+        self.rebuildRows()
+        self.loadDurations()
+        if resume in items:
+            # A folder can change between sessions; falling back to the top is
+            # the only sane answer when the video we left off on is gone.
+            start = items.index(resume)
+        elif self.repeat == SHUFFLE and self.bag:
+            start = self.bag[0]
+        else:
+            start = 0
+        self.playIndex(start)
         self.saveState()
 
     # -- playback --------------------------------------------------------
@@ -699,13 +985,91 @@ class AppDelegate(NSObject):
         self.updateUI()
 
     def itemDidFinish_(self, notification):
-        self.playIndex(self.index + 1)      # wraps at the end, so it repeats
+        nxt = self.followOn()
+        if nxt is None:
+            return self.player.pause()      # Play Once, and that was the last
+        self.playIndex(nxt)
 
     def nextItem_(self, sender):
-        self.playIndex(self.index + 1)
+        self.playIndex(self.step(1))
 
     def prevItem_(self, sender):
-        self.playIndex(self.index - 1)
+        self.playIndex(self.step(-1))
+
+    # -- what plays next -------------------------------------------------
+
+    @objc.python_method
+    def followOn(self):
+        """The index to play when the current video ends, or None to stop."""
+        if self.repeat == REPEAT_ONE:
+            return self.index
+        if self.repeat == PLAY_ONCE:
+            nxt = self.index + 1
+            return nxt if nxt < len(self.playlist) else None
+        return self.step(1)
+
+    @objc.python_method
+    def step(self, delta):
+        """The index delta videos away, in whatever order is in force.
+
+        Explicit Next and Previous use this too, so in Shuffle they walk the
+        shuffled order rather than the folder order — which is what you mean
+        by "next" once you have asked for shuffle.
+        """
+        if not self.playlist:
+            return 0
+        if self.repeat != SHUFFLE:
+            return (self.index + delta) % len(self.playlist)
+
+        if not self.bag:
+            self.reshuffle()
+        where = self.bag.index(self.index) if self.index in self.bag else -1
+        landing = where + delta
+        if landing >= len(self.bag):
+            # The whole folder has been played: deal again rather than let a
+            # video come round twice before the rest have had a turn.
+            self.reshuffle(after=self.index)
+            return self.bag[0]
+        return self.bag[landing % len(self.bag)]
+
+    @objc.python_method
+    def reshuffle(self, after=None):
+        self.bag = list(range(len(self.playlist)))
+        random.shuffle(self.bag)
+        # Don't open a fresh pass with the video that just closed the last one
+        if after is not None and len(self.bag) > 1 and self.bag[0] == after:
+            self.bag[0], self.bag[-1] = self.bag[-1], self.bag[0]
+
+    def setOrder_(self, sender):
+        self.repeat = str(sender.representedObject())
+        if self.repeat == SHUFFLE:
+            self.reshuffle()
+        self.syncPlaybackMenu()
+        self.updateUI()
+        self.saveState()
+
+    def setSpeed_(self, sender):
+        self.speed = float(sender.representedObject())
+        self.applySpeed()
+        self.syncPlaybackMenu()
+        self.updateUI()
+        self.saveState()
+
+    @objc.python_method
+    def applySpeed(self):
+        # Setting a rate on a paused player would start it playing, so the
+        # choice is only pushed through while something is actually running.
+        if self.player.rate() not in (0.0, self.speed):
+            self.player.setRate_(self.speed)
+
+    @objc.python_method
+    def syncPlaybackMenu(self):
+        for item in self.orderItems:
+            item.setState_(STATE_ON if str(item.representedObject()) == self.repeat
+                           else STATE_OFF)
+        for item in self.speedItems:
+            item.setState_(STATE_ON if float(item.representedObject()) == self.speed
+                           else STATE_OFF)
 
     def skipBack_(self, sender):
         self.seekBy(-SKIP_SECONDS)
@@ -731,12 +1095,17 @@ class AppDelegate(NSObject):
         return target
 
     def observeValueForKeyPath_ofObject_change_context_(self, keyPath, obj, change, ctx):
+        if keyPath == "rate":
+            # play(), and the floating AVKit controls, both reset the rate to 1,
+            # so a chosen speed has to be reasserted rather than set once.
+            return self.applySpeed()
         # A notification already in flight when we moved on must not be acted on
         if keyPath != "status" or self.item is None or not obj.isEqual_(self.item):
             return
         if obj.status() == STATUS_READY:
             self.failures = 0
             self.applyResume()
+            self.applySpeed()
         elif obj.status() == STATUS_FAILED:
             self.skipBroken()
 
@@ -939,6 +1308,169 @@ open "$APP"
         subprocess.Popen(["/bin/bash", script.name], start_new_session=True)
         NSApplication.sharedApplication().terminate_(None)
 
+    # -- managing favorites without playing them -------------------------
+
+    @objc.python_method
+    def missingFavorites(self):
+        return [p for p in self.favorites if not os.path.isfile(p)]
+
+    def manageFavorites_(self, sender):
+        if self.favWindow is not None:
+            self.refreshFavorites()
+            return self.favWindow.makeKeyAndOrderFront_(None)
+
+        rect = NSMakeRect(0, 0, FAV_W, FAV_H)
+        self.favWindow = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            rect, NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+            | NSWindowStyleMaskResizable, NSBackingStoreBuffered, False)
+        self.favWindow.setTitle_("Favorites")
+        self.favWindow.setMinSize_(NSMakeSize(360, 240))
+        self.favWindow.center()
+        # Closing must not leave a dead window behind for the next open
+        self.favWindow.setReleasedWhenClosed_(False)
+        self.favWindow.setDelegate_(self)
+
+        content = NSView.alloc().initWithFrame_(rect)
+
+        self.favTable = NSTableView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, FAV_W, rect.size.height - BAR_HEIGHT))
+        column = NSTableColumn.alloc().initWithIdentifier_("name")
+        column.setWidth_(FAV_W - 24)
+        self.favTable.addTableColumn_(column)
+        self.favTable.setHeaderView_(None)
+        self.favTable.setRowHeight_(ROW_H)
+        self.favTable.setUsesAlternatingRowBackgroundColors_(True)
+        self.favTable.setAllowsMultipleSelection_(True)
+        self.favTable.setDataSource_(self)
+        self.favTable.setDelegate_(self)
+
+        scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(0, BAR_HEIGHT, FAV_W, rect.size.height - BAR_HEIGHT))
+        scroll.setDocumentView_(self.favTable)
+        scroll.setHasVerticalScroller_(True)
+        scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        content.addSubview_(scroll)
+
+        bar = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, FAV_W, BAR_HEIGHT))
+        bar.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
+        remove = self.barButton("Remove", "removeFavorites:", 14)
+        self.pruneButton = self.barButton("Remove Missing", "pruneFavorites:",
+                                          14 + BUTTON_W + 8)
+        self.pruneButton.setFrame_(NSMakeRect(14 + BUTTON_W + 8,
+                                              (BAR_HEIGHT - BUTTON_H) / 2,
+                                              BUTTON_W + 40, BUTTON_H))
+        bar.addSubview_(remove)
+        bar.addSubview_(self.pruneButton)
+        content.addSubview_(bar)
+
+        self.favWindow.setContentView_(content)
+        self.refreshFavorites()
+        self.favWindow.makeKeyAndOrderFront_(None)
+
+    def windowWillClose_(self, notification):
+        closing = notification.object()
+        if self.favWindow is not None and closing.isEqual_(self.favWindow):
+            # Drop the table first: every shared table callback keys off it
+            self.favTable = None
+            self.favWindow = None
+        elif closing.isEqual_(self.window) and self.favWindow is not None:
+            # Otherwise closing the player would leave the app alive behind a
+            # stray favorites window instead of quitting.
+            self.favWindow.close()
+
+    @objc.python_method
+    def refreshFavorites(self):
+        if self.favTable is None:
+            return
+        self.favTable.reloadData()
+        missing = len(self.missingFavorites())
+        self.pruneButton.setTitle_("Remove Missing (%d)" % missing if missing
+                                   else "Remove Missing")
+        self.pruneButton.setEnabled_(bool(missing))
+
+    @objc.python_method
+    def buildFavoriteRow(self):
+        view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, FAV_W, ROW_H))
+        name = self.label(NSMakeRect(8, 1, FAV_W - FAV_NOTE_W - 26, ROW_H - 2),
+                          12, NAME_TAG)
+        name.setAutoresizingMask_(NSViewWidthSizable)
+        note = self.label(NSMakeRect(FAV_W - FAV_NOTE_W - 12, 1, FAV_NOTE_W, ROW_H - 2),
+                          11, TIME_TAG, align=ALIGN_RIGHT, dim=True)
+        note.setAutoresizingMask_(NSViewMinXMargin)
+        view.addSubview_(name)
+        view.addSubview_(note)
+        return view
+
+    @objc.python_method
+    def favoriteRow(self, tableView, row):
+        view = self.reuse(tableView, "favorite", self.buildFavoriteRow)
+        path = self.favorites[row]
+        gone = not os.path.isfile(path)
+        view.viewWithTag_(NAME_TAG).setStringValue_(os.path.basename(path))
+        note = view.viewWithTag_(TIME_TAG)
+        note.setStringValue_("missing" if gone else
+                             os.path.basename(os.path.dirname(path)))
+        note.setTextColor_(NSColor.systemRedColor() if gone
+                           else NSColor.secondaryLabelColor())
+        return view
+
+    def removeFavorites_(self, sender):
+        rows = sorted(self.favTable.selectedRowIndexes(), reverse=True)
+        if not rows:
+            return self.say("Nothing selected",
+                            "Pick the favorites you want to remove first.")
+        for row in rows:
+            if 0 <= row < len(self.favorites):
+                del self.favorites[row]
+        self.finishFavoriteEdit()
+
+    def pruneFavorites_(self, sender):
+        missing = self.missingFavorites()
+        if not missing:
+            return
+        # This is the one that can lose real data: a NAS that happens to be
+        # offline makes every file on it look deleted.
+        if not self.confirm(
+                "Remove %d missing favorite%s?" % (len(missing),
+                                                   "" if len(missing) == 1 else "s"),
+                "These files could not be found:\n\n%s\n\nIf they live on a "
+                "network or external drive, check it is plugged in and mounted "
+                "first — an unmounted drive looks exactly like a deleted file."
+                % "\n".join(os.path.basename(p) for p in missing[:12]),
+                "Remove"):
+            return
+        gone = set(missing)
+        self.favorites = [p for p in self.favorites if p not in gone]
+        self.finishFavoriteEdit()
+
+    @objc.python_method
+    def finishFavoriteEdit(self):
+        self.saveFavorites()
+        self.refreshFavorites()
+        self.syncFavoritesQueue()
+        self.refreshRows()
+        self.updateUI()
+
+    @objc.python_method
+    def syncFavoritesQueue(self):
+        """Keep the playing queue in step when favorites mode is what's on."""
+        if self.mode != "favorites":
+            return
+        playing = self.currentPath()
+        live = [p for p in self.favorites if os.path.isfile(p)]
+        self.playlist = live
+        self.reshuffle()
+        if playing in live:
+            self.index = live.index(playing)    # untouched, so don't restart it
+            self.rebuildRows()
+        elif live:
+            self.index = min(self.index, len(live) - 1)
+            self.rebuildRows()
+            self.playIndex(self.index)
+        else:
+            self.index = 0
+            self.rebuildRows()
+
     # -- chrome ----------------------------------------------------------
 
     @objc.python_method
@@ -981,6 +1513,12 @@ open "$APP"
 
         starred = path in self.favorites
         label = "Favorites" if self.mode == "favorites" else "Folder"
+        # Anything other than the plain defaults is worth saying out loud, so
+        # nobody wonders why a folder is playing out of order or sounds odd.
+        if self.repeat != REPEAT_ALL:
+            label += " · " + ORDER_NAMES[self.repeat]
+        if self.speed != NORMAL_SPEED:
+            label += " · %g×" % self.speed
         self.window.setTitle_("%s%s  —  %d of %d  —  %s" % (
             "★ " if starred else "",
             os.path.basename(path), self.index + 1, len(self.playlist), label))
