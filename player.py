@@ -57,11 +57,13 @@ from Cocoa import (
     NSNotificationCenter,
     NSObject,
     NSOpenPanel,
+    NSCharacterSet,
     NSScrollView,
     NSSearchField,
     NSTableColumn,
     NSTableView,
     NSTextField,
+    NSTokenField,
     NSTimer,
     NSURL,
     NSView,
@@ -92,6 +94,10 @@ FAV_FILE = os.path.join(SUPPORT, "favorites.json")
 STATE_FILE = os.path.join(SUPPORT, "state.json")
 TAGS_FILE = os.path.join(SUPPORT, "tags.json")
 
+# Starring a video is just tagging it with this. The ★ button and ⌘⇧D stay
+# exactly as they were; underneath there is now one store instead of two.
+FAVORITE_TAG = "Favorite"
+
 # What AVFoundation can actually decode. .mkv and .avi are deliberately absent.
 VIDEO_EXT = {".mp4", ".m4v", ".mov"}
 
@@ -115,16 +121,24 @@ NORMAL_SPEED = 1.0
 
 CONTROLS_FLOATING = 1
 BAR_HEIGHT = 48
-BUTTON_W, BUTTON_H = 116, 30
+# 96 rather than a roomier width so a fourth button fits on the left at the
+# 680pt minimum window size, instead of making everyone's window bigger.
+BUTTON_W, BUTTON_H = 96, 30
 SIDEBAR_W = 320
 SIDEBAR_SLIDE = 0.22          # seconds
 FILTER_H = 24
 ROW_H, GROUP_H = 22, 20
 DURATION_W = 52
-NAME_TAG, TIME_TAG = 1, 2
+NAME_TAG, TIME_TAG, CHIPS_TAG = 1, 2, 3
 DURATION_BATCH = 25           # rows to measure between table refreshes
 FAV_W, FAV_H = 460, 420
 FAV_NOTE_W = 130
+
+TAG_PANEL_H = 136             # the tag editor, sliding up over the video
+CHIP_H = 17
+CHIP_PAD = 7
+SUGGEST_MAX = 12              # tags offered as one-click chips; type for the rest
+TAG_ROW_H = 38                # a row showing its tags; untagged rows stay ROW_H
 
 VIBRANCY_SIDEBAR = 7          # NSVisualEffectMaterialSidebar
 VIBRANCY_ACTIVE = 0           # NSVisualEffectStateFollowsWindowActiveState
@@ -132,6 +146,7 @@ STATUS_READY, STATUS_FAILED = 1, 2
 NS_OK = 1
 FIRST_BUTTON = 1000
 STATE_ON, STATE_OFF = 1, 0    # NSControlStateValue
+BEZEL_INLINE = 15             # NSBezelStyleInline — the small pill look
 ALIGN_RIGHT = 2               # NSTextAlignmentRight
 NS_TRUNCATE_TAIL = 4          # NSLineBreakByTruncatingTail
 
@@ -200,10 +215,32 @@ def clock(seconds):
 @objc.python_method
 def save_json(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=1)
-    os.replace(tmp, path)         # never leave a half-written file
+    # The scratch name carries the pid: two copies of the app running at once
+    # would otherwise race for one ".tmp" and whichever lost would blow up
+    # renaming a file the other had already moved.
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    try:
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=1)
+        os.replace(tmp, path)     # never leave a half-written file
+    except OSError:
+        try:
+            os.remove(tmp)        # don't litter if the write failed
+        except OSError:
+            pass
+        raise
+
+
+class ChipHolder(NSView):
+    """Holds a row's tag chips.
+
+    A plain NSView's tag is read-only — only controls can be given one — so
+    viewWithTag_ could never find this. Answering for itself is the cheapest
+    way to stay findable in a reused row.
+    """
+
+    def tag(self):
+        return CHIPS_TAG
 
 
 class AppDelegate(NSObject):
@@ -225,16 +262,14 @@ class AppDelegate(NSObject):
         self.filterText = ""
         self.durations = {}
         self.durationGen = 0
-        self.favWindow = None
-        self.favTable = None
         self.tagName = None           # which tag is playing, in tag mode
         self.tagWindow = None
         self.tagTable = None
         self.tagRows = []
         self.tagItems = []
-        self.favorites = self.loadFavorites()
         self.loadTags()
         self.loadState()
+        self.migrateFavorites()
 
         self.setDockIcon()
         self.buildMenu()
@@ -273,12 +308,37 @@ class AppDelegate(NSObject):
     # -- favorites -------------------------------------------------------
 
     @objc.python_method
-    def loadFavorites(self):
-        return load_json(FAV_FILE, [])
+    def favoriteList(self):
+        return self.taggedWith(FAVORITE_TAG)
 
     @objc.python_method
-    def saveFavorites(self):
-        save_json(FAV_FILE, self.favorites)
+    def isFavorite(self, path):
+        return self.hasTag(path, FAVORITE_TAG)
+
+    @objc.python_method
+    def migrateFavorites(self):
+        """Fold an older version's favorites.json into the Favorite tag.
+
+        Runs once, unprompted, at launch. favorites.json is left exactly where
+        it is rather than deleted: it costs nothing to keep, it is the obvious
+        thing to restore from, and an older build still reads it.
+
+        Deliberately no isfile() check — a starred video on a drive that
+        happens to be unmounted is still a favorite, and dropping it here
+        would be the one migration bug there is no way back from.
+        """
+        if self.migrated or not os.path.exists(FAV_FILE):
+            return
+        starred = load_json(FAV_FILE, [])
+        moved = 0
+        for path in starred:
+            if isinstance(path, str) and not self.hasTag(path, FAVORITE_TAG):
+                self.setTagsFor(path, self.tagsFor(path) + [FAVORITE_TAG])
+                moved += 1
+        self.migrated = True
+        if moved:
+            self.saveTags()
+        self.saveState()          # remember it is done, so it never re-runs
 
     # -- tags ------------------------------------------------------------
     #
@@ -362,6 +422,7 @@ class AppDelegate(NSObject):
         self.speed = state.get("speed")
         if self.speed not in SPEEDS:
             self.speed = NORMAL_SPEED
+        self.migrated = bool(state.get("favoritesMigrated"))
 
     @objc.python_method
     def saveState(self):
@@ -376,6 +437,7 @@ class AppDelegate(NSObject):
             "session": session,
             "repeat": self.repeat,
             "speed": self.speed,
+            "favoritesMigrated": self.migrated,
         })
 
     @objc.python_method
@@ -386,22 +448,21 @@ class AppDelegate(NSObject):
         path = self.currentPath()
         if not path:
             return
-        if path in self.favorites:
-            self.favorites.remove(path)
-            # in favorites mode the list IS the queue, so drop it from playback
-            if self.mode == "favorites" and len(self.playlist) > 1:
+        if self.isFavorite(path):
+            self.setTagsFor(path, [n for n in self.tagsFor(path)
+                                   if n.lower() != FAVORITE_TAG.lower()])
+            # Playing the favorites, the list IS the queue, so unstarring
+            # something has to take it out of the queue too.
+            if self.tagName == FAVORITE_TAG and len(self.playlist) > 1:
                 del self.playlist[self.index]
                 if self.index >= len(self.playlist):
                     self.index = 0
-                self.saveFavorites()
+                self.tagsChanged()
                 self.reshuffle()
-                self.rebuildRows()
                 return self.playIndex(self.index)
         else:
-            self.favorites.append(path)
-        self.saveFavorites()
-        self.refreshRows()
-        self.updateUI()
+            self.setTagsFor(path, self.tagsFor(path) + [FAVORITE_TAG])
+        self.tagsChanged()
 
     # -- building the UI -------------------------------------------------
 
@@ -447,7 +508,6 @@ class AppDelegate(NSObject):
         self.rebuildRecentMenu()
         self.add(files, "Play Favorites", "playFavorites:", "f",
                  NSEventModifierFlagCommand | NSEventModifierFlagShift)
-        self.add(files, "Manage Favorites…", "manageFavorites:")
 
         play = self.menu(bar, "Playback")
         # Bare arrows scrub within the video; add Command to change video.
@@ -537,13 +597,16 @@ class AppDelegate(NSObject):
         # below the video so it never collides with the floating AVKit controls.
         bar = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, rect.size.width, BAR_HEIGHT))
         bar.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
-        self.prevButton = self.barButton("◀  Previous", "prevItem:", 14)
-        self.nextButton = self.barButton("Next  ▶", "nextItem:", 14 + BUTTON_W + 8)
-        self.favButton = self.barButton("☆  Favorite", "toggleFavorite:",
+        self.prevButton = self.barButton("◀ Previous", "prevItem:", 14)
+        self.nextButton = self.barButton("Next ▶", "nextItem:", 14 + BUTTON_W + 8)
+        self.favButton = self.barButton("☆ Favorite", "toggleFavorite:",
                                         14 + 2 * (BUTTON_W + 8))
+        self.tagButton = self.barButton("Tag ⌃", "toggleTagPanel:",
+                                        14 + 3 * (BUTTON_W + 8))
         bar.addSubview_(self.prevButton)
         bar.addSubview_(self.nextButton)
         bar.addSubview_(self.favButton)
+        bar.addSubview_(self.tagButton)
 
         # right-hand group, both pinned to the right edge
         self.openButton = self.barButton(
@@ -557,6 +620,7 @@ class AppDelegate(NSObject):
         content.addSubview_(bar)
 
         self.buildSidebar(content, rect)
+        self.buildTagPanel(content, rect)
 
         self.window.setContentView_(content)
         self.window.setDelegate_(self)
@@ -612,6 +676,162 @@ class AppDelegate(NSObject):
         self.sidebar.addSubview_(scroll)
         content.addSubview_(self.sidebar)
 
+    # -- the tag panel ---------------------------------------------------
+
+    @objc.python_method
+    def buildTagPanel(self, content, rect):
+        """A drawer that slides up out of the control bar.
+
+        Non-modal on purpose: a modal sheet freezes every other control, and
+        its run loop mode stops the progress timer, so a long edit quietly
+        loses the position of whatever is playing.
+        """
+        self.tagPanelOpen = False
+        self.tagTargets = []
+        self.heldAdvance = False
+        self.wasPlaying = False
+
+        self.tagPanel = NSVisualEffectView.alloc().initWithFrame_(
+            NSMakeRect(0, -TAG_PANEL_H, rect.size.width, TAG_PANEL_H))
+        self.tagPanel.setMaterial_(VIBRANCY_SIDEBAR)
+        self.tagPanel.setState_(VIBRANCY_ACTIVE)
+        self.tagPanel.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
+
+        width = rect.size.width
+        self.tagSubject = self.label(
+            NSMakeRect(14, TAG_PANEL_H - 24, width - 28, 16), 11, 0, dim=True)
+        self.tagSubject.setAutoresizingMask_(NSViewWidthSizable)
+
+        self.tagField = NSTokenField.alloc().initWithFrame_(
+            NSMakeRect(14, TAG_PANEL_H - 56, width - 28, 26))
+        self.tagField.setAutoresizingMask_(NSViewWidthSizable)
+        self.tagField.setTokenizingCharacterSet_(
+            NSCharacterSet.characterSetWithCharactersInString_(","))
+        self.tagField.setDelegate_(self)
+
+        self.tagCaption = self.label(
+            NSMakeRect(14, TAG_PANEL_H - 76, width - 28, 14), 11, 0, dim=True)
+        self.tagCaption.setStringValue_("Tags you already use")
+        self.tagCaption.setAutoresizingMask_(NSViewWidthSizable)
+
+        self.chipRow = NSView.alloc().initWithFrame_(
+            NSMakeRect(14, TAG_PANEL_H - 98, width - 28, CHIP_H))
+        self.chipRow.setAutoresizingMask_(NSViewWidthSizable)
+
+        self.tagSave = self.barButton("Save", "saveTagPanel:", width - 14 - BUTTON_W)
+        self.tagSave.setFrameOrigin_((width - 14 - BUTTON_W, 10))
+        self.tagSave.setAutoresizingMask_(NSViewMinXMargin)
+        cancel = self.barButton("Cancel", "closeTagPanel:",
+                                width - 22 - 2 * BUTTON_W)
+        cancel.setFrameOrigin_((width - 22 - 2 * BUTTON_W, 10))
+        cancel.setAutoresizingMask_(NSViewMinXMargin)
+        cancel.setKeyEquivalent_("\033")          # Escape backs out
+
+        for view in [self.tagSubject, self.tagField, self.tagCaption,
+                     self.chipRow, self.tagSave, cancel]:
+            self.tagPanel.addSubview_(view)
+        content.addSubview_(self.tagPanel)
+
+    @objc.python_method
+    def tagPanelFrame(self):
+        content = self.window.contentView().frame()
+        # Stop short of the playlist drawer rather than sliding underneath it
+        width = content.size.width - (SIDEBAR_W if self.sidebarOpen else 0)
+        y = BAR_HEIGHT if self.tagPanelOpen else -TAG_PANEL_H
+        return NSMakeRect(0, y, width, TAG_PANEL_H)
+
+    def toggleTagPanel_(self, sender):
+        if self.tagPanelOpen:
+            return self.closeTagPanel_(sender)
+        paths = self.selectedPaths()
+        if not paths:
+            return self.say("Nothing to tag", "Play a video first, or pick rows "
+                                              "in the playlist.")
+        # Pinned to what was playing when it opened: the video can move on
+        # underneath a non-modal panel, and Save must land where you meant it.
+        self.tagTargets = paths
+        if len(paths) == 1:
+            self.tagSubject.setStringValue_(os.path.basename(paths[0]))
+            self.tagField.setObjectValue_(list(self.tagsFor(paths[0])))
+            self.tagSave.setTitle_("Save")
+        else:
+            self.tagSubject.setStringValue_(
+                "%d videos — tags are added, nothing is removed" % len(paths))
+            self.tagField.setObjectValue_([])
+            self.tagSave.setTitle_("Add Tags")
+        # Hold the video still while you label it. Anything that was already
+        # paused stays paused, so closing never starts something unbidden.
+        self.wasPlaying = self.player.rate() != 0
+        if self.wasPlaying:
+            self.player.pause()
+        self.fillSuggestions()
+        self.slideTagPanel(True)
+        self.window.makeFirstResponder_(self.tagField)
+
+    def closeTagPanel_(self, sender):
+        self.slideTagPanel(False)
+        self.tagTargets = []
+        self.window.makeFirstResponder_(self.playerView)
+        resume, self.wasPlaying = self.wasPlaying, False
+        if self.heldAdvance:
+            # You set it playing again from the on-screen controls and it ran
+            # to the end while the panel was up. Move on now instead.
+            self.heldAdvance = False
+            nxt = self.followOn()
+            if nxt is not None:
+                return self.playIndex(nxt)
+        elif resume:
+            self.player.play()
+
+    def saveTagPanel_(self, sender):
+        names = parse_tags(", ".join(str(t) for t in self.tagField.objectValue() or []))
+        self.applyTags(self.tagTargets, names)
+        self.closeTagPanel_(sender)
+        self.tagsChanged()
+
+    @objc.python_method
+    def applyTags(self, paths, names):
+        if len(paths) == 1:
+            # One video: the field is the whole truth, so a tag removed from
+            # it is removed from the video.
+            self.setTagsFor(paths[0], names)
+            return
+        # Several: only ever add. Replacing would wipe tags the others had.
+        for name in names:
+            for path in paths:
+                if not self.hasTag(path, name):
+                    self.setTagsFor(path, self.tagsFor(path) + [name])
+
+    @objc.python_method
+    def slideTagPanel(self, open_):
+        self.tagPanelOpen = open_
+        self.tagButton.setTitle_("Tag ⌄" if open_ else "Tag ⌃")
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.currentContext().setDuration_(SIDEBAR_SLIDE)
+        self.tagPanel.animator().setFrame_(self.tagPanelFrame())
+        NSAnimationContext.endGrouping()
+
+    @objc.python_method
+    def fillSuggestions(self):
+        """Chips for tags already in use, most-used first, laid out to fit."""
+        for old in list(self.chipRow.subviews()):
+            old.removeFromSuperview()
+        already = [str(t).lower() for t in self.tagField.objectValue() or []]
+        self.suggestButtons = []
+        width = self.chipRow.frame().size.width
+        x = 0
+        for name in self.popularTags():
+            if name.lower() in already:
+                continue
+            chip = self.suggestionChip(name)
+            chipWidth = chip.frame().size.width + CHIP_PAD
+            if x and x + chipWidth > width:
+                break                     # one row; the rest are reachable by typing
+            chip.setFrame_(NSMakeRect(x, 0, chipWidth, CHIP_H))
+            self.chipRow.addSubview_(chip)
+            x += chipWidth + 5
+        self.tagCaption.setHidden_(not self.chipRow.subviews())
+
     # -- the playlist drawer ---------------------------------------------
 
     @objc.python_method
@@ -628,6 +848,8 @@ class AppDelegate(NSObject):
         NSAnimationContext.beginGrouping()
         NSAnimationContext.currentContext().setDuration_(SIDEBAR_SLIDE)
         self.sidebar.animator().setFrame_(self.sidebarFrame())
+        # The tag panel stops at the drawer's edge, so it moves with it
+        self.tagPanel.animator().setFrame_(self.tagPanelFrame())
         NSAnimationContext.endGrouping()
         if self.sidebarOpen:
             self.revealCurrentRow()
@@ -640,12 +862,13 @@ class AppDelegate(NSObject):
         # The favorites window shares this delegate and lays itself out
         if notification.object().isEqual_(self.window):
             self.sidebar.setFrame_(self.sidebarFrame())
+            self.tagPanel.setFrame_(self.tagPanelFrame())
 
     def tableViewSelectionDidChange_(self, notification):
         # Ignore selection we set ourselves while following playback, otherwise
         # every track change would re-trigger itself.
         table = notification.object()
-        if self.syncing or self.isFavTable(table) or self.isTagTable(table):
+        if self.syncing or self.isTagTable(table):
             return
         if self.table.numberOfSelectedRows() == 1:
             self.jumpToRow(self.table.selectedRow())
@@ -720,13 +943,7 @@ class AppDelegate(NSObject):
 
     # -- table plumbing, shared with the favorites window ----------------
 
-    @objc.python_method
-    def isFavTable(self, view):
-        return self.favTable is not None and view.isEqual_(self.favTable)
-
     def numberOfRowsInTableView_(self, tableView):
-        if self.isFavTable(tableView):
-            return len(self.favorites)
         if self.isTagTable(tableView):
             return len(self.tagRows)
         return len(self.rows)
@@ -738,20 +955,24 @@ class AppDelegate(NSObject):
         return self.isPlainRow(tableView, row) is not None
 
     def tableView_heightOfRow_(self, tableView, row):
-        return ROW_H if self.isPlainRow(tableView, row) is not None else GROUP_H
+        index = self.isPlainRow(tableView, row)
+        if index is None:
+            return GROUP_H
+        if self.isTagTable(tableView):
+            return ROW_H
+        # Only a tagged video pays for the second line; the rest stay dense.
+        return TAG_ROW_H if self.tagsFor(self.playlist[index]) else ROW_H
 
     @objc.python_method
     def isPlainRow(self, tableView, row):
         """The playlist index for a selectable row, or None for a heading."""
-        if self.isFavTable(tableView) or self.isTagTable(tableView):
-            return row                    # those lists are all plain rows
+        if self.isTagTable(tableView):
+            return row                    # the manager is all plain rows
         if not 0 <= row < len(self.rows):
             return None
         return self.rows[row][0]
 
     def tableView_viewForTableColumn_row_(self, tableView, column, row):
-        if self.isFavTable(tableView):
-            return self.favoriteRow(tableView, row)
         if self.isTagTable(tableView):
             return self.tagManagerRow(tableView, row)
         if not 0 <= row < len(self.rows):
@@ -788,16 +1009,19 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def buildVideoRow(self):
-        view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, SIDEBAR_W, ROW_H))
-        name = self.label(NSMakeRect(8, 1, SIDEBAR_W - DURATION_W - 40, ROW_H - 2),
+        view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, SIDEBAR_W, TAG_ROW_H))
+        name = self.label(NSMakeRect(8, 0, SIDEBAR_W - DURATION_W - 40, ROW_H - 2),
                           12, NAME_TAG)
-        name.setAutoresizingMask_(NSViewWidthSizable)
+        name.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
         length = self.label(
-            NSMakeRect(SIDEBAR_W - DURATION_W - 24, 1, DURATION_W, ROW_H - 2),
+            NSMakeRect(SIDEBAR_W - DURATION_W - 24, 0, DURATION_W, ROW_H - 2),
             11, TIME_TAG, align=ALIGN_RIGHT, dim=True)
-        length.setAutoresizingMask_(NSViewMinXMargin)
+        length.setAutoresizingMask_(NSViewMinXMargin | NSViewMinYMargin)
+        chips = ChipHolder.alloc().initWithFrame_(
+            NSMakeRect(8, 2, SIDEBAR_W - 30, CHIP_H))
         view.addSubview_(name)
         view.addSubview_(length)
+        view.addSubview_(chips)
         return view
 
     @objc.python_method
@@ -805,10 +1029,47 @@ class AppDelegate(NSObject):
         view = self.reuse(tableView, "video", self.buildVideoRow)
         path = self.playlist[index]
         view.viewWithTag_(NAME_TAG).setStringValue_(
-            ("★  " if path in self.favorites else "") + name)
+            ("★  " if self.isFavorite(path) else "") + name)
         seconds = self.durations.get(path)
         view.viewWithTag_(TIME_TAG).setStringValue_(clock(seconds) if seconds else "")
+        self.fillChips(view, self.tagsFor(path))
         return view
+
+    @objc.python_method
+    def fillChips(self, view, names):
+        """Lay a row's tags out as chips. Rows are reused, so start clean."""
+        chips = view.viewWithTag_(CHIPS_TAG)
+        for old in list(chips.subviews()):
+            old.removeFromSuperview()
+        tall = view.frame().size.height >= TAG_ROW_H
+        # The name sits on the upper line only when there are chips below it
+        view.viewWithTag_(NAME_TAG).setFrameOrigin_(
+            (8, view.frame().size.height - ROW_H + 1 if tall else 1))
+        view.viewWithTag_(TIME_TAG).setFrameOrigin_(
+            (view.viewWithTag_(TIME_TAG).frame().origin.x,
+             view.frame().size.height - ROW_H + 1 if tall else 1))
+        if not names or not tall:
+            return
+        x = 0
+        for chip in [self.chip(n) for n in names]:
+            width = chip.frame().size.width
+            if x and x + width > chips.frame().size.width:
+                break                       # a narrow drawer shows what fits
+            chip.setFrameOrigin_((x, 0))
+            chips.addSubview_(chip)
+            x += width + 4
+
+    @objc.python_method
+    def chip(self, name):
+        field = self.label(NSMakeRect(0, 0, 10, CHIP_H), 10, 0, dim=True)
+        field.setStringValue_(" %s " % name)
+        field.setDrawsBackground_(True)
+        field.setBackgroundColor_(NSColor.quaternaryLabelColor())
+        field.sizeToFit()
+        field.setWantsLayer_(True)
+        field.layer().setCornerRadius_(CHIP_H / 2.0)
+        field.layer().setMasksToBounds_(True)
+        return field
 
     @objc.python_method
     def buildHeadingRow(self):
@@ -866,8 +1127,6 @@ class AppDelegate(NSObject):
         finally:
             self.syncing = False
         self.revealCurrentRow()
-        if self.favTable is not None:
-            self.favTable.reloadData()
 
     # -- choosing what to play -------------------------------------------
 
@@ -917,8 +1176,6 @@ class AppDelegate(NSObject):
         if not self.session.get("path"):
             return None
         mode = self.session.get("mode")
-        if mode == "favorites":
-            return "Favorites" if self.favorites else None
         if mode == "tag":
             tag = self.session.get("tag")
             return "“%s”" % tag if tag and self.taggedWith(tag) else None
@@ -933,7 +1190,7 @@ class AppDelegate(NSObject):
         positions shift; keeping titles and actions together avoids matching
         on button index.
         """
-        live = [p for p in self.favorites if os.path.isfile(p)]
+        live = [p for p in self.favoriteList() if os.path.isfile(p)]
         choices = []
         # Only worth offering at startup — mid-playback the last session is
         # whatever is already on screen.
@@ -984,8 +1241,6 @@ class AppDelegate(NSObject):
         session, self.session = self.session, {}
         # One attempt only: if that folder has gone, the dialog comes back
         # without a Resume button rather than offering it over and over.
-        if session.get("mode") == "favorites":
-            return self.startFavorites(session.get("path"))
         if session.get("mode") == "tag":
             return self.startTag(session.get("tag"), session.get("path"))
         self.openFolder(session.get("root"), session.get("path"))
@@ -1035,15 +1290,7 @@ class AppDelegate(NSObject):
         self.startPlaylist(live, "tag", None, resume)
 
     def playFavorites_(self, sender):
-        self.startFavorites()
-
-    @objc.python_method
-    def startFavorites(self, resume=None):
-        live = [p for p in self.favorites if os.path.isfile(p)]
-        if not live:
-            return self.say("No favorites yet.",
-                            "Press ⌘⇧D while a video is playing to add it.")
-        self.startPlaylist(live, "favorites", None, resume)
+        self.startTag(FAVORITE_TAG)
 
     @objc.python_method
     def startPlaylist(self, items, mode, root=None, resume=None):
@@ -1104,6 +1351,11 @@ class AppDelegate(NSObject):
         self.updateUI()
 
     def itemDidFinish_(self, notification):
+        if self.tagPanelOpen:
+            # Hold here rather than moving on under an open tag panel: you are
+            # looking at this video because you are labelling it.
+            self.heldAdvance = True
+            return self.player.pause()
         nxt = self.followOn()
         if nxt is None:
             return self.player.pause()      # Play Once, and that was the last
@@ -1443,7 +1695,8 @@ open "$APP"
     def rebuildTagsMenu(self):
         """Every known tag, ticked when the playing video carries it."""
         self.tagsMenu.removeAllItems()
-        self.add(self.tagsMenu, "Edit Tags…", "editTags:", "t", NSEventModifierFlagCommand)
+        self.add(self.tagsMenu, "Edit Tags…", "toggleTagPanel:", "t",
+                 NSEventModifierFlagCommand)
 
         known = self.knownTags()
         self.tagItems = []
@@ -1476,35 +1729,34 @@ open "$APP"
                 STATE_ON if playing and self.hasTag(playing, str(item.representedObject()))
                 else STATE_OFF)
 
-    def editTags_(self, sender):
-        paths = self.selectedPaths()
-        if not paths:
-            return self.say("Nothing to tag", "Play a video first, or pick rows "
-                                              "in the playlist.")
-        if len(paths) == 1:
-            # One video: show what it has and let the field be the truth, so
-            # clearing the box removes its tags.
-            typed = self.askText(
-                "Tags for %s" % os.path.basename(paths[0]),
-                "Separate tags with commas. Clearing the box removes them all.",
-                ", ".join(self.tagsFor(paths[0])))
-            if typed is None:
-                return
-            self.setTagsFor(paths[0], parse_tags(typed))
-        else:
-            # Several: adding is the only safe reading, since replacing would
-            # silently wipe tags the others had and this one did not.
-            typed = self.askText(
-                "Tag %d videos" % len(paths),
-                "Separate tags with commas. These are added to whatever each "
-                "video already has.", "")
-            if typed is None:
-                return
-            for name in parse_tags(typed):
-                for path in paths:
-                    if not self.hasTag(path, name):
-                        self.setTagsFor(path, self.tagsFor(path) + [name])
-        self.tagsChanged()
+    @objc.python_method
+    def suggestionChip(self, name):
+        button = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, CHIP_H))
+        button.setTitle_(name)
+        button.setBezelStyle_(BEZEL_INLINE)
+        button.setFont_(NSFont.systemFontOfSize_(11))
+        button.setTarget_(self)
+        button.setAction_("addSuggestedTag:")
+        button.sizeToFit()
+        return button
+
+    def addSuggestedTag_(self, sender):
+        name = str(sender.title())
+        current = [str(t) for t in self.tagField.objectValue() or []]
+        if not any(n.lower() == name.lower() for n in current):
+            self.tagField.setObjectValue_(current + [name])
+        sender.setEnabled_(False)         # it is in the field now
+
+    @objc.python_method
+    def popularTags(self):
+        """Most-used first, so the chips stay useful once there are dozens."""
+        return sorted(self.knownTags(),
+                      key=lambda n: (-len(self.taggedWith(n)), n.lower()))[:SUGGEST_MAX]
+
+    def tokenField_completionsForSubstring_indexOfToken_indexOfSelectedItem_(
+            self, field, substring, index, selected):
+        needle = str(substring).lower()
+        return [n for n in self.knownTags() if n.lower().startswith(needle)]
 
     def toggleTag_(self, sender):
         path = self.currentPath()
@@ -1584,6 +1836,17 @@ open "$APP"
         self.refreshTagManager()
         self.tagWindow.makeKeyAndOrderFront_(None)
 
+    def windowWillClose_(self, notification):
+        closing = notification.object()
+        if self.tagWindow is not None and closing.isEqual_(self.tagWindow):
+            # Drop the table first: every shared table callback keys off it
+            self.tagTable = None
+            self.tagWindow = None
+        elif closing.isEqual_(self.window) and self.tagWindow is not None:
+            # Otherwise closing the player leaves the app alive behind a stray
+            # utility window instead of quitting.
+            self.tagWindow.close()
+
     @objc.python_method
     def refreshTagManager(self):
         if self.tagTable is None:
@@ -1600,8 +1863,21 @@ open "$APP"
         return self.tagTable is not None and view.isEqual_(self.tagTable)
 
     @objc.python_method
+    def buildManagerRow(self):
+        view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, FAV_W, ROW_H))
+        name = self.label(NSMakeRect(8, 1, FAV_W - FAV_NOTE_W - 26, ROW_H - 2),
+                          12, NAME_TAG)
+        name.setAutoresizingMask_(NSViewWidthSizable)
+        note = self.label(NSMakeRect(FAV_W - FAV_NOTE_W - 12, 1, FAV_NOTE_W, ROW_H - 2),
+                          11, TIME_TAG, align=ALIGN_RIGHT, dim=True)
+        note.setAutoresizingMask_(NSViewMinXMargin)
+        view.addSubview_(name)
+        view.addSubview_(note)
+        return view
+
+    @objc.python_method
     def tagManagerRow(self, tableView, row):
-        view = self.reuse(tableView, "tagrow", self.buildFavoriteRow)
+        view = self.reuse(tableView, "tagrow", self.buildManagerRow)
         name = self.tagRows[row]
         paths = self.taggedWith(name)
         missing = sum(1 for p in paths if not os.path.isfile(p))
@@ -1645,11 +1921,14 @@ open "$APP"
         if name is None:
             return self.say("Nothing selected", "Pick a tag to delete first.")
         paths = self.taggedWith(name)
-        if not self.confirm(
-                "Delete the tag “%s”?" % name,
-                "It is removed from %d video%s. The videos themselves are not "
-                "touched." % (len(paths), "" if len(paths) == 1 else "s"),
-                "Delete"):
+        detail = ("It is removed from %d video%s. The videos themselves are not "
+                  "touched." % (len(paths), "" if len(paths) == 1 else "s"))
+        if name.lower() == FAVORITE_TAG.lower():
+            # This one is the ★ button's tag. Deleting it is allowed — it is a
+            # tag like any other — but it must never be a surprise.
+            detail += ("\n\nThis is the tag behind the ★ button, so every one "
+                       "of your favorites would be unstarred.")
+        if not self.confirm("Delete the tag “%s”?" % name, detail, "Delete"):
             return
         for path in paths:
             self.setTagsFor(path, [n for n in self.tagsFor(path)
@@ -1674,174 +1953,6 @@ open "$APP"
         for path in orphans:
             self.tags.pop(path, None)
         self.tagsChanged()
-
-    # -- managing favorites without playing them -------------------------
-
-    @objc.python_method
-    def missingFavorites(self):
-        return [p for p in self.favorites if not os.path.isfile(p)]
-
-    def manageFavorites_(self, sender):
-        if self.favWindow is not None:
-            self.refreshFavorites()
-            return self.favWindow.makeKeyAndOrderFront_(None)
-
-        rect = NSMakeRect(0, 0, FAV_W, FAV_H)
-        self.favWindow = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            rect, NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
-            | NSWindowStyleMaskResizable, NSBackingStoreBuffered, False)
-        self.favWindow.setTitle_("Favorites")
-        self.favWindow.setMinSize_(NSMakeSize(360, 240))
-        self.favWindow.center()
-        # Closing must not leave a dead window behind for the next open
-        self.favWindow.setReleasedWhenClosed_(False)
-        self.favWindow.setDelegate_(self)
-
-        content = NSView.alloc().initWithFrame_(rect)
-
-        self.favTable = NSTableView.alloc().initWithFrame_(
-            NSMakeRect(0, 0, FAV_W, rect.size.height - BAR_HEIGHT))
-        column = NSTableColumn.alloc().initWithIdentifier_("name")
-        column.setWidth_(FAV_W - 24)
-        self.favTable.addTableColumn_(column)
-        self.favTable.setHeaderView_(None)
-        self.favTable.setRowHeight_(ROW_H)
-        self.favTable.setUsesAlternatingRowBackgroundColors_(True)
-        self.favTable.setAllowsMultipleSelection_(True)
-        self.favTable.setDataSource_(self)
-        self.favTable.setDelegate_(self)
-
-        scroll = NSScrollView.alloc().initWithFrame_(
-            NSMakeRect(0, BAR_HEIGHT, FAV_W, rect.size.height - BAR_HEIGHT))
-        scroll.setDocumentView_(self.favTable)
-        scroll.setHasVerticalScroller_(True)
-        scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
-        content.addSubview_(scroll)
-
-        bar = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, FAV_W, BAR_HEIGHT))
-        bar.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
-        remove = self.barButton("Remove", "removeFavorites:", 14)
-        self.pruneButton = self.barButton("Remove Missing", "pruneFavorites:",
-                                          14 + BUTTON_W + 8)
-        self.pruneButton.setFrame_(NSMakeRect(14 + BUTTON_W + 8,
-                                              (BAR_HEIGHT - BUTTON_H) / 2,
-                                              BUTTON_W + 40, BUTTON_H))
-        bar.addSubview_(remove)
-        bar.addSubview_(self.pruneButton)
-        content.addSubview_(bar)
-
-        self.favWindow.setContentView_(content)
-        self.refreshFavorites()
-        self.favWindow.makeKeyAndOrderFront_(None)
-
-    def windowWillClose_(self, notification):
-        closing = notification.object()
-        if self.favWindow is not None and closing.isEqual_(self.favWindow):
-            # Drop the table first: every shared table callback keys off it
-            self.favTable = None
-            self.favWindow = None
-        elif self.tagWindow is not None and closing.isEqual_(self.tagWindow):
-            self.tagTable = None
-            self.tagWindow = None
-        elif closing.isEqual_(self.window):
-            # Otherwise closing the player would leave the app alive behind a
-            # stray utility window instead of quitting.
-            for window in [self.favWindow, self.tagWindow]:
-                if window is not None:
-                    window.close()
-
-    @objc.python_method
-    def refreshFavorites(self):
-        if self.favTable is None:
-            return
-        self.favTable.reloadData()
-        missing = len(self.missingFavorites())
-        self.pruneButton.setTitle_("Remove Missing (%d)" % missing if missing
-                                   else "Remove Missing")
-        self.pruneButton.setEnabled_(bool(missing))
-
-    @objc.python_method
-    def buildFavoriteRow(self):
-        view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, FAV_W, ROW_H))
-        name = self.label(NSMakeRect(8, 1, FAV_W - FAV_NOTE_W - 26, ROW_H - 2),
-                          12, NAME_TAG)
-        name.setAutoresizingMask_(NSViewWidthSizable)
-        note = self.label(NSMakeRect(FAV_W - FAV_NOTE_W - 12, 1, FAV_NOTE_W, ROW_H - 2),
-                          11, TIME_TAG, align=ALIGN_RIGHT, dim=True)
-        note.setAutoresizingMask_(NSViewMinXMargin)
-        view.addSubview_(name)
-        view.addSubview_(note)
-        return view
-
-    @objc.python_method
-    def favoriteRow(self, tableView, row):
-        view = self.reuse(tableView, "favorite", self.buildFavoriteRow)
-        path = self.favorites[row]
-        gone = not os.path.isfile(path)
-        view.viewWithTag_(NAME_TAG).setStringValue_(os.path.basename(path))
-        note = view.viewWithTag_(TIME_TAG)
-        note.setStringValue_("missing" if gone else
-                             os.path.basename(os.path.dirname(path)))
-        note.setTextColor_(NSColor.systemRedColor() if gone
-                           else NSColor.secondaryLabelColor())
-        return view
-
-    def removeFavorites_(self, sender):
-        rows = sorted(self.favTable.selectedRowIndexes(), reverse=True)
-        if not rows:
-            return self.say("Nothing selected",
-                            "Pick the favorites you want to remove first.")
-        for row in rows:
-            if 0 <= row < len(self.favorites):
-                del self.favorites[row]
-        self.finishFavoriteEdit()
-
-    def pruneFavorites_(self, sender):
-        missing = self.missingFavorites()
-        if not missing:
-            return
-        # This is the one that can lose real data: a NAS that happens to be
-        # offline makes every file on it look deleted.
-        if not self.confirm(
-                "Remove %d missing favorite%s?" % (len(missing),
-                                                   "" if len(missing) == 1 else "s"),
-                "These files could not be found:\n\n%s\n\nIf they live on a "
-                "network or external drive, check it is plugged in and mounted "
-                "first — an unmounted drive looks exactly like a deleted file."
-                % "\n".join(os.path.basename(p) for p in missing[:12]),
-                "Remove"):
-            return
-        gone = set(missing)
-        self.favorites = [p for p in self.favorites if p not in gone]
-        self.finishFavoriteEdit()
-
-    @objc.python_method
-    def finishFavoriteEdit(self):
-        self.saveFavorites()
-        self.refreshFavorites()
-        self.syncFavoritesQueue()
-        self.refreshRows()
-        self.updateUI()
-
-    @objc.python_method
-    def syncFavoritesQueue(self):
-        """Keep the playing queue in step when favorites mode is what's on."""
-        if self.mode != "favorites":
-            return
-        playing = self.currentPath()
-        live = [p for p in self.favorites if os.path.isfile(p)]
-        self.playlist = live
-        self.reshuffle()
-        if playing in live:
-            self.index = live.index(playing)    # untouched, so don't restart it
-            self.rebuildRows()
-        elif live:
-            self.index = min(self.index, len(live) - 1)
-            self.rebuildRows()
-            self.playIndex(self.index)
-        else:
-            self.index = 0
-            self.rebuildRows()
 
     # -- chrome ----------------------------------------------------------
 
@@ -1901,9 +2012,8 @@ open "$APP"
             self.favButton.setTitle_("☆  Favorite")
             return
 
-        starred = path in self.favorites
-        label = {"favorites": "Favorites",
-                 "tag": "“%s”" % (self.tagName or "")}.get(self.mode, "Folder")
+        starred = self.isFavorite(path)
+        label = ("“%s”" % (self.tagName or "") if self.mode == "tag" else "Folder")
         # Anything other than the plain defaults is worth saying out loud, so
         # nobody wonders why a folder is playing out of order or sounds odd.
         if self.repeat != REPEAT_ALL:

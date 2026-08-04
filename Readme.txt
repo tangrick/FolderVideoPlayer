@@ -49,7 +49,7 @@ are involved.
 -------------------------------------------------------------------------------
 
   The bar along the bottom of the window has "◀ Previous", "Next ▶",
-  "☆ Favorite", "Open New…" and "Playlist" buttons. Everything they do is
+  "☆ Favorite", "Tag", "Open New…" and "Playlist" buttons. Everything they do is
   also available from the keyboard:
 
   Left / Right arrow .......... skip back / forward 15 seconds
@@ -60,7 +60,6 @@ are involved.
   Cmd + N ..................... back to the opening menu (Open New)
   Cmd + O ..................... open a different folder directly
   File > Open Recent .......... reopen one of the last eight folders
-  File > Manage Favorites ..... tidy up the favorites list
   Cmd + T ..................... tag the current video, or a selection
   Playback menu ............... repeat / shuffle, and playback speed
   Tags menu ................... tag, filter and play by keyword
@@ -73,7 +72,7 @@ are involved.
   standard macOS video controls, so they behave exactly as you'd expect.
 
   The window title shows the current filename, your position in the
-  playlist (e.g. "14 of 455"), whether you're in Folder or Favorites mode,
+  playlist (e.g. "14 of 455"), whether you're playing a folder or a tag,
   and a ★ if the current video is a favorite.
 
 
@@ -93,11 +92,14 @@ are involved.
     - The highlight follows along on its own as playback moves from one
       video to the next, and the list scrolls to keep it in view.
     - A ★ on a row means that video is one of your favorites.
+    - A tagged video shows its tags as small chips under its name. Only
+      tagged rows take the extra line, so an untagged folder looks exactly
+      as it always did.
     - The running time sits on the right of each row. These are measured in
       the background when the folder opens, so a big folder shows up
       straight away and fills in its times a moment later.
-    - Videos in subfolders sit under a heading naming the subfolder. In
-      Favorites mode the heading names the folder each file came from,
+    - Videos in subfolders sit under a heading naming the subfolder. When
+      playing a tag the heading names the folder each file came from,
       which is often the only way to tell two same-named files apart.
 
   The box at the top filters the list as you type — useful when a folder
@@ -148,13 +150,31 @@ are involved.
 
   TAGGING
 
-  Press Cmd+T while something is playing. Type your keywords separated by
-  commas — "beach, summer 2026, family" is three tags; spaces inside a tag
-  are fine. Capitalisation doesn't matter for matching, so "Beach" and
-  "beach" are the same tag.
+  Click "Tag" in the bottom bar, or press Cmd+T, while something is playing.
+  A panel slides up out of the bar with a field for your keywords.
 
-  The box shows what the video already has, and what's in the box is what
-  the video ends up with. Delete a word to remove that tag; empty the box
+  The video pauses while the panel is open, and carries on from the same spot
+  when you close it — so the thing you're looking at is always the thing
+  you're labelling. If it was already paused, it stays paused.
+
+  Everything else keeps working while the panel is up: the playlist, the
+  transport controls, the menus. It doesn't lock the app the way a normal
+  dialog does.
+
+  Tags in that field are chips rather than plain text. Type a word and press
+  comma or return and it becomes a chip with its own little x; as you type,
+  it offers tags you've used before, so you pick the existing one instead of
+  typing a near-miss. Spaces inside a tag are fine — "summer 2026" is one
+  tag. Capitalisation doesn't matter for matching, so "Beach" and "beach"
+  are the same tag.
+
+  Underneath the field sit the tags you use most, as buttons. Clicking one
+  drops it straight into the field, no typing at all. This is the easiest
+  way to keep a set of tags tidy — every time you click rather than type,
+  you can't accidentally invent "holidays" alongside "holiday".
+
+  The field shows what the video already has, and what's in it is what the
+  video ends up with. Click a chip's x to remove that tag; empty the field
   to remove them all.
 
   To tag a batch, open the playlist (Cmd+L), click the first video, then
@@ -200,112 +220,6 @@ are involved.
   Tags live in this file, well away from the app:
 
       ~/Library/Application Support/FolderVideoPlayer/tags.json
-
-
--------------------------------------------------------------------------------
- MANAGING FAVORITES
--------------------------------------------------------------------------------
-
-  File > Manage Favorites… opens a list of everything you've starred,
-  without playing any of it. Each row shows the filename and the folder it
-  came from.
-
-  Select any number of rows and click "Remove" to drop them.
-
-  Favorites are stored as full file paths, so renaming or moving a video
-  orphans its entry — the file is still there, but the player can no longer
-  find it. Those rows are marked "missing" in red, and "Remove Missing (n)"
-  clears them all out in one go.
-
-  Removing missing favorites is deliberately something you have to ask for,
-  and the player never does it on its own. A network share or an external
-  drive that simply isn't mounted makes every file on it look deleted, and
-  pruning at that moment would throw away favorites that are perfectly
-  fine. Plug the drive in first, then tidy up.
-
-
--------------------------------------------------------------------------------
- PICKING UP WHERE YOU LEFT OFF
--------------------------------------------------------------------------------
-
-  Every video remembers how far into it you got. Come back to it — later in
-  the same sitting, or days later after a restart — and it carries on from
-  there instead of starting again.
-
-  The app also remembers the last thing you were watching. Open it and the
-  first button in the dialog is "Resume <folder>", which reopens that folder,
-  jumps to the video you were on, and drops you back in at the right moment.
-  It is the default button, so pressing Return is enough.
-
-  Things worth knowing:
-
-    - The first 30 seconds and the last 30 seconds of a video are not
-      remembered on purpose. If you had barely started, or had all but
-      finished, starting over is the useful thing to do — and it means a
-      folder looping back around doesn't drop you at the end credits.
-
-    - Your position is saved as you watch, not only when you quit, so a
-      crash or a power cut costs half a minute at worst.
-
-    - If the folder changed while you were away, the app plays whatever is
-      there now. If the exact video you left off on is gone, it starts at
-      the top of the folder rather than complaining.
-
-    - Positions are kept for the 500 most recently watched videos. Beyond
-      that the oldest are forgotten, so the file can't grow forever.
-
-
--------------------------------------------------------------------------------
- RECENT FOLDERS
--------------------------------------------------------------------------------
-
-  File > Open Recent lists the last eight folders you played, newest first,
-  so going back to one is two clicks rather than a trip through the file
-  picker. Hovering a name shows the full path, which tells apart two folders
-  that happen to be called the same thing.
-
-  Picking a folder that has since been renamed, moved, or that lives on a
-  drive you haven't plugged in says so and drops it from the list. "Clear
-  Menu" at the bottom empties the list.
-
-
--------------------------------------------------------------------------------
- FAVORITES
--------------------------------------------------------------------------------
-
-  Click the "☆ Favorite" button in the bottom bar, or press Cmd+Shift+D,
-  while any video is playing. The star fills in (★ Favorite), a ★ appears in the
-  window title, and the Playback menu switches to "Remove from Favorites".
-  The star shows you at a glance whether whatever is playing right now is
-  already a favorite.
-
-  To play them, press Cmd+Shift+F, or click "Open New…" and pick Favorites.
-  Favorites behave exactly like a folder: they play in order, and after the
-  last one they loop back to the first.
-
-  Things worth knowing:
-
-    - Favorites can come from as many different folders as you like. They
-      all land in one flat playlist.
-
-    - The list is permanent. It survives quitting the app, restarting your
-      Mac, and even replacing the app with a newer copy — because it's
-      stored outside the app, here:
-
-          ~/Library/Application Support/FolderVideoPlayer/favorites.json
-
-    - Clicking ★ Favorite (or Cmd+Shift+D) on a video you've already
-      favorited removes it. If you do that while it's the one currently
-      playing in Favorites mode, it drops out of the queue and the next one
-      starts immediately.
-
-    - Favorites are stored as full file paths. If you later move or rename
-      a favorited video, that entry can't be found any more — it's quietly
-      skipped instead of stalling the playlist. Delete and re-add it if you
-      want it back.
-
-    - To wipe all favorites, quit the player and delete the favorites.json
-      file at the path above.
 
 
 -------------------------------------------------------------------------------

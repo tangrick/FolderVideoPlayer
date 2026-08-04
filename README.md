@@ -27,8 +27,8 @@ system ones.
   whole selection at once, then filter by them or play everything carrying a
   tag as one queue across folders.
 - **Favorites.** Star anything while it's playing. Favorites can span any
-  number of folders and play as one looping list, and **File → Manage
-  Favorites…** prunes them without playing anything.
+  number of folders and play as one looping list. A favorite is just a video
+  tagged `Favorite`, so it lives alongside your other tags.
 - **Playlist drawer.** Slides in from the right, highlights what's playing.
   Click a row, or arrow up and down it, to jump straight to that video. Rows
   show a ★ and a running time, subfolders get headings, and the filter box at
@@ -38,9 +38,9 @@ system ones.
 
 Everything the app remembers lives in
 `~/Library/Application Support/FolderVideoPlayer/`, outside the app bundle, so
-replacing the app never loses it: `favorites.json` for the starred list,
-`tags.json` for tags, and `state.json` for recent folders, resume positions
-and the last session.
+replacing the app never loses it: `tags.json` for tags and favorites, and
+`state.json` for recent folders, resume positions and the last session.
+`favorites.json` is only read once, to migrate an older version's stars.
 
 ## Controls
 
@@ -99,8 +99,8 @@ them whenever they are not the plain defaults.
 
 `⌘L` slides it in. Each row shows a ★ if the video is a favorite and its
 running time on the right. Videos in subfolders sit under a heading naming
-the subfolder, and in Favorites mode the heading is the folder each file came
-from. The filter box at the top narrows the list as you type, matching on
+the subfolder, and when playing a tag the heading is the folder each file
+came from. The filter box at the top narrows the list as you type, matching on
 filename; headings with nothing left under them disappear with their files.
 
 Running times are measured in the background when a folder opens, so the list
@@ -109,14 +109,30 @@ cached between launches.
 
 ## Tags
 
-`⌘T` tags whatever is playing. Type keywords separated by commas; the box
-shows what the video already has, and it is the whole truth, so deleting a
-word removes that tag and emptying the box removes them all.
+The **Tag** button in the control bar, or `⌘T`, slides a panel up over the
+bottom of the video. Tags are chips, not text: type and a comma or return
+completes one, each carries its own delete button, and typing completes
+against tags you already use. Underneath, the tags you use most sit as
+one-click chips, which is what stops `holiday` and `holidays` drifting apart
+in the first place.
+
+The video pauses while the panel is open and picks up where it left off when
+you close it — so what you are looking at is always what you are labelling.
+Anything already paused stays paused. The panel is not modal: the playlist,
+the transport controls and the menus all keep working, and the resume-position
+timer keeps running.
+
+For one video the field shows what it already has and is the whole truth —
+delete a chip to remove that tag, clear the field to remove them all.
 
 Select several rows in the playlist drawer and `⌘T` tags them together. That
-case *adds* rather than replaces — replacing would silently wipe tags the
-other videos had and this one didn't. Selecting a range never disturbs
-playback; only a selection of exactly one row jumps the player to it.
+case *adds* rather than replaces, and the sheet says so: replacing would
+silently wipe tags the other videos had and this one didn't. Selecting a
+range never disturbs playback; only a selection of exactly one row jumps the
+player to it.
+
+Tagged videos show their tags as chips under the filename in the drawer.
+Only tagged rows grow the extra line — everything else stays dense.
 
 The **Tags** menu lists every tag you have used, ticked when the playing
 video carries it, so clicking one is the quick way to tag without a dialog.
@@ -134,17 +150,25 @@ moving a video orphans its tags. The manager flags those and **Clear
 Missing** removes them — deliberately manual, for the same reason as
 favorites: an unmounted drive makes every file on it look deleted.
 
-## Managing favorites
+## Favorites are a tag
 
-**File → Manage Favorites…** lists them without playing anything. Select and
-**Remove**, or use **Remove Missing** to clear out entries whose file has been
-deleted or renamed — favorites are stored as full paths, so moving a file
-orphans its entry.
+`⌘⇧D` and the ★ button work exactly as they always have — one keystroke, a
+star in the window title, `⌘⇧F` to play them all. Underneath, starring a
+video now tags it `Favorite` rather than keeping a second list, so there is
+one store, one manager, and one place missing files get cleaned up.
 
-Removing missing entries is deliberately manual and never happens on its own:
-a network or external drive that simply is not mounted makes every file on it
-look deleted, and pruning then would throw away favorites that are perfectly
-fine. Check the drive is mounted before using it.
+Everything else follows from that: favorites show up in the drawer's filter,
+under **Tags → Play Tag**, and as a row in **Manage Tags** with a count.
+
+Upgrading from an older version migrates `favorites.json` into the tag
+automatically on first launch — no prompt, nothing to do. A starred video
+that lives on a drive you haven't plugged in migrates too; it is a favorite
+whether or not the file can be seen right now. The old `favorites.json` is
+left exactly where it is rather than deleted, so nothing is lost and an
+older build still reads it.
+
+Deleting the `Favorite` tag in Manage Tags is allowed — it is a tag like any
+other — but the confirmation says plainly that it will unstar everything.
 
 ## Updating
 
