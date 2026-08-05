@@ -6,14 +6,21 @@ that has no Python installed at all.
 
 from setuptools import setup
 
-# Keep this in step with the git tag: release vN.M must ship version "N.M",
-# otherwise Check for Updates compares mismatched numbering and never fires.
+# Keep this in step with the git tag: release vN.M.P must ship version
+# "N.M.P", otherwise Check for Updates compares mismatched numbering and
+# never fires. The number must only ever go up — the update check asks
+# whether the release is greater than what is installed, so renumbering
+# downwards would strand every existing copy for good.
+#
+#   bug fix or tweak  ->  bump the last part
+#   new feature       ->  bump the middle, reset the last to 0
+#   breaking change   ->  bump the first
 PLIST = {
     "CFBundleName": "FolderVideoPlayer",
     "CFBundleDisplayName": "FolderVideoPlayer",
     "CFBundleIdentifier": "local.foldervideoplayer",
-    "CFBundleShortVersionString": "1.8",
-    "CFBundleVersion": "1.8",
+    "CFBundleShortVersionString": "1.9.0",
+    "CFBundleVersion": "1.9.0",
     "NSHumanReadableCopyright": "",
     "LSMinimumSystemVersion": "10.15",
     "NSHighResolutionCapable": True,
