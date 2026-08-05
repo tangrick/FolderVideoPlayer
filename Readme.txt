@@ -20,23 +20,21 @@ are involved.
 
   1. Double-click "FolderVideoPlayer.app"
 
-  2. A dialog asks what you want to play:
+  2. It opens straight into playing whatever you were watching last time —
+     same folder, same video, same moment. No dialog, nothing to click.
 
-         Resume Holiday     carry on from the folder, video and moment
-                            you last quit on — press Return to take it
-         Choose Folder…     pick any folder and start playing it
-         Favorites (28)     play everything you've starred
-         Quit
+  3. The very first time, there's nothing to carry on with, so you get an
+     empty window that says "Open a folder to start playing". Press Cmd+O,
+     or click "Open New…" in the bottom bar, and pick one.
 
-     "Resume" only appears once you have played something; the first time
-     you open the app, it isn't there.
-
-  3. That's it — playback starts on its own and never stops.
+  If the folder you were watching has been renamed or moved, or lives on a
+  drive that isn't plugged in, the app doesn't nag about it — it just waits
+  with that same empty window.
 
   To switch to a different folder, or over to your favorites, click
-  "Open New…" in the bottom bar (or press Cmd+N). That brings this same
-  menu back without restarting the app — this time with a Cancel button, so
-  changing your mind leaves whatever is playing alone.
+  "Open New…" in the bottom bar (or press Cmd+N). That offers whatever you
+  were last watching, a folder picker, and your favorites — with a Cancel
+  button, so changing your mind leaves whatever is playing alone.
 
   To quit: Cmd+Q, or close the window.
 
@@ -95,9 +93,14 @@ are involved.
     - A tagged video shows its tags as small chips under its name. Only
       tagged rows take the extra line, so an untagged folder looks exactly
       as it always did.
-    - The running time sits on the right of each row. These are measured in
-      the background when the folder opens, so a big folder shows up
-      straight away and fills in its times a moment later.
+    - The running time sits on the right of each row.
+    - Each row shows a small still from the video, taken a little way in
+      rather than at the very start, since opening frames are so often
+      black. View > Show Thumbnails turns them off if you'd rather have a
+      denser list — the rows shrink back and the space is reclaimed.
+    - Times and stills are both worked out in the background when the
+      folder opens, so a big folder appears straight away and fills itself
+      in a moment later.
     - Videos in subfolders sit under a heading naming the subfolder. When
       playing a tag the heading names the folder each file came from,
       which is often the only way to tell two same-named files apart.

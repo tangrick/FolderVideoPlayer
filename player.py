@@ -26,6 +26,7 @@ except ImportError:
 
 import objc
 from AVFoundation import (
+    AVAssetImageGenerator,
     AVPlayer,
     AVPlayerItem,
     AVPlayerItemDidPlayToEndTimeNotification,
@@ -52,11 +53,13 @@ from Cocoa import (
     NSMakeRect,
     NSMakeSize,
     NSImage,
+    NSImageView,
     NSMenu,
     NSMenuItem,
     NSNotificationCenter,
     NSObject,
     NSOpenPanel,
+    NSPopUpButton,
     NSCharacterSet,
     NSScrollView,
     NSSearchField,
@@ -119,7 +122,11 @@ ORDER_NAMES = {value: title for title, value in ORDERS}
 SPEEDS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 NORMAL_SPEED = 1.0
 
-CONTROLS_FLOATING = 1
+# 2, not 1. AVPlayerViewControlsStyleInline is 1 and is also the default, so
+# the old value quietly asked for inline controls glued to the bottom edge of
+# the video — right where this app puts its own bar — instead of the floating
+# HUD that appears wherever the pointer is.
+CONTROLS_FLOATING = 2         # AVPlayerViewControlsStyleFloating
 BAR_HEIGHT = 48
 # 96 rather than a roomier width so a fourth button fits on the left at the
 # 680pt minimum window size, instead of making everyone's window bigger.
@@ -129,8 +136,12 @@ SIDEBAR_SLIDE = 0.22          # seconds
 FILTER_H = 24
 ROW_H, GROUP_H = 22, 20
 DURATION_W = 52
-NAME_TAG, TIME_TAG, CHIPS_TAG = 1, 2, 3
+NAME_TAG, TIME_TAG, CHIPS_TAG, THUMB_TAG = 1, 2, 3, 4
+THUMB_W, THUMB_H = 64, 36     # 16:9, generated at twice this for retina
+THUMB_ROW_H = 44              # a row carrying a poster frame
+IMAGE_SCALE_FIT = 3           # NSImageScaleProportionallyUpOrDown
 DURATION_BATCH = 25           # rows to measure between table refreshes
+THUMB_BATCH = 4               # ...and when each row also costs a decoded frame
 FAV_W, FAV_H = 460, 420
 FAV_NOTE_W = 130
 
@@ -148,6 +159,7 @@ FIRST_BUTTON = 1000
 STATE_ON, STATE_OFF = 1, 0    # NSControlStateValue
 BEZEL_INLINE = 15             # NSBezelStyleInline — the small pill look
 ALIGN_RIGHT = 2               # NSTextAlignmentRight
+ALIGN_CENTER = 1              # NSTextAlignmentCenter
 NS_TRUNCATE_TAIL = 4          # NSLineBreakByTruncatingTail
 
 RIGHT_ARROW = chr(0xF703)
@@ -261,6 +273,7 @@ class AppDelegate(NSObject):
         self.rows = []                # what the sidebar actually shows
         self.filterText = ""
         self.durations = {}
+        self.thumbs = {}
         self.durationGen = 0
         self.tagName = None           # which tag is playing, in tag mode
         self.tagWindow = None
@@ -278,7 +291,9 @@ class AppDelegate(NSObject):
         self.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             PROGRESS_TICK, self, "recordProgress:", None, True)
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
-        self.performSelector_withObject_afterDelay_("showOpeningChoice", None, 0.1)
+        # No dialog on the way in. If there is something to carry on with, it
+        # just carries on; if not, the window says what to do and waits.
+        self.performSelector_withObject_afterDelay_("resumeLastSession", None, 0.1)
 
     def applicationShouldTerminateAfterLastWindowClosed_(self, sender):
         return True
@@ -423,6 +438,7 @@ class AppDelegate(NSObject):
         if self.speed not in SPEEDS:
             self.speed = NORMAL_SPEED
         self.migrated = bool(state.get("favoritesMigrated"))
+        self.showThumbs = state.get("thumbnails") is not False
 
     @objc.python_method
     def saveState(self):
@@ -438,6 +454,7 @@ class AppDelegate(NSObject):
             "repeat": self.repeat,
             "speed": self.speed,
             "favoritesMigrated": self.migrated,
+            "thumbnails": self.showThumbs,
         })
 
     @objc.python_method
@@ -546,6 +563,8 @@ class AppDelegate(NSObject):
         view = self.menu(bar, "View")
         self.listItem = self.add(view, "Show Playlist", "togglePlaylist:", "l",
                                  NSEventModifierFlagCommand)
+        self.thumbItem = self.add(view, "Show Thumbnails", "toggleThumbnails:")
+        self.thumbItem.setState_(STATE_ON if self.showThumbs else STATE_OFF)
 
         window = self.menu(bar, "Window")
         window.addItemWithTitle_action_keyEquivalent_("Minimize", "performMiniaturize:", "m")
@@ -574,6 +593,9 @@ class AppDelegate(NSObject):
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             rect, style, NSBackingStoreBuffered, False)
         self.window.setCollectionBehavior_(NSWindowCollectionBehaviorFullScreenPrimary)
+        # Without this the floating controls only wake on a click, not on the
+        # pointer moving across the video, which is what people expect.
+        self.window.setAcceptsMouseMovedEvents_(True)
         self.window.setFrameAutosaveName_("VideoPlayerWindow")
         # narrow enough and the left-hand buttons would run into the right-hand pair
         self.window.setMinSize_(NSMakeSize(680, 380))
@@ -618,6 +640,17 @@ class AppDelegate(NSObject):
         bar.addSubview_(self.openButton)
         bar.addSubview_(self.listButton)
         content.addSubview_(bar)
+
+        # What an empty window says, instead of a dialog demanding an answer
+        # before you have even seen the app.
+        self.emptyHint = self.label(
+            NSMakeRect(0, rect.size.height / 2 - 20, rect.size.width, 40),
+            15, 0, dim=True)
+        self.emptyHint.setAlignment_(ALIGN_CENTER)
+        self.emptyHint.setStringValue_("Open a folder to start playing   ⌘O")
+        self.emptyHint.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin
+                                            | NSViewMaxYMargin)
+        content.addSubview_(self.emptyHint)
 
         self.buildSidebar(content, rect)
         self.buildTagPanel(content, rect)
@@ -960,6 +993,8 @@ class AppDelegate(NSObject):
             return GROUP_H
         if self.isTagTable(tableView):
             return ROW_H
+        if self.showThumbs:
+            return THUMB_ROW_H            # a poster frame needs the same room either way
         # Only a tagged video pays for the second line; the rest stay dense.
         return TAG_ROW_H if self.tagsFor(self.playlist[index]) else ROW_H
 
@@ -1009,19 +1044,21 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def buildVideoRow(self):
-        view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, SIDEBAR_W, TAG_ROW_H))
+        view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, SIDEBAR_W, THUMB_ROW_H))
+        shot = NSImageView.alloc().initWithFrame_(
+            NSMakeRect(6, 4, THUMB_W, THUMB_H))
+        shot.setImageScaling_(IMAGE_SCALE_FIT)
+        shot.setTag_(THUMB_TAG)
         name = self.label(NSMakeRect(8, 0, SIDEBAR_W - DURATION_W - 40, ROW_H - 2),
                           12, NAME_TAG)
-        name.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
         length = self.label(
             NSMakeRect(SIDEBAR_W - DURATION_W - 24, 0, DURATION_W, ROW_H - 2),
             11, TIME_TAG, align=ALIGN_RIGHT, dim=True)
         length.setAutoresizingMask_(NSViewMinXMargin | NSViewMinYMargin)
         chips = ChipHolder.alloc().initWithFrame_(
             NSMakeRect(8, 2, SIDEBAR_W - 30, CHIP_H))
-        view.addSubview_(name)
-        view.addSubview_(length)
-        view.addSubview_(chips)
+        for part in [shot, name, length, chips]:
+            view.addSubview_(part)
         return view
 
     @objc.python_method
@@ -1032,6 +1069,9 @@ class AppDelegate(NSObject):
             ("★  " if self.isFavorite(path) else "") + name)
         seconds = self.durations.get(path)
         view.viewWithTag_(TIME_TAG).setStringValue_(clock(seconds) if seconds else "")
+        shot = view.viewWithTag_(THUMB_TAG)
+        shot.setHidden_(not self.showThumbs)
+        shot.setImage_(self.thumbs.get(path) if self.showThumbs else None)
         self.fillChips(view, self.tagsFor(path))
         return view
 
@@ -1041,14 +1081,24 @@ class AppDelegate(NSObject):
         chips = view.viewWithTag_(CHIPS_TAG)
         for old in list(chips.subviews()):
             old.removeFromSuperview()
-        tall = view.frame().size.height >= TAG_ROW_H
-        # The name sits on the upper line only when there are chips below it
-        view.viewWithTag_(NAME_TAG).setFrameOrigin_(
-            (8, view.frame().size.height - ROW_H + 1 if tall else 1))
-        view.viewWithTag_(TIME_TAG).setFrameOrigin_(
-            (view.viewWithTag_(TIME_TAG).frame().origin.x,
-             view.frame().size.height - ROW_H + 1 if tall else 1))
-        if not names or not tall:
+        height = view.frame().size.height
+        width = view.frame().size.width
+        left = 8
+        if self.showThumbs:
+            view.viewWithTag_(THUMB_TAG).setFrame_(
+                NSMakeRect(6, (height - THUMB_H) / 2, THUMB_W, THUMB_H))
+            left = 6 + THUMB_W + 8
+
+        # The name shares the row with its chips, so it rides the upper line
+        # when there are any and sits centred when there are not.
+        top = height - ROW_H + 1 if names else (height - ROW_H) / 2 + 1
+        name = view.viewWithTag_(NAME_TAG)
+        name.setFrame_(NSMakeRect(left, top, width - left - DURATION_W - 26,
+                                  ROW_H - 2))
+        length = view.viewWithTag_(TIME_TAG)
+        length.setFrameOrigin_((length.frame().origin.x, top))
+        chips.setFrame_(NSMakeRect(left, 3, width - left - 22, CHIP_H))
+        if not names:
             return
         x = 0
         for chip in [self.chip(n) for n in names]:
@@ -1095,19 +1145,44 @@ class AppDelegate(NSObject):
         self.durationGen += 1
         self.performSelectorInBackground_withObject_("scanDurations:", self.durationGen)
 
+    @objc.python_method
+    def wanted(self, path):
+        return path not in self.durations or (self.showThumbs
+                                              and path not in self.thumbs)
+
+    @objc.python_method
+    def posterFrame(self, asset, seconds):
+        """A frame from a little way in — opening frames are so often black."""
+        maker = AVAssetImageGenerator.assetImageGeneratorWithAsset_(asset)
+        maker.setAppliesPreferredTrackTransform_(True)
+        maker.setMaximumSize_((THUMB_W * 2, THUMB_H * 2))
+        at = min(max(seconds * 0.1, 1.0), 20.0) if seconds else 1.0
+        try:
+            image, _ = maker.copyCGImageAtTime_actualTime_error_(
+                CMTimeMakeWithSeconds(at, 600), None, None)
+        except Exception:
+            return None                   # unreadable, or no video track at all
+        return NSImage.alloc().initWithCGImage_size_(image, (0, 0)) if image else None
+
     def scanDurations_(self, generation):
         pool = NSAutoreleasePool.alloc().init()
         try:
             generation = int(generation)
-            todo = [p for p in self.playlist if p not in self.durations]
+            # One asset per file, answering both questions, rather than opening
+            # everything twice.
+            todo = [p for p in self.playlist if self.wanted(p)]
             for n, path in enumerate(todo):
                 if generation != self.durationGen:
                     return                # the playlist moved on; drop this pass
                 asset = AVURLAsset.URLAssetWithURL_options_(
                     NSURL.fileURLWithPath_(path), None)
                 seconds = CMTimeGetSeconds(asset.duration())
-                self.durations[path] = seconds if seconds == seconds and seconds > 0 else 0
-                if n % DURATION_BATCH == DURATION_BATCH - 1:
+                seconds = seconds if seconds == seconds and seconds > 0 else 0
+                self.durations[path] = seconds
+                if self.showThumbs and path not in self.thumbs:
+                    self.thumbs[path] = self.posterFrame(asset, seconds)
+                batch = THUMB_BATCH if self.showThumbs else DURATION_BATCH
+                if n % batch == batch - 1:
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
                         "durationsArrived:", None, False)
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -1117,6 +1192,14 @@ class AppDelegate(NSObject):
 
     def durationsArrived_(self, _):
         self.refreshRows()
+
+    def toggleThumbnails_(self, sender):
+        self.showThumbs = not self.showThumbs
+        self.thumbItem.setState_(STATE_ON if self.showThumbs else STATE_OFF)
+        if self.showThumbs:
+            self.loadDurations()          # collect the frames we skipped before
+        self.refreshRows()
+        self.saveState()
 
     @objc.python_method
     def refreshRows(self):
@@ -1183,14 +1266,24 @@ class AppDelegate(NSObject):
         return (os.path.basename(root) or root) if root else None
 
     @objc.python_method
-    def openingChoices(self):
+    def playableTags(self):
+        """Tags with something left to play, favorites first, then alphabetical."""
+        counts = []
+        for name in self.knownTags():
+            live = sum(1 for p in self.taggedWith(name) if os.path.isfile(p))
+            if live:
+                counts.append((name, live))
+        counts.sort(key=lambda t: (t[0].lower() != FAVORITE_TAG.lower(), t[0].lower()))
+        return counts
+
+    @objc.python_method
+    def openingChoices(self, tags=()):
         """Buttons for the opening dialog, paired with what each one does.
 
-        Neither the resume nor the favorites button always exists, so the
-        positions shift; keeping titles and actions together avoids matching
-        on button index.
+        Neither the resume nor the tag button always exists, so the positions
+        shift; keeping titles and actions together avoids matching on button
+        index.
         """
-        live = [p for p in self.favoriteList() if os.path.isfile(p)]
         choices = []
         # Only worth offering at startup — mid-playback the last session is
         # whatever is already on screen.
@@ -1198,52 +1291,62 @@ class AppDelegate(NSObject):
         if resume:
             choices.append(("Resume %s" % resume, "resume"))
         choices.append(("Choose Folder…", "folder"))
-        if live:
-            choices.append(("Favorites (%d)" % len(live), "favorites"))
-        # Backing out mid-playback must not kill the app, only at startup.
-        choices.append(("Cancel" if self.playlist else "Quit", "dismiss"))
+        if tags:
+            # One button plus a popup, rather than a button per tag: the list
+            # grows without limit and an alert's buttons do not.
+            choices.append(("Play Tag", "tag"))
+        # Always just backing out: this dialog is only ever opened on purpose,
+        # so it has no business quitting the app.
+        choices.append(("Cancel", "dismiss"))
         return choices
 
+    def resumeLastSession(self):
+        """Carry on from last time, quietly, or leave the window waiting.
+
+        Nothing is announced here. A folder that has since been renamed, or
+        sits on a drive that is not mounted, must not greet you with an error
+        the moment you open the app — the empty window already says what to do.
+        """
+        if self.sessionLabel():
+            self.resumeSession(quiet=True)
+
     def showOpeningChoice(self):
-        playing = bool(self.playlist)
+        """Only ever reached on purpose now, from Open New… or ⌘N."""
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(APP_NAME)
+        alert.setInformativeText_(
+            "Choose a folder and every video in it plays in order, then repeats.")
 
-        # At startup there is nothing behind this dialog, so a choice that ends
-        # with nothing playing — an empty folder, a drive that isn't mounted,
-        # a cancelled file picker — has to ask again rather than leave a dead
-        # window. Mid-playback there is always something to fall back to.
-        while True:
-            alert = NSAlert.alloc().init()
-            alert.setMessageText_(APP_NAME)
-            alert.setInformativeText_(
-                "Choose a folder and every video in it plays in order, then repeats.")
+        tags = self.playableTags()
+        if tags:
+            picker = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+                NSMakeRect(0, 0, 260, 25), False)
+            for name, count in tags:
+                picker.addItemWithTitle_("%s  (%d)" % (name, count))
+            picker.selectItemAtIndex_(0)      # favorites, when there are any
+            alert.setAccessoryView_(picker)
 
-            choices = self.openingChoices()
-            for title, _ in choices:
-                alert.addButtonWithTitle_(title)
+        choices = self.openingChoices(tags)
+        for title, _ in choices:
+            alert.addButtonWithTitle_(title)
 
-            choice = choices[alert.runModal() - FIRST_BUTTON][1]
-            if choice == "resume":
-                self.resumeSession()
-            elif choice == "folder":
-                self.chooseFolder_(None)
-            elif choice == "favorites":
-                self.playFavorites_(None)
-            elif not playing:
-                return NSApplication.sharedApplication().terminate_(None)
-            else:
-                return                    # Cancel, with something already on
-            if playing or self.playlist:
-                return
+        choice = choices[alert.runModal() - FIRST_BUTTON][1]
+        if choice == "resume":
+            self.resumeSession()
+        elif choice == "folder":
+            self.chooseFolder_(None)
+        elif choice == "tag":
+            self.startTag(tags[picker.indexOfSelectedItem()][0])
 
     @objc.python_method
-    def resumeSession(self):
+    def resumeSession(self, quiet=False):
         """Pick up the folder, the video and the position we left off at."""
         session, self.session = self.session, {}
-        # One attempt only: if that folder has gone, the dialog comes back
+        # One attempt only: if that folder has gone, Open New… comes back
         # without a Resume button rather than offering it over and over.
         if session.get("mode") == "tag":
-            return self.startTag(session.get("tag"), session.get("path"))
-        self.openFolder(session.get("root"), session.get("path"))
+            return self.startTag(session.get("tag"), session.get("path"), quiet)
+        self.openFolder(session.get("root"), session.get("path"), quiet)
 
     def chooseFolder_(self, sender):
         panel = NSOpenPanel.openPanel()
@@ -1257,16 +1360,20 @@ class AppDelegate(NSObject):
         self.openFolder(panel.URL().path())
 
     @objc.python_method
-    def openFolder(self, root, resume=None):
+    def openFolder(self, root, resume=None, quiet=False):
         root = str(root)
         if not os.path.isdir(root):
             self.forgetFolder(root)
+            if quiet:
+                return
             return self.say("That folder is not available.",
                             "%s could not be opened. It may have been renamed or "
                             "moved, or it may be on a drive that is not mounted "
                             "right now." % root)
         found = scan(root)
         if not found:
+            if quiet:
+                return
             return self.say("No playable videos in that folder.",
                             "Looked for %s files, including subfolders."
                             % ", ".join(sorted(VIDEO_EXT)))
@@ -1277,9 +1384,11 @@ class AppDelegate(NSObject):
         self.startTag(str(sender.representedObject()))
 
     @objc.python_method
-    def startTag(self, tag, resume=None):
+    def startTag(self, tag, resume=None, quiet=False):
         live = [p for p in self.taggedWith(tag) if os.path.isfile(p)]
         if not live:
+            if quiet:
+                return
             return self.say(
                 "Nothing to play for “%s”" % tag,
                 "Every video with that tag has been moved, renamed or deleted. "
@@ -2003,6 +2112,8 @@ open "$APP"
         self.nextButton.setEnabled_(enabled)
         self.listButton.setEnabled_(bool(self.playlist))
         self.favButton.setEnabled_(bool(self.playlist))
+        self.tagButton.setEnabled_(bool(self.playlist))
+        self.emptyHint.setHidden_(bool(self.playlist))
         self.revealCurrentRow()          # keep the highlight on what's playing
         self.syncTagsMenu()              # ...and the ticks on its tags
 

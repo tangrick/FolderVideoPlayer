@@ -14,9 +14,9 @@ system ones.
 
 - **Pick a folder → it plays.** Every video in it, in order, subfolders
   included. After the last one it wraps to the first and keeps going.
-- **Picks up where you left off.** Each video remembers how far in you got,
-  and the opening dialog offers to resume the folder and the video you quit
-  on — press Return and you are back exactly where you were.
+- **Opens straight into playing.** No dialog on the way in: it carries on
+  from the folder, video and moment you last quit on. Each video remembers
+  how far in you got.
 - **Recent folders.** **File → Open Recent** lists the last eight folders you
   played, so a folder you come back to is two clicks away.
 - **Repeat All, Repeat One, Shuffle or Play Once.** Shuffle deals the folder
@@ -33,8 +33,7 @@ system ones.
   Click a row, or arrow up and down it, to jump straight to that video. Rows
   show a ★ and a running time, subfolders get headings, and the filter box at
   the top makes a 300-file folder navigable.
-- **Open New…** returns to the opening menu to switch folders or jump to
-  favorites, without restarting.
+- **Open New…** switches folders or jumps to a tag without restarting.
 
 Everything the app remembers lives in
 `~/Library/Application Support/FolderVideoPlayer/`, outside the app bundle, so
@@ -59,6 +58,12 @@ replacing the app never loses it: `tags.json` for tags and favorites, and
 Space plays and pauses.
 
 ## Resuming
+
+Opening the app carries on where you left off — same folder, same video,
+same moment — without asking. If that folder has since been renamed, moved,
+or lives on a drive that is not mounted, the app says nothing and simply
+waits with an empty window; being met by an error before you have even seen
+the app is worse than being met by nothing.
 
 A video you leave part-way through is remembered, and starts from there the
 next time you reach it — whether that is later in the same session, or after a
@@ -103,9 +108,15 @@ the subfolder, and when playing a tag the heading is the folder each file
 came from. The filter box at the top narrows the list as you type, matching on
 filename; headings with nothing left under them disappear with their files.
 
-Running times are measured in the background when a folder opens, so the list
-appears immediately and fills in its numbers a moment later. They are not
-cached between launches.
+Each row also carries a poster frame, grabbed a little way into the video
+because opening frames are so often black. **View → Show Thumbnails** turns
+them off — they make every row taller, which is a fair trade only if you want
+them. With them off, rows go back to being dense and only a tagged video pays
+for a second line.
+
+Running times and frames are both produced in the background when a folder
+opens, in one pass that opens each file once, so the list appears immediately
+and fills in a moment later. Neither is cached between launches.
 
 ## Tags
 
