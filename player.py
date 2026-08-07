@@ -2023,6 +2023,8 @@ open "$APP"
         self.tagsMenu.addItem_(NSMenuItem.separatorItem())
         self.add(self.tagsMenu, "Manage Tags…", "manageTags:")
         self.add(self.tagsMenu, "Publish Tags to Share", "publishTagsNow:")
+        self.tagNameItem = self.add(self.tagsMenu, "Tagging As…", "changePerson:")
+        self.syncPersonItem()
 
     @objc.python_method
     def syncTagsMenu(self):
@@ -2090,6 +2092,41 @@ open "$APP"
     def orphanedTags(self):
         """Tagged videos that are no longer where we left them."""
         return [key for key in self.tags if not os.path.isfile(tag_path(key))]
+
+    @objc.python_method
+    def syncPersonItem(self):
+        self.tagNameItem.setTitle_("Tagging as “%s”…" % self.person)
+
+    def changePerson_(self, sender):
+        """Show, and let you change, the name your tags are filed under.
+
+        It defaults to the macOS account name, which is fine until another
+        device asks a human for their name — because nobody types their
+        account short name when asked who they are, and the two ends then
+        never see each other's tags. Showing it is what makes them match.
+        """
+        typed = self.askText(
+            "Tagging as",
+            "Your tags are filed under this name on the share, so another "
+            "device has to use the same one to see them.\n\n"
+            "Right now they go to %s" % self.myTagFile(),
+            self.person)
+        if typed is None:
+            return
+        name = " ".join(typed.split())
+        if not name or self.slug(name) == self.slug(self.person):
+            return
+        self.person = name
+        self.syncPersonItem()
+        self.saveState()
+        self.mergeShared()
+        written, _ = self.publishTags()
+        self.say("Now tagging as “%s”" % name,
+                 "Your tags are published to %s.\n\n%s" % (
+                     self.myTagFile(),
+                     "Use this same name on your other devices."
+                     if written else
+                     "Nothing was published — no share is mounted right now."))
 
     def publishTagsNow_(self, sender):
         """Publish, and take in anything waiting from another device.
