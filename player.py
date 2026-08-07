@@ -101,6 +101,11 @@ TAGS_FILE = os.path.join(SUPPORT, "tags.json")
 # exactly as they were; underneath there is now one store instead of two.
 FAVORITE_TAG = "Favorite"
 
+# Where macOS hangs mounted shares. Stripping it is what makes a tag mean the
+# same thing on a Mac and on an Apple TV, which reaches the same NAS over SMB
+# and never sees a /Volumes at all.
+VOLUMES = "/Volumes/"
+
 # What AVFoundation can actually decode. .mkv and .avi are deliberately absent.
 VIDEO_EXT = {".mp4", ".m4v", ".mov"}
 
@@ -195,6 +200,26 @@ def load_json(path, fallback):
         return fallback
     # A file hand-edited into the wrong shape must not take the app down
     return data if isinstance(data, type(fallback)) else fallback
+
+
+@objc.python_method
+def tag_key(path):
+    """What a tagged video is filed under.
+
+    A file on a mounted share is keyed share-relative — "private/clips/a.mp4"
+    rather than "/Volumes/private/clips/a.mp4" — because that is the one form
+    a Mac and an Apple TV both arrive at for the same file. Anything else
+    keeps its absolute path, which is the honest answer: a video in your home
+    folder is not portable, and pretending otherwise would lose tags rather
+    than move them.
+    """
+    return path[len(VOLUMES):] if path.startswith(VOLUMES) else path
+
+
+@objc.python_method
+def tag_path(key):
+    """Back to something this Mac can actually open."""
+    return key if key.startswith("/") else VOLUMES + key
 
 
 @objc.python_method
@@ -370,7 +395,12 @@ class AppDelegate(NSObject):
             if isinstance(names, list):
                 clean = parse_tags(",".join(str(n) for n in names))
                 if clean:
-                    self.tags[path] = clean
+                    self.tags[tag_key(path)] = clean
+        # An older file keyed on /Volumes paths is rewritten in place. This is
+        # idempotent — a key that has already been shortened does not match
+        # again — so it needs no flag to remember it was done.
+        if self.tags != stored:
+            self.saveTags()
 
     @objc.python_method
     def saveTags(self):
@@ -378,14 +408,15 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def tagsFor(self, path):
-        return self.tags.get(path, [])
+        return self.tags.get(tag_key(path), [])
 
     @objc.python_method
     def setTagsFor(self, path, names):
+        key = tag_key(path)
         if names:
-            self.tags[path] = names
+            self.tags[key] = names
         else:
-            self.tags.pop(path, None)     # no empty lists left lying around
+            self.tags.pop(key, None)      # no empty lists left lying around
 
     @objc.python_method
     def knownTags(self):
@@ -399,7 +430,7 @@ class AppDelegate(NSObject):
     @objc.python_method
     def taggedWith(self, tag):
         wanted = tag.lower()
-        return [path for path, names in self.tags.items()
+        return [tag_path(key) for key, names in self.tags.items()
                 if any(n.lower() == wanted for n in names)]
 
     @objc.python_method
@@ -1893,7 +1924,7 @@ open "$APP"
     @objc.python_method
     def orphanedTags(self):
         """Tagged videos that are no longer where we left them."""
-        return [p for p in self.tags if not os.path.isfile(p)]
+        return [key for key in self.tags if not os.path.isfile(tag_path(key))]
 
     def manageTags_(self, sender):
         if self.tagWindow is not None:

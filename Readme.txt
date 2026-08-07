@@ -224,6 +224,14 @@ are involved.
 
       ~/Library/Application Support/FolderVideoPlayer/tags.json
 
+  Videos on a mounted share are filed under a short name — "private/clips/
+  a.mp4" rather than "/Volumes/private/clips/a.mp4". That is the same name
+  any other machine reaching the same share would come up with for the same
+  file, which is what lets a tag mean something on more than one device.
+  Videos outside a share keep their full path, since those genuinely aren't
+  portable. An older tags file is quietly converted the first time it's
+  opened; there is nothing to do.
+
 
 -------------------------------------------------------------------------------
  UPDATING

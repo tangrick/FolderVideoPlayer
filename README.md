@@ -161,6 +161,15 @@ moving a video orphans its tags. The manager flags those and **Clear
 Missing** removes them — deliberately manual, for the same reason as
 favorites: an unmounted drive makes every file on it look deleted.
 
+A video on a mounted share is keyed **share-relative** — `private/clips/a.mp4`
+rather than `/Volumes/private/clips/a.mp4` — because that is the one form
+every machine reaching the same NAS arrives at for the same file, whether it
+mounts the share or talks SMB directly. Anything outside a share keeps its
+absolute path, which is the honest answer: a video in your home folder is not
+portable, and pretending otherwise would lose tags rather than move them. An
+older `tags.json` full of `/Volumes` paths is rewritten in place the first
+time it is read.
+
 ## Favorites are a tag
 
 `⌘⇧D` and the ★ button work exactly as they always have — one keystroke, a
