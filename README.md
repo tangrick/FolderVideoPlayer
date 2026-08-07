@@ -172,8 +172,34 @@ time it is read.
 
 ### Tags on the share
 
-Whenever tags change, each share carrying tagged videos gets its own copy at
-`.FolderVideoPlayer/tags.json`, relative to the share root:
+Whenever tags change, each share carrying tagged videos gets a copy, filed
+under who made them and which machine wrote them:
+
+```
+.FolderVideoPlayer/richard/tags-macbook.json
+                          /tags-appletv.json
+```
+
+**Person**, so several people sharing a NAS never overwrite each other.
+**Device**, because one person with a Mac and an Apple TV is still two
+writers, and two writers on one file is how tags get quietly lost — whoever
+saves last wins and the other's work vanishes with no error.
+
+A folder for the person rather than a longer filename: names are flattened to
+letters, digits and dashes, so `tags-richard-*` would also match
+`tags-richard-tang-macbook`, and Richard would silently swallow Richard Tang's
+library. A directory boundary cannot be ambiguous that way.
+
+Your name defaults to your macOS account name and is only a default — an Apple
+TV has no account name to borrow, and renaming a Mac account should not orphan
+a library.
+
+**A name on a folder organises tags. It does not hide them:** anyone who can
+read the share can read all of it. If you need tags actually private from
+other people on the NAS, that is separate shares with separate logins, set up
+on the NAS itself.
+
+The file inside is keyed from the share root:
 
 ```json
 { "Richard/clips/a.mp4": ["Beach", "Favorite"] }
@@ -187,9 +213,11 @@ Publishing is silent — a NAS asleep or mounted read-only is a normal Tuesday,
 not something worth a dialog. **Tags → Publish Tags to Share** does the same
 thing and reports what happened, which is the way to check it is working.
 
-This is a one-way export: the Mac is the source of truth and other devices
-read. Two Macs both writing would need conflict handling that does not exist
-yet.
+Tags made on your other devices are taken in at launch and whenever you
+publish. Only your own are read — another person's are none of our business,
+and folding them in would put words in their mouth. A file newer than the last
+merge wins the videos it names, per video rather than per tag: coarser, but a
+rule you can hold in your head.
 
 ## Favorites are a tag
 

@@ -11,10 +11,13 @@ ones.
 
 import json
 import os
+import fnmatch
+import getpass
 import random
 import re
 import ssl
 import subprocess
+import uuid
 import tempfile
 import urllib.error
 import urllib.request
@@ -106,9 +109,28 @@ FAVORITE_TAG = "Favorite"
 # and never sees a /Volumes at all.
 VOLUMES = "/Volumes/"
 
-# Where a share keeps its own copy of the tags, for other devices to read.
-# scan() skips dot-directories, so this never turns up as media.
-SHARE_TAGS = os.path.join(".FolderVideoPlayer", "tags.json")
+# Where a share keeps its copies of the tags, for other devices to read.
+# scan() skips dot-directories, so none of this turns up as media.
+SHARE_DIR = ".FolderVideoPlayer"
+LEGACY_TAGS = os.path.join(SHARE_DIR, "tags.json")
+
+# Each person gets a folder and each of their devices a file inside it:
+#
+#     .FolderVideoPlayer/richard/tags-macbook.json
+#                               /tags-appletv.json
+#
+# Person, so several people sharing a NAS never overwrite each other. Device,
+# because one person with a Mac and an Apple TV is still two writers, and two
+# writers on one file is how tags get quietly lost.
+#
+# A folder rather than a longer filename, because names get flattened to
+# alphanumerics and dashes — so "tags-richard-*" would also match
+# "tags-richard-tang-macbook", and Richard would quietly swallow Richard
+# Tang's library. A directory boundary cannot be ambiguous that way.
+#
+# Putting a name on a folder organises tags. It does not hide them: anyone who
+# can read the share can read all of it.
+DEVICE_TAGS = "tags-%s.json"
 
 # What AVFoundation can actually decode. .mkv and .avi are deliberately absent.
 VIDEO_EXT = {".mp4", ".m4v", ".mov"}
@@ -312,6 +334,7 @@ class AppDelegate(NSObject):
         self.loadTags()
         self.loadState()
         self.migrateFavorites()
+        self.mergeShared()            # anything tagged on another device
 
         self.setDockIcon()
         self.buildMenu()
@@ -442,8 +465,23 @@ class AppDelegate(NSObject):
         return by_share
 
     @objc.python_method
+    def slug(self, text):
+        """A filename-safe form of a name, so a person called "Anne Marie"
+        and one called "anne-marie" cannot end up as two people."""
+        clean = "".join(c if c.isalnum() else "-" for c in text.lower())
+        return "-".join(part for part in clean.split("-") if part) or "unknown"
+
+    @objc.python_method
+    def myTagFolder(self):
+        return os.path.join(SHARE_DIR, self.slug(self.person))
+
+    @objc.python_method
+    def myTagFile(self):
+        return os.path.join(self.myTagFolder(), DEVICE_TAGS % self.slug(self.device))
+
+    @objc.python_method
     def publishTags(self):
-        """Leave a copy of the tags on each share. Returns what happened.
+        """Leave this device's tags on each share. Returns what happened.
 
         Silent by design: a NAS asleep, unplugged, or mounted read-only is a
         normal Tuesday, not something to interrupt anyone about.
@@ -455,11 +493,83 @@ class AppDelegate(NSObject):
                 skipped.append((share, "not mounted"))
                 continue
             try:
-                save_json(os.path.join(root, SHARE_TAGS), entries)
+                save_json(os.path.join(root, self.myTagFile()), entries)
                 written.append((share, len(entries)))
+                self.retireLegacy(root)
             except OSError as err:
                 skipped.append((share, err.strerror or "could not be written"))
         return written, skipped
+
+    @objc.python_method
+    def retireLegacy(self, root):
+        """Drop the old un-owned tags.json once this person has a folder.
+
+        It has to go rather than linger: it belongs to nobody, so every person
+        on the share would keep reading it and see tags that are not theirs.
+        Only ever removed straight after its contents have been written into
+        the person's own file, so nothing is lost by it.
+        """
+        legacy = os.path.join(root, LEGACY_TAGS)
+        if os.path.exists(legacy) and os.path.exists(os.path.join(root, self.myTagFile())):
+            try:
+                os.remove(legacy)
+            except OSError:
+                pass                      # read-only share; harmless to leave
+
+    @objc.python_method
+    def mergeShared(self):
+        """Take in tags this person made on their other devices.
+
+        Only this person's files are read. Another person's tags are none of
+        our business, and merging them would put words in their mouth.
+
+        A file newer than our last merge wins for the videos it names. Coarse
+        — per video, not per tag — but it is a rule you can hold in your head,
+        and the alternative needs bookkeeping this does not have.
+        """
+        newest = self.lastMerge
+        adopted = 0
+        mine = os.path.basename(self.myTagFile())
+        for share in sorted(self.shareTags()) or self.mountedShares():
+            folder = os.path.join(VOLUMES, share, self.myTagFolder())
+            if not os.path.isdir(folder):
+                continue
+            for name in sorted(os.listdir(folder)):
+                if name == mine or not fnmatch.fnmatch(name, DEVICE_TAGS % "*"):
+                    continue
+                path = os.path.join(folder, name)
+                try:
+                    changed = os.path.getmtime(path)
+                except OSError:
+                    continue
+                if changed <= self.lastMerge:
+                    continue              # already taken in, on an earlier run
+                newest = max(newest, changed)
+                for rest, names in (load_json(path, {}) or {}).items():
+                    if not isinstance(names, list):
+                        continue
+                    clean = parse_tags(",".join(str(n) for n in names))
+                    key = "%s/%s" % (share, rest)
+                    # An empty list is a real statement — "that device says no
+                    # tags" — so it removes rather than being ignored.
+                    if clean:
+                        self.tags[key] = clean
+                    else:
+                        self.tags.pop(key, None)
+                    adopted += 1
+        if adopted:
+            self.lastMerge = newest
+            self.saveTags()
+            self.saveState()
+        return adopted
+
+    @objc.python_method
+    def mountedShares(self):
+        try:
+            return sorted(n for n in os.listdir(VOLUMES)
+                          if os.path.isdir(os.path.join(VOLUMES, n)))
+        except OSError:
+            return []
 
     @objc.python_method
     def knownTags(self):
@@ -512,6 +622,13 @@ class AppDelegate(NSObject):
         if self.speed not in SPEEDS:
             self.speed = NORMAL_SPEED
         self.migrated = bool(state.get("favoritesMigrated"))
+        # Whose tags these are. The account name is only a default — it is a
+        # setting because an Apple TV has no account name to borrow, and
+        # renaming a Mac account should not orphan a library.
+        self.person = str(state.get("person") or getpass.getuser())
+        # And which machine wrote them, so this Mac never fights its own TV.
+        self.device = str(state.get("device") or uuid.uuid4().hex[:8])
+        self.lastMerge = state.get("lastMerge") or 0
         self.showThumbs = state.get("thumbnails") is not False
 
     @objc.python_method
@@ -528,6 +645,9 @@ class AppDelegate(NSObject):
             "repeat": self.repeat,
             "speed": self.speed,
             "favoritesMigrated": self.migrated,
+            "person": self.person,
+            "device": self.device,
+            "lastMerge": self.lastMerge,
             "thumbnails": self.showThumbs,
         })
 
@@ -1972,23 +2092,33 @@ open "$APP"
         return [key for key in self.tags if not os.path.isfile(tag_path(key))]
 
     def publishTagsNow_(self, sender):
-        """The same publish that happens on every edit, but it reports back.
+        """Publish, and take in anything waiting from another device.
+
+        The automatic version is deliberately silent, so without this there is
+        no way to find out whether any of it is reaching the share.
 
         Worth having: the automatic one is deliberately silent, so without
         this there is no way to find out whether it is reaching the share.
         """
+        adopted = self.mergeShared()
         written, skipped = self.publishTags()
+        if adopted:
+            self.refreshRows()
+            self.rebuildTagsMenu()
         if not written and not skipped:
             return self.say("Nothing to publish",
                             "None of your tagged videos are on a shared volume, "
                             "so there is nothing another device could read.")
         lines = ["%s — %d video%s" % (s, n, "" if n == 1 else "s")
                  for s, n in written]
+        if adopted:
+            lines.append("took in %d video%s tagged on another device"
+                         % (adopted, "" if adopted == 1 else "s"))
         lines += ["%s — %s" % (s, why) for s, why in skipped]
         detail = "\n".join(lines)
         if written:
-            detail += ("\n\nEach one now carries %s, which another device on "
-                       "the same share can read." % SHARE_TAGS)
+            detail += ("\n\nEach one now carries %s, which your other devices "
+                       "on the same share can read." % self.myTagFile())
         self.say("Tags published" if written else "Could not publish tags", detail)
 
     def manageTags_(self, sender):
