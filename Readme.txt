@@ -232,6 +232,20 @@ are involved.
   portable. An older tags file is quietly converted the first time it's
   opened; there is nothing to do.
 
+  Every time your tags change, a copy is also left on the share itself:
+
+      <the share>/.FolderVideoPlayer/tags.json
+
+  That's what lets another device on the same share — an Apple TV, say —
+  see the tags you made on your Mac. The folder starts with a dot, so it
+  never shows up as a video folder.
+
+  If the share is asleep, unplugged or read-only, the copy is simply
+  skipped without complaint. Tags > Publish Tags to Share does the same job
+  and tells you what it found, which is how to check it's working.
+
+  This goes one way for now: your Mac writes, other devices read.
+
 
 -------------------------------------------------------------------------------
  UPDATING

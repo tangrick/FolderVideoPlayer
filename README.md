@@ -170,6 +170,27 @@ portable, and pretending otherwise would lose tags rather than move them. An
 older `tags.json` full of `/Volumes` paths is rewritten in place the first
 time it is read.
 
+### Tags on the share
+
+Whenever tags change, each share carrying tagged videos gets its own copy at
+`.FolderVideoPlayer/tags.json`, relative to the share root:
+
+```json
+{ "Richard/clips/a.mp4": ["Beach", "Favorite"] }
+```
+
+The share name is dropped, because a device talking SMB sees
+`Richard/clips/a.mp4` and has no idea what some Mac called the mount point.
+The folder starts with a dot, so the app's own scanner never sees it as media.
+
+Publishing is silent — a NAS asleep or mounted read-only is a normal Tuesday,
+not something worth a dialog. **Tags → Publish Tags to Share** does the same
+thing and reports what happened, which is the way to check it is working.
+
+This is a one-way export: the Mac is the source of truth and other devices
+read. Two Macs both writing would need conflict handling that does not exist
+yet.
+
 ## Favorites are a tag
 
 `⌘⇧D` and the ★ button work exactly as they always have — one keystroke, a

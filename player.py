@@ -106,6 +106,10 @@ FAVORITE_TAG = "Favorite"
 # and never sees a /Volumes at all.
 VOLUMES = "/Volumes/"
 
+# Where a share keeps its own copy of the tags, for other devices to read.
+# scan() skips dot-directories, so this never turns up as media.
+SHARE_TAGS = os.path.join(".FolderVideoPlayer", "tags.json")
+
 # What AVFoundation can actually decode. .mkv and .avi are deliberately absent.
 VIDEO_EXT = {".mp4", ".m4v", ".mov"}
 
@@ -326,6 +330,7 @@ class AppDelegate(NSObject):
     def applicationWillTerminate_(self, notification):
         self.notePosition()
         self.saveState()
+        self.publishTags()                # in case a share came back late
         self.timer.invalidate()
         self.durationGen += 1         # tell any duration scan to give up
         self.detachItem()
@@ -417,6 +422,44 @@ class AppDelegate(NSObject):
             self.tags[key] = names
         else:
             self.tags.pop(key, None)      # no empty lists left lying around
+
+    @objc.python_method
+    def shareTags(self):
+        """The tags split by the share they live on, keyed from the share root.
+
+        A device talking SMB sees "Richard/video/a.mp4" and has no idea what
+        some Mac decided to call the mount point, so the share's own copy
+        drops the share name. Local paths are left out entirely — they mean
+        nothing anywhere else.
+        """
+        by_share = {}
+        for key, names in self.tags.items():
+            if key.startswith("/"):
+                continue                  # a local file, portable nowhere
+            share, _, rest = key.partition("/")
+            if rest:
+                by_share.setdefault(share, {})[rest] = names
+        return by_share
+
+    @objc.python_method
+    def publishTags(self):
+        """Leave a copy of the tags on each share. Returns what happened.
+
+        Silent by design: a NAS asleep, unplugged, or mounted read-only is a
+        normal Tuesday, not something to interrupt anyone about.
+        """
+        written, skipped = [], []
+        for share, entries in sorted(self.shareTags().items()):
+            root = os.path.join(VOLUMES, share)
+            if not os.path.isdir(root):
+                skipped.append((share, "not mounted"))
+                continue
+            try:
+                save_json(os.path.join(root, SHARE_TAGS), entries)
+                written.append((share, len(entries)))
+            except OSError as err:
+                skipped.append((share, err.strerror or "could not be written"))
+        return written, skipped
 
     @objc.python_method
     def knownTags(self):
@@ -1859,6 +1902,7 @@ open "$APP"
 
         self.tagsMenu.addItem_(NSMenuItem.separatorItem())
         self.add(self.tagsMenu, "Manage Tags…", "manageTags:")
+        self.add(self.tagsMenu, "Publish Tags to Share", "publishTagsNow:")
 
     @objc.python_method
     def syncTagsMenu(self):
@@ -1913,6 +1957,7 @@ open "$APP"
     @objc.python_method
     def tagsChanged(self):
         self.saveTags()
+        self.publishTags()                # best effort; failure is not an event
         self.rebuildTagsMenu()
         self.refreshTagManager()
         # A tag is part of what the filter matches, so the rows can change
@@ -1925,6 +1970,26 @@ open "$APP"
     def orphanedTags(self):
         """Tagged videos that are no longer where we left them."""
         return [key for key in self.tags if not os.path.isfile(tag_path(key))]
+
+    def publishTagsNow_(self, sender):
+        """The same publish that happens on every edit, but it reports back.
+
+        Worth having: the automatic one is deliberately silent, so without
+        this there is no way to find out whether it is reaching the share.
+        """
+        written, skipped = self.publishTags()
+        if not written and not skipped:
+            return self.say("Nothing to publish",
+                            "None of your tagged videos are on a shared volume, "
+                            "so there is nothing another device could read.")
+        lines = ["%s — %d video%s" % (s, n, "" if n == 1 else "s")
+                 for s, n in written]
+        lines += ["%s — %s" % (s, why) for s, why in skipped]
+        detail = "\n".join(lines)
+        if written:
+            detail += ("\n\nEach one now carries %s, which another device on "
+                       "the same share can read." % SHARE_TAGS)
+        self.say("Tags published" if written else "Could not publish tags", detail)
 
     def manageTags_(self, sender):
         if self.tagWindow is not None:
