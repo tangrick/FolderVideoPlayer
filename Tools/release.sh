@@ -36,6 +36,24 @@ PROFILE="${NOTARY_PROFILE:-FolderVideoPlayer}"
 NOTARIZE=1
 [ "${1:-}" = "--no-notarize" ] && NOTARIZE=0
 
+# notarytool exits 0 for a submission Apple rejected, so the status has to be
+# read. Without this the run carries on to stapling and dies there with
+# "Error 65", which says nothing about what was actually wrong.
+notarize () {
+    local out id status
+    echo "==> Notarizing $(basename "$1") (a few minutes)"
+    out=$(xcrun notarytool submit "$1" --keychain-profile "$PROFILE" --wait 2>&1)
+    echo "$out"
+    status=$(echo "$out" | awk '/^  *status: /{print $2; exit}')
+    if [ "$status" != "Accepted" ]; then
+        id=$(echo "$out" | awk '/^  *id: /{print $2; exit}')
+        echo >&2
+        echo "Notarization failed (status: ${status:-unknown}). Apple's reasons:" >&2
+        [ -n "$id" ] && xcrun notarytool log "$id" --keychain-profile "$PROFILE" >&2
+        exit 1
+    fi
+}
+
 VERSION=$(sed -n 's/.*"CFBundleShortVersionString": "\([^"]*\)".*/\1/p' setup.py)
 echo "==> FolderVideoPlayer $VERSION"
 
@@ -79,9 +97,31 @@ fi
 # and the nested binaries you sign afterwards invalidate the signature you
 # just made. --deep would do this in one go but is deprecated and applies the
 # app's entitlements to everything, which is not what is wanted here.
-echo "==> Signing $(find "$APP" \( -name "*.so" -o -name "*.dylib" \) | wc -l | tr -d ' ') nested binaries"
-find "$APP" \( -name "*.so" -o -name "*.dylib" \) -print0 |
-    xargs -0 -n1 codesign "${SIGN[@]}" --sign "$IDENTITY" 2>/dev/null
+#
+# Every file is asked what it is rather than judged by its name. Matching
+# *.so and *.dylib looks sufficient and is not: py2app puts a second
+# executable at Contents/MacOS/python, which has neither extension, and
+# notarization rejected the whole app over it — that one binary kept an
+# ad-hoc signature with no secure timestamp. A thousand `file` calls take a
+# couple of seconds and cannot make that mistake.
+echo "==> Finding Mach-O binaries"
+BINARIES=$(mktemp)
+find "$APP" -type f -print0 |
+    while IFS= read -r -d '' f; do
+        # No pipeline here on purpose. `file ... | grep -q` looks tidier and is
+        # wrong twice over under `set -euo pipefail`: grep returning 1 for an
+        # ordinary file aborts the whole script, and grep exiting early sends
+        # `file` a SIGPIPE that pipefail then reports as failure — silently
+        # dropping binaries that did match.
+        desc=$(file -b "$f" 2>/dev/null || true)
+        case "$desc" in
+            *Mach-O*) printf '%s\0' "$f" ;;
+        esac
+    done > "$BINARIES"
+
+echo "==> Signing $(tr -dc '\0' < "$BINARIES" | wc -c | tr -d ' ') nested binaries"
+xargs -0 -n1 codesign "${SIGN[@]}" --sign "$IDENTITY" < "$BINARIES" 2>/dev/null
+rm -f "$BINARIES"
 
 for framework in "$APP"/Contents/Frameworks/*.framework; do
     [ -d "$framework" ] || continue
@@ -99,10 +139,9 @@ if [ "$NOTARIZE" = 1 ]; then
     # travels inside the app itself. Staple only the DMG and the app works
     # until somebody drags it out of the disk image onto a Mac that happens to
     # be offline, which is a miserable thing to discover later.
-    echo "==> Notarizing the app (a few minutes)"
     rm -f dist/app.zip
     ditto -c -k --keepParent "$APP" dist/app.zip
-    xcrun notarytool submit dist/app.zip --keychain-profile "$PROFILE" --wait
+    notarize dist/app.zip
     xcrun stapler staple "$APP"
     rm -f dist/app.zip
 fi
@@ -117,9 +156,8 @@ hdiutil create -volname "FolderVideoPlayer" -srcfolder dist/dmg \
                -ov -format UDZO -fs HFS+ "$DMG" >/dev/null
 
 if [ "$NOTARIZE" = 1 ]; then
-    echo "==> Notarizing the DMG"
     codesign --force --timestamp --sign "$IDENTITY" "$DMG"
-    xcrun notarytool submit "$DMG" --keychain-profile "$PROFILE" --wait
+    notarize "$DMG"
     xcrun stapler staple "$DMG"
     echo
     echo "Done. $DMG is notarized — it opens with no warning on any Mac."
