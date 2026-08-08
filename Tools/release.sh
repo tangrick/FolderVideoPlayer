@@ -124,7 +124,14 @@ if [ "$NOTARIZE" = 1 ]; then
     echo
     echo "Done. $DMG is notarized — it opens with no warning on any Mac."
     spctl -a -t open --context context:primary-signature -v "$DMG" || true
-else
+elif [ "$IDENTITY" = "-" ]; then
     echo
     echo "Done. $DMG is ad-hoc signed — Gatekeeper will warn on first launch."
+else
+    # Signed properly but not sent to Apple, which Gatekeeper still refuses:
+    # "Unnotarized Developer ID". Worth saying plainly, because the signature
+    # looks entirely correct and it is not obvious why the warning persists.
+    echo
+    echo "Done. $DMG is signed with a Developer ID but NOT notarized, so"
+    echo "Gatekeeper will still warn. Re-run without --no-notarize to ship it."
 fi
