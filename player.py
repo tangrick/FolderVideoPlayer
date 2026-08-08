@@ -15,6 +15,7 @@ import fnmatch
 import getpass
 import random
 import re
+import shutil
 import ssl
 import subprocess
 import uuid
@@ -327,6 +328,9 @@ class AppDelegate(NSObject):
         self.thumbs = {}
         self.durationGen = 0
         self.revealedIndex = None
+        self.nameWindow = None
+        self.nameTable = None
+        self.nameRows = []
         self.tagName = None           # which tag is playing, in tag mode
         self.tagWindow = None
         self.tagTable = None
@@ -480,6 +484,52 @@ class AppDelegate(NSObject):
     @objc.python_method
     def myTagFile(self):
         return os.path.join(self.myTagFolder(), DEVICE_TAGS % self.slug(self.device))
+
+    @objc.python_method
+    def sharePeople(self):
+        """Every name published on the mounted shares, and what stands behind it.
+
+        Read from the shares rather than remembered, because the whole point
+        of the list is to show what other devices are actually filing under —
+        including names this Mac has never used, and names left behind by a
+        device that has since been renamed.
+        """
+        found = {}
+        for share in self.mountedShares():
+            root = os.path.join(VOLUMES, share, SHARE_DIR)
+            try:
+                names = sorted(os.listdir(root))
+            except OSError:
+                continue                  # no tags on this share, or not readable
+            for name in names:
+                folder = os.path.join(root, name)
+                if name.startswith(".") or not os.path.isdir(folder):
+                    continue
+                entry = found.setdefault(name, {
+                    "name": name, "shares": [], "devices": 0,
+                    "videos": set(), "changed": 0})
+                entry["shares"].append(share)
+                try:
+                    files = sorted(os.listdir(folder))
+                except OSError:
+                    continue
+                for leaf in files:
+                    if not fnmatch.fnmatch(leaf, DEVICE_TAGS % "*"):
+                        continue
+                    entry["devices"] += 1
+                    path = os.path.join(folder, leaf)
+                    try:
+                        entry["changed"] = max(entry["changed"],
+                                               os.path.getmtime(path))
+                    except OSError:
+                        pass
+                    for rest in (load_json(path, {}) or {}):
+                        entry["videos"].add("%s/%s" % (share, rest))
+        return [found[k] for k in sorted(found)]
+
+    @objc.python_method
+    def isMyName(self, name):
+        return self.slug(name) == self.slug(self.person)
 
     @objc.python_method
     def claimName(self):
@@ -1120,6 +1170,8 @@ class AppDelegate(NSObject):
         # Ignore selection we set ourselves while following playback, otherwise
         # every track change would re-trigger itself.
         table = notification.object()
+        if self.isNameTable(table):
+            return self.syncNameButtons()     # the buttons follow the selection
         if self.syncing or self.isTagTable(table):
             return
         if self.table.numberOfSelectedRows() == 1:
@@ -1213,6 +1265,8 @@ class AppDelegate(NSObject):
     def numberOfRowsInTableView_(self, tableView):
         if self.isTagTable(tableView):
             return len(self.tagRows)
+        if self.isNameTable(tableView):
+            return len(self.nameRows)
         return len(self.rows)
 
     def tableView_isGroupRow_(self, tableView, row):
@@ -1225,7 +1279,7 @@ class AppDelegate(NSObject):
         index = self.isPlainRow(tableView, row)
         if index is None:
             return GROUP_H
-        if self.isTagTable(tableView):
+        if self.isTagTable(tableView) or self.isNameTable(tableView):
             return ROW_H
         if self.showThumbs:
             return THUMB_ROW_H            # a poster frame needs the same room either way
@@ -1235,8 +1289,8 @@ class AppDelegate(NSObject):
     @objc.python_method
     def isPlainRow(self, tableView, row):
         """The playlist index for a selectable row, or None for a heading."""
-        if self.isTagTable(tableView):
-            return row                    # the manager is all plain rows
+        if self.isTagTable(tableView) or self.isNameTable(tableView):
+            return row                    # the managers are all plain rows
         if not 0 <= row < len(self.rows):
             return None
         return self.rows[row][0]
@@ -1244,6 +1298,8 @@ class AppDelegate(NSObject):
     def tableView_viewForTableColumn_row_(self, tableView, column, row):
         if self.isTagTable(tableView):
             return self.tagManagerRow(tableView, row)
+        if self.isNameTable(tableView):
+            return self.nameManagerRow(tableView, row)
         if not 0 <= row < len(self.rows):
             return None
         index, label = self.rows[row]
@@ -2064,6 +2120,7 @@ open "$APP"
         self.add(self.tagsMenu, "Manage Tags…", "manageTags:")
         self.add(self.tagsMenu, "Publish Tags to Share", "publishTagsNow:")
         self.tagNameItem = self.add(self.tagsMenu, "Tagging As…", "changePerson:")
+        self.add(self.tagsMenu, "Names on the Share…", "manageNames:")
         self.syncPersonItem()
 
     @objc.python_method
@@ -2264,16 +2321,176 @@ open "$APP"
         self.refreshTagManager()
         self.tagWindow.makeKeyAndOrderFront_(None)
 
+    def manageNames_(self, sender):
+        """Every name on the share, and a way to be rid of the ones you retired.
+
+        A name is easy to create and, until now, impossible to remove: a folder
+        left behind by a device that has since been renamed sits in the Apple
+        TV's list of people forever, looking like a person.
+        """
+        if self.nameWindow is not None:
+            self.refreshNameManager()
+            return self.nameWindow.makeKeyAndOrderFront_(None)
+
+        rect = NSMakeRect(0, 0, FAV_W, FAV_H)
+        self.nameWindow = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            rect, NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+            | NSWindowStyleMaskResizable, NSBackingStoreBuffered, False)
+        self.nameWindow.setTitle_("Names on the Share")
+        self.nameWindow.setMinSize_(NSMakeSize(420, 240))
+        self.nameWindow.center()
+        self.nameWindow.setReleasedWhenClosed_(False)
+        self.nameWindow.setDelegate_(self)
+
+        content = NSView.alloc().initWithFrame_(rect)
+        self.nameTable = NSTableView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, FAV_W, rect.size.height - BAR_HEIGHT))
+        column = NSTableColumn.alloc().initWithIdentifier_("name")
+        column.setWidth_(FAV_W - 24)
+        self.nameTable.addTableColumn_(column)
+        self.nameTable.setHeaderView_(None)
+        self.nameTable.setRowHeight_(ROW_H)
+        self.nameTable.setUsesAlternatingRowBackgroundColors_(True)
+        self.nameTable.setDataSource_(self)
+        self.nameTable.setDelegate_(self)
+
+        scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(0, BAR_HEIGHT, FAV_W, rect.size.height - BAR_HEIGHT))
+        scroll.setDocumentView_(self.nameTable)
+        scroll.setHasVerticalScroller_(True)
+        scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        content.addSubview_(scroll)
+
+        bar = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, FAV_W, BAR_HEIGHT))
+        bar.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
+        self.useNameButton = self.barButton("Use This", "useName:", 14)
+        bar.addSubview_(self.useNameButton)
+        self.deleteNameButton = self.barButton("Delete…", "deleteName:",
+                                               14 + BUTTON_W + 8)
+        bar.addSubview_(self.deleteNameButton)
+        bar.addSubview_(self.barButton("Refresh", "refreshNames:",
+                                       14 + 2 * (BUTTON_W + 8)))
+        content.addSubview_(bar)
+
+        self.nameWindow.setContentView_(content)
+        self.refreshNameManager()
+        self.nameWindow.makeKeyAndOrderFront_(None)
+
+    def refreshNames_(self, sender):
+        self.refreshNameManager()
+
+    @objc.python_method
+    def refreshNameManager(self):
+        if self.nameTable is None:
+            return
+        self.nameRows = self.sharePeople()
+        self.nameTable.reloadData()
+        self.syncNameButtons()
+
+    @objc.python_method
+    def syncNameButtons(self):
+        entry = self.selectedName()
+        self.useNameButton.setEnabled_(
+            entry is not None and not self.isMyName(entry["name"]))
+        self.deleteNameButton.setEnabled_(entry is not None)
+
+    @objc.python_method
+    def selectedName(self):
+        row = self.nameTable.selectedRow() if self.nameTable else -1
+        return self.nameRows[row] if 0 <= row < len(self.nameRows) else None
+
+    @objc.python_method
+    def nameManagerRow(self, tableView, row):
+        view = self.reuse(tableView, "namerow", self.buildManagerRow)
+        entry = self.nameRows[row]
+        mine = self.isMyName(entry["name"])
+        view.viewWithTag_(NAME_TAG).setStringValue_(
+            "%s%s" % (entry["name"], "  (you)" if mine else ""))
+        note = view.viewWithTag_(TIME_TAG)
+        if entry["devices"]:
+            note.setStringValue_("%d video%s · %d device%s" % (
+                len(entry["videos"]), "" if len(entry["videos"]) == 1 else "s",
+                entry["devices"], "" if entry["devices"] == 1 else "s"))
+            note.setTextColor_(NSColor.secondaryLabelColor())
+        else:
+            # Claimed but never published to: the name exists so other devices
+            # can see it, and that is worth saying rather than showing "0".
+            note.setStringValue_("name only, nothing published")
+            note.setTextColor_(NSColor.tertiaryLabelColor())
+        return view
+
+    def useName_(self, sender):
+        entry = self.selectedName()
+        if entry is None:
+            return self.say("Nothing selected", "Pick a name first.")
+        if not self.confirm(
+                "Tag as “%s” from now on?" % entry["name"],
+                "This Mac files its tags under that name, and reads the tags "
+                "every device using it has published.\n\nYour own tags are "
+                "not lost — they are republished under the new name.",
+                "Use This Name"):
+            return
+        self.person = entry["name"]
+        self.syncPersonItem()
+        self.saveState()
+        self.mergeShared()
+        self.claimName()
+        self.publishTags()
+        self.refreshRows()
+        self.rebuildTagsMenu()
+        self.refreshNameManager()
+
+    def deleteName_(self, sender):
+        entry = self.selectedName()
+        if entry is None:
+            return self.say("Nothing selected", "Pick a name to delete first.")
+        where = ", ".join(entry["shares"])
+        if entry["devices"]:
+            detail = ("Removes %d video%s' worth of tags from %s, published by "
+                      "%d device%s under that name.\n\nThe videos themselves "
+                      "are not touched, and neither are the tags held on those "
+                      "devices — any of them still using this name will "
+                      "publish it again." % (
+                          len(entry["videos"]),
+                          "" if len(entry["videos"]) == 1 else "s", where,
+                          entry["devices"], "" if entry["devices"] == 1 else "s"))
+        else:
+            detail = ("Nothing has been published under it, so this only takes "
+                      "the name off %s." % where)
+        if self.isMyName(entry["name"]):
+            detail += ("\n\nThis is the name this Mac is using, so it will "
+                       "come straight back. Change it first if you meant to "
+                       "retire it.")
+        if not self.confirm("Delete the name “%s”?" % entry["name"],
+                            detail, "Delete"):
+            return
+        failed = []
+        for share in entry["shares"]:
+            folder = os.path.join(VOLUMES, share, SHARE_DIR, entry["name"])
+            try:
+                shutil.rmtree(folder)
+            except OSError as err:
+                failed.append("%s — %s" % (share, err.strerror or "could not be removed"))
+        self.refreshNameManager()
+        if failed:
+            self.say("Some of it could not be removed", "\n".join(failed))
+
     def windowWillClose_(self, notification):
         closing = notification.object()
         if self.tagWindow is not None and closing.isEqual_(self.tagWindow):
             # Drop the table first: every shared table callback keys off it
             self.tagTable = None
             self.tagWindow = None
-        elif closing.isEqual_(self.window) and self.tagWindow is not None:
+        elif self.nameWindow is not None and closing.isEqual_(self.nameWindow):
+            self.nameTable = None
+            self.nameWindow = None
+        elif closing.isEqual_(self.window):
             # Otherwise closing the player leaves the app alive behind a stray
             # utility window instead of quitting.
-            self.tagWindow.close()
+            if self.tagWindow is not None:
+                self.tagWindow.close()
+            if self.nameWindow is not None:
+                self.nameWindow.close()
 
     @objc.python_method
     def refreshTagManager(self):
@@ -2289,6 +2506,10 @@ open "$APP"
     @objc.python_method
     def isTagTable(self, view):
         return self.tagTable is not None and view.isEqual_(self.tagTable)
+
+    @objc.python_method
+    def isNameTable(self, view):
+        return self.nameTable is not None and view.isEqual_(self.nameTable)
 
     @objc.python_method
     def buildManagerRow(self):

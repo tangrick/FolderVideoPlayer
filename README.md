@@ -152,6 +152,18 @@ across folders, in filename order, the way Favorites works. Typing a tag into
 the drawer's filter box narrows the list — the box searches names and tags
 together.
 
+**Tags → Names on the Share…** lists every name published on your mounted
+shares — including names this Mac has never used — with how many videos and
+devices stand behind each, and which one is yours. **Use This** adopts a name;
+**Delete** takes one off the share.
+
+That last one matters because a name was previously easy to create and
+impossible to remove: a folder left behind by a device that has since been
+renamed sat in the Apple TV's list of people forever, looking like a person.
+Deleting removes the published tags for that name, not the videos, and not the
+tags held on the devices themselves — any device still using the name simply
+publishes it again.
+
 **Tags → Manage Tags…** lists every tag with how many videos carry it.
 Rename one and every video updates; renaming onto an existing tag merges the
 two. Delete removes the tag from every video without touching the videos.
