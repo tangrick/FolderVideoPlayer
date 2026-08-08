@@ -326,6 +326,7 @@ class AppDelegate(NSObject):
         self.durations = {}
         self.thumbs = {}
         self.durationGen = 0
+        self.revealedIndex = None
         self.tagName = None           # which tag is playing, in tag mode
         self.tagWindow = None
         self.tagTable = None
@@ -1103,7 +1104,7 @@ class AppDelegate(NSObject):
         self.tagPanel.animator().setFrame_(self.tagPanelFrame())
         NSAnimationContext.endGrouping()
         if self.sidebarOpen:
-            self.revealCurrentRow()
+            self.revealCurrentRow(force=True)   # opening it should land on the video
             # focus the list so the arrow keys drive it straight away
             self.window.makeFirstResponder_(self.table)
         else:
@@ -1169,7 +1170,7 @@ class AppDelegate(NSObject):
                     self.rows.append((None, label))
             self.rows.append((i, name))
         self.table.reloadData()
-        self.revealCurrentRow()
+        self.revealCurrentRow(force=True)   # these are different rows now
 
     def controlTextDidChange_(self, notification):
         if not notification.object().isEqual_(self.filterField):
@@ -1178,8 +1179,22 @@ class AppDelegate(NSObject):
         self.rebuildRows()
 
     @objc.python_method
-    def revealCurrentRow(self):
-        """Highlight whatever is playing — unless the filter has hidden it."""
+    def revealCurrentRow(self, force=False):
+        """Highlight whatever is playing — unless the filter has hidden it.
+
+        Only when the playing video has actually changed. This runs from the
+        one-second timer and from every batch of durations and poster frames
+        the background scan delivers, and it replaces the whole selection —
+        so doing it unconditionally quietly undid multi-row selections a
+        second or so after they were made. Which looked like the list
+        deselecting itself, and made tagging several videos at once a race
+        against a folder scan.
+
+        `force` is for the cases that really are about the selection: opening
+        the drawer, or the filter changing what is on screen.
+        """
+        if not force and self.index == self.revealedIndex:
+            return
         row = next((r for r, (i, _) in enumerate(self.rows) if i == self.index), None)
         self.syncing = True
         try:
@@ -1189,6 +1204,7 @@ class AppDelegate(NSObject):
                 self.table.selectRowIndexes_byExtendingSelection_(
                     NSIndexSet.indexSetWithIndex_(row), False)
                 self.table.scrollRowToVisible_(row)
+            self.revealedIndex = self.index
         finally:
             self.syncing = False
 
