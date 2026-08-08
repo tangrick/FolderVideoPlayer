@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the hardened runtime, which notarization requires.
+
+  disable-library-validation is here because the bundle carries its own Python
+  and eighty-odd extension modules. The hardened runtime otherwise refuses to
+  load a library signed by anyone but the app's own team, and Python loads
+  those .so files at runtime by design. Everything in the bundle is signed by
+  the release script regardless — this permits loading them, it does not
+  permit loading anything unsigned from outside.
+
+  Deliberately absent: allow-unsigned-executable-memory and allow-jit. This
+  app does not generate code, and asking for permissions you do not use is
+  how a bundle ends up more exposed than it needs to be.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>

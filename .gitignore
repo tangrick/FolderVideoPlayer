@@ -16,3 +16,4 @@ __pycache__/
 # macOS / editor cruft
 .DS_Store
 .claude/
+build.log

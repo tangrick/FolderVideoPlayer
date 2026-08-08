@@ -260,8 +260,12 @@ meaningless and updates are never offered.
 Grab the `.dmg` from [Releases](../../releases), open it, and drag the app to
 Applications.
 
-The app is ad-hoc signed rather than notarized with a paid Apple Developer
-ID, so **the first launch is blocked by Gatekeeper**. To get past it once:
+Releases built with `Tools/release.sh` are signed with a Developer ID and
+notarized by Apple, so they open with no warning.
+
+Older releases — and any build made without a Developer ID certificate — are
+ad-hoc signed instead, and **the first launch is blocked by Gatekeeper**. To
+get past it once:
 
 1. Try to open it, dismiss the warning
 2. **System Settings → Privacy & Security**
@@ -282,23 +286,68 @@ Needs Python 3.12 from python.org at `/Library/Frameworks` — the build copies
 it into the bundle, so the finished app has no external dependency and runs on
 a Mac with no Python installed.
 
+Once, to set up the environment:
+
 ```sh
 python3 -m venv venv
 ./venv/bin/pip install py2app pyobjc-framework-AVKit pyobjc-framework-AVFoundation
-./venv/bin/python setup.py py2app
-codesign --force --deep --sign - "dist/FolderVideoPlayer.app"
 ```
 
-To package a DMG, put the app, `Readme.txt` and a symlink to `/Applications`
-in one folder and run:
+Then a release is one command — build, sign, notarize, staple, and package the
+DMG:
 
 ```sh
-hdiutil create -volname "FolderVideoPlayer" -srcfolder <that folder> \
-               -ov -format UDZO -fs HFS+ "FolderVideoPlayer.dmg"
+Tools/release.sh
 ```
 
+`Tools/release.sh --no-notarize` skips the trip to Apple and signs ad-hoc,
+which is what you want while testing a change.
+
+### Notarizing
+
+Notarization is what stops Gatekeeper warning everyone who downloads the app,
+and it needs two things set up once. Neither is in this repository and neither
+should ever be:
+
+1. A **Developer ID Application** certificate, from Xcode → Settings →
+   Accounts → Manage Certificates → **+**. This is not the same as an "Apple
+   Development" certificate, which cannot be notarized with — a paid Apple
+   Developer account is what makes the Developer ID kind available.
+
+2. An App Store Connect credential, stored under a profile name so no password
+   is ever typed into a script:
+
+   ```sh
+   xcrun notarytool store-credentials FolderVideoPlayer \
+       --apple-id you@example.com --team-id YOURTEAMID
+   ```
+
+   It asks for an app-specific password from
+   appleid.apple.com → Sign-In and Security. It goes into your keychain and
+   Apple's own tool is the only thing that reads it.
+
+Without the certificate, `Tools/release.sh` says so and stops rather than
+quietly shipping something that will warn.
+
+### What the script does that a plain codesign does not
+
+- Signs **inside out**, all eighty-odd bundled Python extension modules before
+  the app itself. Sign the app first and every nested binary you sign
+  afterwards invalidates the signature you just made. (`--deep` does this in
+  one go but is deprecated, and applies the app's entitlements to everything
+  inside it.)
+- Applies the **hardened runtime** and a secure timestamp, both of which
+  notarization requires and neither of which works with ad-hoc signing.
+- Carries `Tools/entitlements.plist`, which permits loading the bundled
+  Python's own extension modules. The hardened runtime otherwise refuses to
+  load a library signed by anyone but this app's team, and Python loads those
+  at runtime by design.
+- Notarizes and staples the **app** before building the DMG, as well as the
+  DMG itself. Staple only the DMG and the app works right up until somebody
+  drags it out onto a Mac that happens to be offline.
+
 Re-sign after changing anything inside the bundle or macOS will refuse to
-launch it.
+launch it. The script always does.
 
 ## Repository layout
 
@@ -308,3 +357,5 @@ launch it.
 | `setup.py` | py2app build recipe |
 | `icon.icns` | app icon |
 | `Readme.txt` | full end-user documentation, shipped inside the DMG |
+| `Tools/release.sh` | build, sign, notarize, staple, package |
+| `Tools/entitlements.plist` | hardened-runtime entitlements |
