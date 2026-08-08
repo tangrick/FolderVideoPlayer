@@ -329,6 +329,13 @@ should ever be:
 Without the certificate, `Tools/release.sh` says so and stops rather than
 quietly shipping something that will warn.
 
+Two rough edges Apple's tooling has, both handled: `notarytool` exits 0 for a
+submission Apple *rejected*, so the status is read and the run stops there
+with Apple's own reasons rather than limping on to a stapler error that
+explains nothing. And a submission is accepted slightly before its ticket can
+be fetched, so stapling retries instead of failing seconds from the finish
+line with all the slow work already done.
+
 ### What the script does that a plain codesign does not
 
 - Signs **inside out**, all eighty-odd bundled Python extension modules before

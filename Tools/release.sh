@@ -54,6 +54,27 @@ notarize () {
     fi
 }
 
+# Apple accepts a submission a little before the ticket is fetchable, so
+# stapling immediately afterwards can fail with "Could not find base64 encoded
+# ticket in response" — which under set -e kills the run seconds from the
+# finish line, having already done all the slow work. Waiting a few seconds and
+# asking again is the whole fix.
+staple () {
+    local tries=0
+    until xcrun stapler staple "$1"; do
+        tries=$((tries + 1))
+        if [ "$tries" -ge 6 ]; then
+            echo "Could not staple $1 after $tries attempts." >&2
+            echo "It is notarized, so it will pass Gatekeeper online; without" >&2
+            echo "the ticket it needs a network check on first open." >&2
+            exit 1
+        fi
+        echo "    ticket not ready yet, retrying in 15s ($tries/6)"
+        sleep 15
+    done
+    xcrun stapler validate "$1" >/dev/null
+}
+
 VERSION=$(sed -n 's/.*"CFBundleShortVersionString": "\([^"]*\)".*/\1/p' setup.py)
 echo "==> FolderVideoPlayer $VERSION"
 
@@ -142,7 +163,7 @@ if [ "$NOTARIZE" = 1 ]; then
     rm -f dist/app.zip
     ditto -c -k --keepParent "$APP" dist/app.zip
     notarize dist/app.zip
-    xcrun stapler staple "$APP"
+    staple "$APP"
     rm -f dist/app.zip
 fi
 
@@ -158,7 +179,7 @@ hdiutil create -volname "FolderVideoPlayer" -srcfolder dist/dmg \
 if [ "$NOTARIZE" = 1 ]; then
     codesign --force --timestamp --sign "$IDENTITY" "$DMG"
     notarize "$DMG"
-    xcrun stapler staple "$DMG"
+    staple "$DMG"
     echo
     echo "Done. $DMG is notarized — it opens with no warning on any Mac."
     spctl -a -t open --context context:primary-signature -v "$DMG" || true
