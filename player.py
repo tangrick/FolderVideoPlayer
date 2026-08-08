@@ -335,6 +335,7 @@ class AppDelegate(NSObject):
         self.loadState()
         self.migrateFavorites()
         self.mergeShared()            # anything tagged on another device
+        self.claimName()              # and say who we are, before tagging anything
 
         self.setDockIcon()
         self.buildMenu()
@@ -478,6 +479,29 @@ class AppDelegate(NSObject):
     @objc.python_method
     def myTagFile(self):
         return os.path.join(self.myTagFolder(), DEVICE_TAGS % self.slug(self.device))
+
+    @objc.python_method
+    def claimName(self):
+        """Make this person's folder exist on every mounted share.
+
+        Without this a name is invisible to your other devices until tags
+        happen to flow, because the folder is only ever created as a
+        side effect of publishing. So a machine that has been given a name but
+        has not yet tagged anything on the share does not appear in the Apple
+        TV's list of people at all — and the only symptom is an empty list,
+        which points at nothing.
+
+        An empty folder is a cheap way to say "this name exists here".
+        """
+        claimed = []
+        for share in self.mountedShares():
+            try:
+                os.makedirs(os.path.join(VOLUMES, share, self.myTagFolder()),
+                            exist_ok=True)
+                claimed.append(share)
+            except OSError:
+                continue          # read-only, or gone since we listed it
+        return claimed
 
     @objc.python_method
     def publishTags(self):
@@ -2120,13 +2144,29 @@ open "$APP"
         self.syncPersonItem()
         self.saveState()
         self.mergeShared()
-        written, _ = self.publishTags()
-        self.say("Now tagging as “%s”" % name,
-                 "Your tags are published to %s.\n\n%s" % (
-                     self.myTagFile(),
-                     "Use this same name on your other devices."
-                     if written else
-                     "Nothing was published — no share is mounted right now."))
+        claimed = self.claimName()
+        written, skipped = self.publishTags()
+
+        if written:
+            detail = ("Your tags are published to %s.\n\n"
+                      "Use this same name on your other devices."
+                      % self.myTagFile())
+        elif claimed:
+            # Nothing to publish is not the same as nothing working, and
+            # saying "no share is mounted" when a share plainly is mounted
+            # sends you off checking mounts that were never the problem.
+            detail = ("The name is reserved on %s, so your other devices can "
+                      "already see it and use it.\n\nNothing is published "
+                      "yet: %s. Tag a video that lives on the share and it "
+                      "will be." % (
+                          ", ".join(claimed),
+                          "none of your tagged videos are on a share"
+                          if not skipped else
+                          "; ".join("%s %s" % (s, why) for s, why in skipped)))
+        else:
+            detail = ("No share is mounted, so the name is only on this Mac "
+                      "for now. Mount the share and your tags will follow.")
+        self.say("Now tagging as “%s”" % name, detail)
 
     def publishTagsNow_(self, sender):
         """Publish, and take in anything waiting from another device.
