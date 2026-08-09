@@ -75,17 +75,17 @@ replacing the app never loses it: `tags.json` for tags and favorites,
 
 Space plays and pauses, and so does clicking anywhere on the picture.
 
-**Previous and Next sit on the video itself**, as faint chevrons at the left
-and right edges, and only when there is more than one video to move between.
-**View → Show Next / Previous on Video** turns them off.
+**The on-screen controls are AVKit's own**, and they cannot be added to.
+`AVPlayerView` exposes exactly one hook — a single menu button — so
+**Previous**, **Next**, **Skip Back**, **Skip Forward** and **Stop** live in
+that menu. There is no API for putting another button in that bar; tvOS has
+`transportBarCustomMenuItems` for precisely this and macOS has no equivalent.
 
-They are drawn on top rather than added to AVKit's own controls because macOS
-gives no way to add a button to an `AVPlayerView`. Its action menu is the only
-hook, and a menu is not what anybody means by a Previous button — so that menu
-keeps **Skip Back**, **Skip Forward** and **Stop**, which have no other home
-on screen, and the two that matter are real buttons. A click anywhere else on
-the picture passes straight through, so AVKit's own controls and
-click-to-pause are untouched.
+Drawing buttons on top of the video instead was tried and taken out again: it
+works, but a control floating over the picture is not the same thing as a
+control in the bar, and it is not what the bar being extensible would have
+given. The honest options are this menu, or replacing AVKit's controls
+entirely with a bar of our own.
 
 The app's own bar keeps only what AVKit has no idea about: Favorite, Tag,
 Open New and Playlist.

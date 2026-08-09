@@ -42,7 +42,6 @@ from AVKit import AVPlayerView
 from CoreMedia import CMTimeGetSeconds, CMTimeMakeWithSeconds, kCMTimeZero
 from Cocoa import (
     NSAlert,
-    NSAttributedString,
     NSAnimationContext,
     NSApplication,
     NSAutoreleasePool,
@@ -58,8 +57,6 @@ from Cocoa import (
     NSColor,
     NSFileManager,
     NSFont,
-    NSFontAttributeName,
-    NSForegroundColorAttributeName,
     NSMakeRect,
     NSMakeSize,
     NSImage,
@@ -82,7 +79,6 @@ from Cocoa import (
     NSURL,
     NSView,
     NSViewHeightSizable,
-    NSViewMaxXMargin,
     NSViewMaxYMargin,
     NSViewMinXMargin,
     NSViewMinYMargin,
@@ -200,13 +196,6 @@ FAV_NOTE_W = 130
 
 TAG_PANEL_H = 136             # the tag editor, sliding up over the video
 CHIP_H = 17
-# Previous and Next, drawn over the video
-NAV_SIZE = 44
-NAV_INSET = 12
-# The disc carries the contrast; the whole control is then dimmed a
-# little so it sits on the picture without shouting.
-NAV_ALPHA = 0.75
-NAV_DISC_ALPHA = 0.45
 CHIP_PAD = 7
 SUGGEST_MAX = 12              # tags offered as one-click chips; type for the rest
 TAG_ROW_H = 38                # a row showing its tags; untagged rows stay ROW_H
@@ -405,23 +394,6 @@ def save_json(path, data):
         except OSError:
             pass
         raise
-
-
-class VideoOverlay(NSView):
-    """A transparent layer over the video, holding Previous and Next.
-
-    macOS gives no way to add a button to an AVPlayerView's own controls — the
-    action menu is the only hook, and it is a menu, not the pair of buttons
-    anybody means when they ask for Previous and Next on screen. So these are
-    drawn on top instead.
-
-    Clicks pass straight through unless they land on a button, which is what
-    keeps AVKit's controls and click-to-pause working underneath.
-    """
-
-    def hitTest_(self, point):
-        hit = objc.super(VideoOverlay, self).hitTest_(point)
-        return None if hit is self else hit
 
 
 class ChipHolder(NSView):
@@ -1561,7 +1533,6 @@ class AppDelegate(NSObject):
         self.device = str(state.get("device") or uuid.uuid4().hex[:8])
         self.lastMerge = state.get("lastMerge") or 0
         self.showThumbs = state.get("thumbnails") is not False
-        self.showNav = state.get("navButtons") is not False
         # Where discards go on volumes with no Trash. Remembered so the
         # question is asked once, not once a session.
         saved = state.get("discardFolders")
@@ -1587,7 +1558,6 @@ class AppDelegate(NSObject):
             "device": self.device,
             "lastMerge": self.lastMerge,
             "thumbnails": self.showThumbs,
-            "navButtons": self.showNav,
             "discardFolders": {v: f for v, f in self.discardFolder.items() if f},
             "watchDupes": self.watchDupes,
             "verifyDupes": self.verifyDupes,
@@ -1716,8 +1686,6 @@ class AppDelegate(NSObject):
                                  NSEventModifierFlagCommand)
         self.thumbItem = self.add(view, "Show Thumbnails", "toggleThumbnails:")
         self.thumbItem.setState_(STATE_ON if self.showThumbs else STATE_OFF)
-        self.navItem = self.add(view, "Show Next / Previous on Video",
-                                "toggleNavButtons:")
 
         window = self.menu(bar, "Window")
         window.addItemWithTitle_action_keyEquivalent_("Minimize", "performMiniaturize:", "m")
@@ -1729,69 +1697,6 @@ class AppDelegate(NSObject):
         NSApplication.sharedApplication().setMainMenu_(bar)
 
     @objc.python_method
-    @objc.python_method
-    def buildNavButtons(self, rect):
-        """Previous and Next, over the video, at the left and right edges."""
-        video = self.playerView.frame()
-        self.navOverlay = VideoOverlay.alloc().initWithFrame_(video)
-        self.navOverlay.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
-
-        self.navPrev = self.navButton("‹", "prevItem:")
-        self.navPrev.setFrame_(NSMakeRect(NAV_INSET, (video.size.height - NAV_SIZE) / 2,
-                                          NAV_SIZE, NAV_SIZE))
-        self.navPrev.setAutoresizingMask_(NSViewMaxXMargin | NSViewMinYMargin
-                                          | NSViewMaxYMargin)
-        self.navNext = self.navButton("›", "nextItem:")
-        self.navNext.setFrame_(NSMakeRect(video.size.width - NAV_INSET - NAV_SIZE,
-                                          (video.size.height - NAV_SIZE) / 2,
-                                          NAV_SIZE, NAV_SIZE))
-        self.navNext.setAutoresizingMask_(NSViewMinXMargin | NSViewMinYMargin
-                                          | NSViewMaxYMargin)
-        self.navOverlay.addSubview_(self.navPrev)
-        self.navOverlay.addSubview_(self.navNext)
-
-    @objc.python_method
-    def navButton(self, glyph, action):
-        """A white chevron on a dark disc.
-
-        Both halves of that matter. A borderless button draws its title in the
-        default label colour, which is black in light appearance — black on a
-        dark video, at any opacity, is nothing at all. And a bare glyph with
-        no disc behind it disappears the moment the video underneath is pale,
-        so the contrast has to be carried by the control rather than borrowed
-        from whatever happens to be playing.
-        """
-        button = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, NAV_SIZE, NAV_SIZE))
-        button.setBordered_(False)
-        button.setTitle_(glyph)
-        button.setAttributedTitle_(
-            NSAttributedString.alloc().initWithString_attributes_(
-                glyph, {NSForegroundColorAttributeName: NSColor.whiteColor(),
-                        NSFontAttributeName: NSFont.systemFontOfSize_(30)}))
-        button.setWantsLayer_(True)
-        button.layer().setBackgroundColor_(
-            NSColor.colorWithCalibratedWhite_alpha_(0.0, NAV_DISC_ALPHA).CGColor())
-        button.layer().setCornerRadius_(NAV_SIZE / 2.0)
-        button.setAlphaValue_(NAV_ALPHA)
-        button.setTarget_(self)
-        button.setAction_(action)
-        return button
-
-    @objc.python_method
-    def syncNavButtons(self):
-        """Only worth showing when there is somewhere to go."""
-        wanted = self.showNav and len(self.playlist) > 1
-        if wanted and self.navOverlay.superview() is None:
-            self.playerView.superview().addSubview_(self.navOverlay)
-        elif not wanted and self.navOverlay.superview() is not None:
-            self.navOverlay.removeFromSuperview()
-        self.navItem.setState_(STATE_ON if self.showNav else STATE_OFF)
-
-    def toggleNavButtons_(self, sender):
-        self.showNav = not self.showNav
-        self.syncNavButtons()
-        self.saveState()
-
     @objc.python_method
     def buildActionMenu(self):
         """The menu button in the floating on-screen controls.
@@ -1865,7 +1770,6 @@ class AppDelegate(NSObject):
         self.player.addObserver_forKeyPath_options_context_(self, "rate", 0, None)
         self.playerView.setPlayer_(self.player)
         self.playerView.setActionPopUpButtonMenu_(self.buildActionMenu())
-        self.buildNavButtons(rect)
         # A click on the picture plays or pauses. AVKit's own controls take
         # the clicks that land on them, so this only fires on the video.
         click = NSClickGestureRecognizer.alloc().initWithTarget_action_(
@@ -3792,7 +3696,6 @@ open "$APP"
         self.favButton.setEnabled_(bool(self.playlist))
         self.tagButton.setEnabled_(bool(self.playlist))
         self.emptyHint.setHidden_(bool(self.playlist))
-        self.syncNavButtons()
         self.revealCurrentRow()          # keep the highlight on what's playing
         self.syncTagsMenu()              # ...and the ticks on its tags
 
