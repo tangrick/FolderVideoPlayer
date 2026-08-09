@@ -53,6 +53,7 @@ from Cocoa import (
     NSColor,
     NSFileManager,
     NSFont,
+    NSMakePoint,
     NSMakeRect,
     NSMakeSize,
     NSImage,
@@ -202,12 +203,22 @@ IMAGE_SCALE_FIT = 3           # NSImageScaleProportionallyUpOrDown
 DURATION_BATCH = 25           # rows to measure between table refreshes
 THUMB_BATCH = 4               # ...and when each row also costs a decoded frame
 FAV_W, FAV_H = 460, 420
-DUPE_W, DUPE_H = 720, 560
+DUPE_W, DUPE_H = 780, 560
 DUPE_ROW_H = 22
+DUPE_DECIDE_W = 110           # the right-hand column: "why kept", or the Trash box
 KEEP_TAG = 5
+TRASH_TAG = 6
 RADIO_BUTTON = 4              # NSButtonTypeRadio
 SWITCH_BUTTON = 3             # NSButtonTypeSwitch
+STATE_MIXED = -1              # NSControlStateValueMixed
 FAV_NOTE_W = 130
+
+# Previewing a duplicate before deciding its fate. Its own window and its own
+# player: loading a candidate into the main one would lose your place in the
+# playlist and count as watching something you were only inspecting.
+PREVIEW_W, PREVIEW_H = 640, 420
+PREVIEW_BAR_H = 44
+PREVIEW_TICK = 0.25           # the preview has no delegate, so it is polled
 
 TAG_PANEL_H = 136             # the tag editor, sliding up over the video
 CHIP_H = 17
@@ -487,9 +498,24 @@ class AppDelegate(NSObject):
         self.dupeStop = False
         self.dupeStatus = ""
         self.dupeKeep = {}            # group id -> the key to keep
+        # Copies you have said to leave alone. Kept between launches because
+        # it is a decision, and one that a forgotten setting would undo by
+        # quietly re-arming the Trash button against a file you spared.
+        self.dupeSpared = set()
         self.verifyDupes = True
         self.dupeStatusLabel = None
         self.folderTable = None
+        self.previewWindow = None
+        self.previewVLC = None
+        self.previewView = None
+        self.previewPath = None
+        self.previewTimer = None
+        self.previewScrub = None
+        self.previewPlay = None
+        self.previewElapsed = None
+        self.previewRemain = None
+        self.previewScrubbing = False
+        self.previewPausedMain = False
         self.tagName = None           # which tag is playing, in tag mode
         self.tagWindow = None
         self.tagTable = None
@@ -830,8 +856,11 @@ class AppDelegate(NSObject):
         bar.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
         bar.addSubview_(self.barButton("Add Folder…", "addDupeFolder:", 14))
         bar.addSubview_(self.barButton("Remove", "removeDupeFolder:", 14 + BUTTON_W + 8))
+        self.clearFoldersButton = self.barButton("Clear", "clearDupeFolders:",
+                                                 14 + 2 * (BUTTON_W + 8))
+        bar.addSubview_(self.clearFoldersButton)
         self.verifyBox = NSButton.alloc().initWithFrame_(
-            NSMakeRect(14 + 2 * (BUTTON_W + 8), (BAR_HEIGHT - BUTTON_H) / 2,
+            NSMakeRect(14 + 3 * (BUTTON_W + 8), (BAR_HEIGHT - BUTTON_H) / 2,
                        190, BUTTON_H))
         self.verifyBox.setButtonType_(SWITCH_BUTTON)
         self.verifyBox.setTitle_("Verify byte-for-byte")
@@ -861,6 +890,8 @@ class AppDelegate(NSObject):
         self.dupeTable.setRowHeight_(DUPE_ROW_H)
         self.dupeTable.setDataSource_(self)
         self.dupeTable.setDelegate_(self)
+        self.dupeTable.setTarget_(self)
+        self.dupeTable.setDoubleAction_("previewDuplicate:")
         scroll = NSScrollView.alloc().initWithFrame_(
             NSMakeRect(0, BAR_HEIGHT, DUPE_W, top - BAR_HEIGHT))
         scroll.setDocumentView_(self.dupeTable)
@@ -875,8 +906,10 @@ class AppDelegate(NSObject):
         foot.addSubview_(self.barButton("Keep Oldest", "keepOldest:", 14 + BUTTON_W + 8))
         foot.addSubview_(self.barButton("Shortest Path", "keepShortest:",
                                         14 + 2 * (BUTTON_W + 8)))
+        foot.addSubview_(self.barButton("Preview", "previewDuplicate:",
+                                        14 + 3 * (BUTTON_W + 8)))
         self.reclaimLabel = self.label(
-            NSMakeRect(DUPE_W - 340, (BAR_HEIGHT - 18) / 2, 160, 18),
+            NSMakeRect(DUPE_W - 350, (BAR_HEIGHT - 18) / 2, 170, 18),
             11, 0, align=ALIGN_RIGHT, dim=True)
         self.reclaimLabel.setAutoresizingMask_(NSViewMinXMargin)
         foot.addSubview_(self.reclaimLabel)
@@ -902,23 +935,28 @@ class AppDelegate(NSObject):
         # One flat list of rows: a heading, then the files under it. An outline
         # view would nest properly and cost a second data source for no gain
         # when nothing is ever collapsed.
+        was = self.selectedDupeKey()      # a redraw must not lose your place
         self.dupeRows = []
         groups = self.dupeGroupsForDisplay()
-        reclaim = 0
+        reclaim, doomed = 0, 0
         for group in groups:
             self.dupeRows.append({"head": group})
             for key in group["keys"]:
                 self.dupeRows.append({"group": group, "key": key})
             reclaim += group["reclaim"]
+            doomed += len(group["doomed"])
 
         self.folderTable.reloadData()
         self.dupeTable.reloadData()
+        self.reselectDupe(was)
         self.updateDupeStatus()
+        # What will actually happen, not what could: a copy you have spared
+        # counts towards neither the space freed nor the button's number.
         self.reclaimLabel.setStringValue_(
-            "%s in %d group%s" % (human_bytes(reclaim), len(groups),
-                                  "" if len(groups) == 1 else "s")
-            if groups else "")
-        self.removeButton.setEnabled_(bool(groups) and not self.dupeScanning)
+            "%s · %d to remove" % (human_bytes(reclaim), doomed) if groups else "")
+        self.removeButton.setEnabled_(bool(doomed) and not self.dupeScanning)
+        self.clearFoldersButton.setEnabled_(bool(self.dupeFolders)
+                                            and not self.dupeScanning)
 
     @objc.python_method
     def updateDupeStatus(self):
@@ -939,19 +977,11 @@ class AppDelegate(NSObject):
     def dupeManagerRow(self, tableView, row):
         item = self.dupeRows[row]
         if "head" in item:
-            group = item["head"]
-            view = self.reuse(tableView, "dupehead", self.buildManagerRow)
-            view.viewWithTag_(NAME_TAG).setStringValue_(
-                "%d copies · %s each%s" % (len(group["keys"]),
-                                           human_bytes(group["size"]),
-                                           "" if group["verified"] else " · not verified"))
-            note = view.viewWithTag_(TIME_TAG)
-            note.setStringValue_("frees %s" % human_bytes(group["reclaim"]))
-            note.setTextColor_(NSColor.secondaryLabelColor())
-            return view
+            return self.dupeHeadRow(tableView, item["head"])
 
         group, key = item["group"], item["key"]
         keeping = key == group["keeper"]
+        going = key in group["doomed"]
         view = self.reuse(tableView, "dupefile", self.buildDupeRow)
         button = view.viewWithTag_(KEEP_TAG)
         button.setState_(STATE_ON if keeping else STATE_OFF)
@@ -962,12 +992,43 @@ class AppDelegate(NSObject):
         name = view.viewWithTag_(NAME_TAG)
         name.setStringValue_("%s  —  %s" % (os.path.basename(key),
                                             os.path.dirname(key)))
-        name.setTextColor_(NSColor.labelColor() if keeping
+        name.setTextColor_(NSColor.labelColor() if keeping or not going
                            else NSColor.secondaryLabelColor())
+        # The right-hand column says one of two things, so both live in the
+        # same place and only one is ever shown: why this copy is the one
+        # being kept, or a box you can untick to spare a copy that is not.
         note = view.viewWithTag_(TIME_TAG)
-        note.setStringValue_(group["why"] if keeping else "to Trash")
-        note.setTextColor_(NSColor.secondaryLabelColor() if keeping
-                           else NSColor.systemRedColor())
+        trash = view.viewWithTag_(TRASH_TAG)
+        note.setHidden_(not keeping)
+        trash.setHidden_(keeping)
+        note.setStringValue_(group["why"] if keeping else "")
+        trash.setState_(STATE_ON if going else STATE_OFF)
+        trash.setToolTip_(key)
+        trash.setTarget_(self)
+        trash.setAction_("toggleDoomed:")
+        return view
+
+    @objc.python_method
+    def dupeHeadRow(self, tableView, group):
+        view = self.reuse(tableView, "dupehead", self.buildDupeHeadRow)
+        view.viewWithTag_(NAME_TAG).setStringValue_(
+            "%d copies · %s each%s" % (len(group["keys"]),
+                                       human_bytes(group["size"]),
+                                       "" if group["verified"] else " · not verified"))
+        note = view.viewWithTag_(TIME_TAG)
+        note.setStringValue_("frees %s" % human_bytes(group["reclaim"])
+                             if group["doomed"] else "keeping all")
+        note.setTextColor_(NSColor.secondaryLabelColor())
+        # Mixed is a display state only. Clicking cycles through three states
+        # of its own accord, which nobody wants from a "do the lot" control,
+        # so the action ignores the button and decides from the group.
+        spare = len(group["keys"]) - 1 - len(group["doomed"])
+        box = view.viewWithTag_(TRASH_TAG)
+        box.setState_(STATE_OFF if not group["doomed"]
+                      else STATE_MIXED if spare else STATE_ON)
+        box.setToolTip_(group["id"])
+        box.setTarget_(self)
+        box.setAction_("toggleWholeGroup:")
         return view
 
     @objc.python_method
@@ -977,11 +1038,41 @@ class AppDelegate(NSObject):
         keep.setButtonType_(RADIO_BUTTON)
         keep.setTag_(KEEP_TAG)
         view.addSubview_(keep)
-        name = self.label(NSMakeRect(92, 2, DUPE_W - 92 - 92, DUPE_ROW_H - 4),
-                          11, NAME_TAG)
+        name = self.label(
+            NSMakeRect(92, 2, DUPE_W - 92 - DUPE_DECIDE_W - 12, DUPE_ROW_H - 4),
+            11, NAME_TAG)
         name.setAutoresizingMask_(NSViewWidthSizable)
         view.addSubview_(name)
-        note = self.label(NSMakeRect(DUPE_W - 88, 2, 78, DUPE_ROW_H - 4),
+        right = NSMakeRect(DUPE_W - DUPE_DECIDE_W - 10, 2,
+                           DUPE_DECIDE_W, DUPE_ROW_H - 4)
+        note = self.label(right, 10, TIME_TAG, align=ALIGN_RIGHT, dim=True)
+        note.setAutoresizingMask_(NSViewMinXMargin)
+        view.addSubview_(note)
+        trash = NSButton.alloc().initWithFrame_(right)
+        trash.setButtonType_(SWITCH_BUTTON)
+        trash.setTitle_("Trash")
+        trash.setFont_(NSFont.systemFontOfSize_(10))
+        trash.setTag_(TRASH_TAG)
+        trash.setAutoresizingMask_(NSViewMinXMargin)
+        view.addSubview_(trash)
+        return view
+
+    @objc.python_method
+    def buildDupeHeadRow(self):
+        view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, DUPE_W, DUPE_ROW_H))
+        box = NSButton.alloc().initWithFrame_(NSMakeRect(10, 2, 20, DUPE_ROW_H - 4))
+        box.setButtonType_(SWITCH_BUTTON)
+        box.setTitle_("")
+        box.setAllowsMixedState_(True)
+        box.setTag_(TRASH_TAG)
+        view.addSubview_(box)
+        name = self.label(
+            NSMakeRect(34, 2, DUPE_W - 34 - DUPE_DECIDE_W - 12, DUPE_ROW_H - 4),
+            11, NAME_TAG, bold=True)
+        name.setAutoresizingMask_(NSViewWidthSizable)
+        view.addSubview_(name)
+        note = self.label(NSMakeRect(DUPE_W - DUPE_DECIDE_W - 10, 2,
+                                     DUPE_DECIDE_W, DUPE_ROW_H - 4),
                           10, TIME_TAG, align=ALIGN_RIGHT, dim=True)
         note.setAutoresizingMask_(NSViewMinXMargin)
         view.addSubview_(note)
@@ -1026,9 +1117,12 @@ class AppDelegate(NSObject):
             else:
                 why = "your choice"
             size = self.prints.get(alive[0], {}).get("size", 0)
+            # Everything but the keeper goes, unless you have said otherwise.
+            doomed = [k for k in alive
+                      if k != keeper and k not in self.dupeSpared]
             rows.append({"id": gid, "keys": alive, "keeper": keeper,
-                         "why": why, "size": size,
-                         "reclaim": size * (len(alive) - 1),
+                         "why": why, "size": size, "doomed": doomed,
+                         "reclaim": size * len(doomed),
                          "verified": all(self.prints.get(k, {}).get("full")
                                          for k in alive)})
         rows.sort(key=lambda g: -g["reclaim"])
@@ -1068,13 +1162,55 @@ class AppDelegate(NSObject):
         for item in self.dupeRows:
             if item.get("key") == key:
                 self.dupeKeep[item["group"]["id"]] = key
+                # Whatever it was before, the copy you are keeping is not
+                # one that anything is waiting to remove.
+                self.dupeSpared.discard(key)
+                self.saveState()
                 return self.refreshDupeManager()
+
+    def toggleDoomed_(self, sender):
+        """Untick a copy to leave it where it is.
+
+        The default is that every copy but one goes, which is the point of the
+        feature; this is for the times two of them are worth keeping — a
+        different cut, a different language — and you want the group to stop
+        asking.
+        """
+        key = str(sender.toolTip() or "")
+        if not key:
+            return
+        if key in self.dupeSpared:
+            self.dupeSpared.discard(key)
+        else:
+            self.dupeSpared.add(key)
+        self.saveState()
+        self.refreshDupeManager()
+
+    def toggleWholeGroup_(self, sender):
+        """Spare or re-arm a whole group at once, from its heading."""
+        gid = str(sender.toolTip() or "")
+        for group in self.dupeGroupsForDisplay():
+            if group["id"] != gid:
+                continue
+            others = [k for k in group["keys"] if k != group["keeper"]]
+            if group["doomed"]:
+                self.dupeSpared.update(others)
+            else:
+                self.dupeSpared.difference_update(others)
+            break
+        self.saveState()
+        self.refreshDupeManager()
 
     def removeDuplicates_(self, sender):
         groups = self.dupeGroupsForDisplay()
-        doomed = [(g, k) for g in groups for k in g["keys"] if k != g["keeper"]]
+        doomed = [(g, k) for g in groups for k in g["doomed"]]
         if not doomed:
-            return self.say("Nothing to remove", "Every group already has one copy.")
+            spared = sum(1 for g in groups for k in g["keys"]
+                         if k != g["keeper"] and k in self.dupeSpared)
+            return self.say(
+                "Nothing to remove",
+                "Every copy here is one you have said to keep."
+                if spared else "Every group already has one copy.")
         unverified = sum(1 for g, _ in doomed if not g["verified"])
         total = sum(g["size"] for g, _ in doomed)
         detail = ("%d file%s, freeing %s.\n\nThey go to the Trash. A volume "
@@ -1226,6 +1362,249 @@ class AppDelegate(NSObject):
         except (OSError, shutil.Error) as err:
             return False, str(err)
 
+    # -- looking at a copy before deciding ---------------------------------
+    #
+    # Size and a hash say two files are identical; they do not say which one
+    # you want to keep, and they say nothing at all about a pair that only
+    # nearly match. So the list can be watched, one copy at a time, in its own
+    # window with its own player — the main one keeps your place in the
+    # playlist, and inspecting a file is not the same as watching it.
+
+    @objc.python_method
+    def selectedDupeKey(self):
+        """The key of the copy highlighted in the results, if it is a file."""
+        if self.dupeTable is None:
+            return None
+        row = self.dupeTable.selectedRow()
+        if 0 <= row < len(self.dupeRows):
+            return self.dupeRows[row].get("key")
+        return None
+
+    @objc.python_method
+    def reselectDupe(self, key):
+        """Put the highlight back on a key after the table was rebuilt."""
+        if key is None or self.dupeTable is None:
+            return
+        for row, item in enumerate(self.dupeRows):
+            if item.get("key") == key:
+                self.dupeTable.selectRowIndexes_byExtendingSelection_(
+                    NSIndexSet.indexSetWithIndex_(row), False)
+                return
+
+    def previewDuplicate_(self, sender):
+        key = self.selectedDupeKey()
+        if key is None:
+            return self.say("Nothing to preview",
+                            "Select one of the copies in the list first. Once "
+                            "the preview is open it follows the list, so the "
+                            "arrow keys walk you through a group.")
+        if self.openPreviewWindow():
+            self.showInPreview(tag_path(key))
+
+    @objc.python_method
+    def openPreviewWindow(self):
+        """The preview window, built on first use. False if it cannot be."""
+        if self.previewWindow is not None:
+            self.previewWindow.makeKeyAndOrderFront_(None)
+            return True
+        if not VLC_READY:
+            self.say("Nothing to preview with",
+                     "Playback needs VLCKit, which is not in this build.")
+            return False
+
+        rect = NSMakeRect(0, 0, PREVIEW_W, PREVIEW_H)
+        self.previewWindow = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            rect, NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+            | NSWindowStyleMaskResizable, NSBackingStoreBuffered, False)
+        self.previewWindow.setTitle_("Preview")
+        self.previewWindow.setMinSize_(NSMakeSize(360, 240))
+        self.previewWindow.setReleasedWhenClosed_(False)
+        self.previewWindow.setDelegate_(self)
+        self.placePreviewWindow()
+
+        content = NSView.alloc().initWithFrame_(rect)
+        self.previewView = VLCVideoView.alloc().initWithFrame_(
+            NSMakeRect(0, PREVIEW_BAR_H, PREVIEW_W, PREVIEW_H - PREVIEW_BAR_H))
+        self.previewView.setBackColor_(NSColor.blackColor())
+        self.previewView.setFillScreen_(False)
+        self.previewView.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        content.addSubview_(self.previewView)
+
+        bar = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, PREVIEW_W, PREVIEW_BAR_H))
+        bar.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
+        y = (PREVIEW_BAR_H - BUTTON_H) / 2
+        self.previewPlay = self.xportButton("▶", "togglePreview:", 12, y)
+        bar.addSubview_(self.previewPlay)
+        self.previewElapsed = self.label(
+            NSMakeRect(12 + XPORT_W + 8, y + 6, TIME_W, 18), 11, 0,
+            align=ALIGN_RIGHT, dim=True)
+        self.previewRemain = self.label(
+            NSMakeRect(PREVIEW_W - 12 - TIME_W, y + 6, TIME_W, 18), 11, 0, dim=True)
+        self.previewRemain.setAutoresizingMask_(NSViewMinXMargin)
+        left = 12 + XPORT_W + 8 + TIME_W + 8
+        self.previewScrub = NSSlider.alloc().initWithFrame_(
+            NSMakeRect(left, y + 5, PREVIEW_W - left - (12 + TIME_W + 8), 20))
+        self.previewScrub.setMinValue_(0.0)
+        self.previewScrub.setMaxValue_(1.0)
+        self.previewScrub.setDoubleValue_(0.0)
+        self.previewScrub.setContinuous_(True)
+        self.previewScrub.setAutoresizingMask_(NSViewWidthSizable)
+        self.previewScrub.setTarget_(self)
+        self.previewScrub.setAction_("previewScrubbed:")
+        for v in (self.previewElapsed, self.previewRemain, self.previewScrub):
+            bar.addSubview_(v)
+        content.addSubview_(bar)
+
+        # No delegate on this player, deliberately. The app delegate's
+        # mediaPlayerStateChanged_ reads self.vlc and decides things like "the
+        # video ended, play the next one" — pointed at the preview it would
+        # advance the playlist because a thumbnail-sized inspection finished.
+        # A quarter-second poll drives the two labels and the slider instead.
+        self.previewVLC = VLCMediaPlayer.alloc().init()
+        self.previewWindow.setContentView_(content)
+        self.previewWindow.makeKeyAndOrderFront_(None)
+        self.previewTimer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            PREVIEW_TICK, self, "previewTick:", None, True)
+        return True
+
+    @objc.python_method
+    def placePreviewWindow(self):
+        """Beside the duplicates list if it fits, so both can be seen."""
+        # The duplicates window's screen, not the preview's: the preview is not
+        # on screen yet and so is on no screen at all.
+        screen = self.dupeWindow.screen() if self.dupeWindow is not None else None
+        if screen is not None:
+            room = screen.visibleFrame()
+            frame = self.dupeWindow.frame()
+            x = frame.origin.x + frame.size.width + 12
+            if x + PREVIEW_W <= room.origin.x + room.size.width:
+                return self.previewWindow.setFrameTopLeftPoint_(
+                    NSMakePoint(x, frame.origin.y + frame.size.height))
+        self.previewWindow.center()
+
+    @objc.python_method
+    def showInPreview(self, path):
+        """Load one file into the preview, if it is not already there."""
+        if self.previewVLC is None or self.previewWindow is None:
+            return
+        if not path or not os.path.isfile(path):
+            self.previewVLC.stop()
+            self.previewPath = None
+            self.previewWindow.setTitle_("Preview — that file is gone")
+            return
+        if path == self.previewPath:
+            return
+        self.pauseMainForPreview()
+        self.previewPath = path
+        # The basename is the same in every copy of a group; the folder above
+        # it is the only part that tells them apart.
+        parent = os.path.basename(os.path.dirname(path))
+        self.previewWindow.setTitle_(
+            "Preview — %s" % os.path.join(parent, os.path.basename(path)))
+        if self.previewVLC.drawable() is not self.previewView:
+            self.previewVLC.setDrawable_(self.previewView)
+        self.previewVLC.setMedia_(
+            VLCMedia.alloc().initWithURL_(NSURL.fileURLWithPath_(path)))
+        self.previewVLC.play()
+        audio = self.previewVLC.audio()
+        if audio:
+            audio.setVolume_(self.volume)
+
+    @objc.python_method
+    def pauseMainForPreview(self):
+        """Two videos playing at once is two soundtracks at once."""
+        if self.vlc is None or not self.vlc.isPlaying():
+            return
+        self.previewPausedMain = True
+        self.userPaused = True
+        self.vlc.pause()
+        self.syncTransport()
+
+    @objc.python_method
+    def previewSelection(self):
+        """The preview follows the list: one copy at a time, arrow by arrow."""
+        if self.previewWindow is None:
+            return
+        key = self.selectedDupeKey()
+        if key:
+            self.showInPreview(tag_path(key))
+
+    def previewTick_(self, timer):
+        if self.previewVLC is None or self.previewScrub is None:
+            return
+        self.previewPlay.setTitle_("❚❚" if self.previewVLC.isPlaying() else "▶")
+        if self.previewScrubbing:
+            return
+        total = self.lengthOf(self.previewVLC)
+        now = self.headOf(self.previewVLC)
+        self.previewScrub.setEnabled_(total > 0)
+        self.previewScrub.setDoubleValue_(now / total if total > 0 else 0.0)
+        self.previewElapsed.setStringValue_(clock(now) if total > 0 else "")
+        self.previewRemain.setStringValue_(
+            "-" + clock(max(0.0, total - now)) if total > 0 else "")
+
+    def togglePreview_(self, sender):
+        if self.previewVLC is None or self.previewPath is None:
+            return
+        if self.previewVLC.isPlaying():
+            self.previewVLC.pause()
+        else:
+            self.previewVLC.play()
+        self.previewTick_(None)
+
+    def previewScrubbed_(self, sender):
+        total = self.lengthOf(self.previewVLC)
+        if self.previewPath is None or total <= 0:
+            return
+        self.previewScrubbing = True
+        self.seekPreview(total * float(sender.doubleValue()))
+        self.previewElapsed.setStringValue_(
+            clock(total * float(sender.doubleValue())))
+        self.performSelector_withObject_afterDelay_("endPreviewScrub:", None, 0.35)
+
+    def endPreviewScrub_(self, _):
+        self.previewScrubbing = False
+
+    @objc.python_method
+    def seekPreview(self, seconds):
+        """Same trick as the main player: VLC ignores a seek while paused."""
+        if self.previewVLC is None or not self.previewVLC.isSeekable():
+            return
+        paused = not self.previewVLC.isPlaying()
+        if paused:
+            self.previewVLC.play()
+        self.previewVLC.setTime_(
+            VLCTime.timeWithInt_(int(max(0.0, seconds) * 1000)))
+        if paused:
+            self.performSelector_withObject_afterDelay_("repausePreview:", None, 0.35)
+
+    def repausePreview_(self, _):
+        if self.previewVLC is not None:
+            self.previewVLC.pause()
+
+    @objc.python_method
+    def closePreview(self):
+        """Tear the preview down, and give the main player back what it lost."""
+        if self.previewTimer is not None:
+            self.previewTimer.invalidate()
+        if self.previewVLC is not None:
+            self.previewVLC.stop()
+        self.previewTimer = None
+        self.previewVLC = None
+        self.previewView = None
+        self.previewScrub = None
+        self.previewPlay = None
+        self.previewElapsed = None
+        self.previewRemain = None
+        self.previewWindow = None
+        self.previewPath = None
+        self.previewScrubbing = False
+        resume, self.previewPausedMain = self.previewPausedMain, False
+        if resume and self.item is not None and self.window.isVisible():
+            self.userPaused = False
+            self.vlc.play()
+            self.syncTransport()
+
     # -- the deliberate sweep ---------------------------------------------
 
     def findDuplicates_(self, sender):
@@ -1248,10 +1627,30 @@ class AppDelegate(NSObject):
         self.refreshDupeManager()
 
     def removeDupeFolder_(self, sender):
-        row = self.folderTable.selectedRow()
-        if 0 <= row < len(self.dupeFolders):
-            del self.dupeFolders[row]
+        # Every selected row, not just the first: the table has always allowed
+        # a multiple selection and taking one folder per click from it was
+        # only ever an oversight.
+        rows = sorted(self.folderTable.selectedRowIndexes(), reverse=True)
+        for row in rows:
+            if 0 <= row < len(self.dupeFolders):
+                del self.dupeFolders[row]
+        if rows:
             self.refreshDupeManager()
+
+    def clearDupeFolders_(self, sender):
+        """Empty the whole search list in one go."""
+        if not self.dupeFolders:
+            return
+        # One folder is no loss to re-add; a list you have built up is, and
+        # there is no undo for it.
+        if len(self.dupeFolders) > 1 and not self.confirm(
+                "Clear all %d folders?" % len(self.dupeFolders),
+                "This only empties the list of places to search. No files are "
+                "touched, and results already found stay in the list below "
+                "until the next scan.", "Clear"):
+            return
+        self.dupeFolders = []
+        self.refreshDupeManager()
 
     def startDupeScan_(self, sender):
         if self.dupeScanning:
@@ -1590,6 +1989,9 @@ class AppDelegate(NSObject):
         self.discardFolder = dict(saved) if isinstance(saved, dict) else {}
         self.watchDupes = state.get("watchDupes") is not False
         self.verifyDupes = state.get("verifyDupes") is not False
+        spared = state.get("sparedDupes")
+        self.dupeSpared = set(k for k in spared if isinstance(k, str)) \
+            if isinstance(spared, list) else set()
 
     @objc.python_method
     def saveState(self):
@@ -1613,6 +2015,7 @@ class AppDelegate(NSObject):
             "discardFolders": {v: f for v, f in self.discardFolder.items() if f},
             "watchDupes": self.watchDupes,
             "verifyDupes": self.verifyDupes,
+            "sparedDupes": sorted(self.dupeSpared),
         })
 
     @objc.python_method
@@ -2293,7 +2696,9 @@ class AppDelegate(NSObject):
         # Ignore selection we set ourselves while following playback, otherwise
         # every track change would re-trigger itself.
         table = notification.object()
-        if self.isDupeTable(table) or self.isFolderTable(table):
+        if self.isDupeTable(table):
+            return self.previewSelection()
+        if self.isFolderTable(table):
             return
         if self.isNameTable(table):
             return self.syncNameButtons()     # the buttons follow the selection
@@ -2581,6 +2986,10 @@ class AppDelegate(NSObject):
         return self.isPlainRow(tableView, row) is None
 
     def tableView_shouldSelectRow_(self, tableView, row):
+        if self.isDupeTable(tableView):
+            # Headings stay unselectable so the arrow keys step from one copy
+            # to the next, and the preview with them.
+            return 0 <= row < len(self.dupeRows) and "head" not in self.dupeRows[row]
         return self.isPlainRow(tableView, row) is not None
 
     def tableView_heightOfRow_(self, tableView, row):
@@ -3191,8 +3600,8 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def applySpeed(self):
-        # Setting a rate on a paused player would start it playing, so the
-        # choice is only pushed through while something is actually running.
+        # Only when it differs: VLC posts a notification for every rate it is
+        # given, including the one it already has.
         if abs(self.vlc.rate() - self.speed) > 0.01:
             self.vlc.setRate_(self.speed)
 
@@ -3297,19 +3706,29 @@ class AppDelegate(NSObject):
         if self.vlc.drawable() is not self.playerView:
             self.vlc.setDrawable_(self.playerView)
 
+    # Both take a player rather than reading self.vlc, because the preview
+    # window has one of its own and asks the same two questions of it.
+    @objc.python_method
+    def headOf(self, player):
+        t = player.time() if player else None
+        return (t.intValue() / 1000.0) if t else 0.0
+
+    @objc.python_method
+    def lengthOf(self, player):
+        media = player.media() if player else None
+        length = media.length() if media else None
+        value = length.intValue() if length else 0
+        return value / 1000.0 if value > 0 else 0.0
+
     @objc.python_method
     def playhead(self):
         """Where we are, in seconds. Zero before anything has opened."""
-        t = self.vlc.time() if getattr(self, "vlc", None) else None
-        return (t.intValue() / 1000.0) if t else 0.0
+        return self.headOf(getattr(self, "vlc", None))
 
     @objc.python_method
     def mediaLength(self):
         """How long the current video is, in seconds; 0 until VLC knows."""
-        media = self.vlc.media() if getattr(self, "vlc", None) else None
-        length = media.length() if media else None
-        value = length.intValue() if length else 0
-        return value / 1000.0 if value > 0 else 0.0
+        return self.lengthOf(getattr(self, "vlc", None))
 
     def mediaPlayerStateChanged_(self, notification):
         """VLC's one channel for "something happened to playback"."""
@@ -4002,13 +4421,22 @@ open "$APP"
         elif self.nameWindow is not None and closing.isEqual_(self.nameWindow):
             self.nameTable = None
             self.nameWindow = None
+        elif self.previewWindow is not None and closing.isEqual_(self.previewWindow):
+            self.closePreview()
         elif self.dupeWindow is not None and closing.isEqual_(self.dupeWindow):
             self.dupeStop = True          # a sweep has nowhere to report to now
             self.dupeTable = None
             self.folderTable = None
             self.dupeStatusLabel = None
             self.dupeWindow = None
+            if self.previewWindow is not None:
+                self.previewWindow.close()   # nothing left for it to follow
         elif closing.isEqual_(self.window):
+            # Nothing is resumed on the way out: the preview only paused
+            # playback so it could be heard, and the window is closing anyway.
+            self.previewPausedMain = False
+            if self.previewWindow is not None:
+                self.previewWindow.close()
             # Video playing on into a window that is not on screen is a
             # confusing way to lose track of what the app is doing.
             self.vlc.pause()

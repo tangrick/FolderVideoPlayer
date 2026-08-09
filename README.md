@@ -45,15 +45,17 @@ Built with PyObjC, playing through VLCKit, so it opens whatever VLC opens —
 - **Find duplicates.** Sweep folders you choose, or let the app notice as you
   watch — every video you play is fingerprinted for the price of 128 KB.
   Duplicates are grouped with the keeper already chosen and the reason shown,
-  tags from a discarded copy move to the one you keep, and nothing is ever
-  deleted: copies go to the Trash, or to a folder you nominate on a share that
-  has no Trash.
+  any copy can be previewed in its own window before you decide or unticked to
+  keep it, tags from a discarded copy move to the one you keep, and nothing is
+  ever deleted: copies go to the Trash, or to a folder you nominate on a share
+  that has no Trash.
 - **Open New…** switches folders or jumps to a tag without restarting.
 
 Everything the app remembers lives in
 `~/Library/Application Support/FolderVideoPlayer/`, outside the app bundle, so
 replacing the app never loses it: `tags.json` for tags and favorites,
-`state.json` for recent folders, resume positions and the last session, and
+`state.json` for recent folders, resume positions, the last session and the
+duplicates you have said to keep, and
 `fingerprints.json` for what the duplicate finder has learned.
 `favorites.json` is only read once, to migrate an older version's stars.
 
@@ -488,6 +490,12 @@ number found so far in its title. **Notice Duplicates While Playing** does it
 without a scan: every video you play is fingerprinted
 as it opens, and the index builds up as you watch.
 
+The list of folders to sweep is built with **Add Folder…**. **Remove** takes
+out everything selected rather than one row per click, and **Clear** empties
+the list in one go — it asks first if there is more than one folder in it,
+since a list you have built up has no undo. Neither touches a file: they only
+change where the next scan looks.
+
 ### Why it is a cascade and not a hash of everything
 
 Hashing every file to group by hash is the obvious design. Measured on a real
@@ -521,6 +529,31 @@ trust. Tags win because they are the only part of a video that is your work
 rather than the file's.
 
 The file currently playing is never touched.
+
+**Watch one before you decide.** Select a copy and press **Preview**, or
+double-click it. A second window opens with a picture, a scrubber and a clock,
+and from then on it follows the list: arrow down the group and it plays each
+copy in turn, one at a time. Identical bytes are identical bytes, but which
+one you want to keep is a question about the file's name and where it lives,
+and sometimes the only way to answer it is to look.
+
+It has a player of its own rather than borrowing the main one. Loading a
+candidate into the main window would lose your place in the playlist and
+record you as having watched something you were only inspecting. Playback in
+the main window pauses while the preview is open — two soundtracks at once is
+no use to anyone — and starts again when you close it.
+
+**Untick anything you want to keep.** Every copy but the keeper is marked for
+the Trash, which is the point; the box on its row takes it back out. Two cuts
+of the same film worth keeping, a copy you want left where somebody else
+expects to find it — untick it and the total, the count on the button and the
+group's heading all drop to match. The box on a heading does the whole group
+at once, and shows a dash when only some of it is spared.
+
+Those decisions are written down and survive a relaunch, which is deliberate.
+A setting that quietly forgot itself would re-arm the Trash button against a
+file you had already said to leave alone, and that is the one mistake this
+whole feature exists to prevent.
 
 **A share generally has no Trash**, which is where most of a NAS library
 lives. There the app asks for a folder to move discards into instead —
