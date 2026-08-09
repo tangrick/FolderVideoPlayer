@@ -81,7 +81,10 @@ picking up where you left off is one click and a decision rather than an
 ambush. Everything is still remembered either way.
 
 Closing the window does not quit — Cmd-Q does. Closing it pauses playback and
-saves your place, and the Dock icon brings it back. A window close should not
+saves your place. The Dock icon brings it back, and so does anything that
+starts something: **Open New…**, **Play Tag**, **Play Favorites** or
+**Resume** all put the picture back on screen first. Changing track does not,
+so a folder playing while you work in another app never steals focus. A window close should not
 cost you a queue, a place in a video, or a folder scan that is halfway
 through.
 

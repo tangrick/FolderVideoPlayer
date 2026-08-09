@@ -2416,6 +2416,18 @@ class AppDelegate(NSObject):
         self.showOpeningChoice()
 
     @objc.python_method
+    def showPlayer(self):
+        """Bring the window back if it has been closed.
+
+        Closing the window no longer quits, so every way of starting something
+        has to be able to put the picture back on screen — otherwise Open New…
+        picks a folder and plays it into a window that is not there.
+        """
+        if not self.window.isVisible():
+            self.window.makeKeyAndOrderFront_(None)
+            NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+
+    @objc.python_method
     def rebuildRecentMenu(self):
         self.recentMenu.removeAllItems()
         for path in self.recent:
@@ -2511,6 +2523,7 @@ class AppDelegate(NSObject):
 
     def showOpeningChoice(self):
         """Only ever reached on purpose now, from Open New… or ⌘N."""
+        self.showPlayer()
         alert = NSAlert.alloc().init()
         alert.setMessageText_(APP_NAME)
         alert.setInformativeText_(
@@ -2602,6 +2615,7 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def startPlaylist(self, items, mode, root=None, resume=None):
+        self.showPlayer()
         self.playlist = items
         self.mode = mode
         self.root = root
