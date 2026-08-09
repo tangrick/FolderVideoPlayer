@@ -147,7 +147,11 @@ VIDEO_EXT = {".mp4", ".m4v", ".mov", ".flv", ".webm", ".avi",
 FAST_EXT = {".mp4", ".m4v", ".mov"}
 
 # VLCMediaPlayerState, from VLCMediaPlayer.h
-VLC_ENDED, VLC_ERROR, VLC_PLAYING, VLC_PAUSED = 3, 4, 5, 6
+VLC_STOPPED, VLC_ENDED, VLC_ERROR, VLC_PLAYING, VLC_PAUSED = 0, 3, 4, 5, 6
+
+# How close to the end counts as having finished. VLC's last reported time
+# sits a little short of the stated length, so this cannot be zero.
+END_SLACK = 1.5
 
 # Duplicate detection. 64 KB from each end is enough that two different videos
 # colliding is not a thing that happens, and small enough that the cost per
@@ -464,6 +468,7 @@ class AppDelegate(NSObject):
         self.durationGen = 0
         self.revealedIndex = None
         self.scrubbing = False
+        self.userPaused = False
         self.nameWindow = None
         self.nameTable = None
         self.nameRows = []
@@ -1798,8 +1803,10 @@ class AppDelegate(NSObject):
         if self.item is None or self.vlc is None:
             return
         if self.vlc.isPlaying():
+            self.userPaused = True
             self.vlc.pause()
         else:
+            self.userPaused = False
             self.vlc.play()
         self.syncTransport()
 
@@ -2107,6 +2114,7 @@ class AppDelegate(NSObject):
         # paused stays paused, so closing never starts something unbidden.
         self.wasPlaying = bool(self.vlc.isPlaying())
         if self.wasPlaying:
+            self.userPaused = True
             self.vlc.pause()
         self.fillSuggestions()
         self.slideTagPanel(True)
@@ -2873,6 +2881,7 @@ class AppDelegate(NSObject):
         self.attachDrawable()
         self.item = VLCMedia.alloc().initWithURL_(
             NSURL.fileURLWithPath_(self.itemPath))
+        self.userPaused = False
         self.vlc.setMedia_(self.item)
         self.vlc.play()
         self.applySpeed()
@@ -3004,8 +3013,10 @@ class AppDelegate(NSObject):
         if self.item is None:
             return
         if self.vlc.isPlaying():
+            self.userPaused = True
             self.vlc.pause()
         else:
+            self.userPaused = False
             self.vlc.play()
 
     def skipBack_(self, sender):
@@ -3048,6 +3059,7 @@ class AppDelegate(NSObject):
         return target
 
     def repauseAfterSeek_(self, _):
+        self.userPaused = True
         self.vlc.pause()
         self.syncTransport()
         self.syncScrubber()
@@ -3084,13 +3096,34 @@ class AppDelegate(NSObject):
         state = self.vlc.state()
         if state == VLC_PLAYING:
             self.failures = 0
+            self.userPaused = False
             self.applyResume()
             self.applySpeed()
         elif state == VLC_ERROR:
             self.skipBroken()
         elif state == VLC_ENDED:
             self.itemFinished()
+        elif state in (VLC_PAUSED, VLC_STOPPED) and self.ranOut():
+            # VLC does not reliably say "Ended". Measured on a three second
+            # clip: it reports Paused on the last frame and Ended never
+            # arrives, so waiting for Ended leaves the queue sitting still at
+            # the end of every video. A pause at the very end that nobody
+            # asked for is the end.
+            self.itemFinished()
         self.syncTransport()
+
+    @objc.python_method
+    def ranOut(self):
+        """Whether playback stopped because the video finished.
+
+        Deliberately not just "near the end": pausing by hand a second before
+        the end must not skip you to the next video. Only a stop nobody asked
+        for counts.
+        """
+        if self.userPaused or self.item is None:
+            return False
+        total = self.mediaLength()
+        return total > 0 and self.playhead() >= total - END_SLACK
 
     def mediaPlayerTimeChanged_(self, notification):
         self.syncScrubber()

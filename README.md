@@ -82,8 +82,16 @@ Stop, volume, Favorite, Tag, Open New and Playlist. AVKit used to draw a
 floating bar that could not be added to; VLC draws a picture and nothing else,
 so the bar is ours and can hold whatever it needs to.
 
-Seeking deserves a note. VLC ignores a seek on a paused player and says
-nothing about it, so a skip button would quietly stop working whenever you had
+Two VLC behaviours are worth knowing, because both were found the hard way.
+
+**It does not reliably say a video ended.** Measured on a three second clip:
+at the last frame the state goes to *Paused* and *Ended* never arrives. Wait
+for Ended, as anyone would, and the queue sits still at the end of every
+video. So a pause at the very end that nobody asked for is treated as the end
+— and only one nobody asked for, because pausing by hand a second before the
+end must not skip you onward.
+
+**It ignores a seek on a paused player** and says nothing about it, so a skip button would quietly stop working whenever you had
 paused — exactly when you most want it. Measured: `setPosition` while paused
 does nothing at all, while play-seek-pause lands within half a second. So a
 paused player is nudged into playing for the length of the seek and put
