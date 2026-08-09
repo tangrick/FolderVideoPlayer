@@ -63,6 +63,7 @@ replacing the app never loses it: `tags.json` for tags and favorites,
 | | |
 |---|---|
 | `⌘.` | stop — back to the start and staying there |
+| `⌘0` | bring the player window back after closing it |
 | `⌘⇧D` | favorite / unfavorite the current video |
 | `⌘T` | tag the current video, or the drawer's selection |
 | `←` `→` | skip back / forward 15 seconds |
@@ -118,8 +119,8 @@ picking up where you left off is one click and a decision rather than an
 ambush. Everything is still remembered either way.
 
 Closing the window does not quit — Cmd-Q does. Closing it pauses playback and
-saves your place. The Dock icon brings it back, and so does anything that
-starts something: **Open New…**, **Play Tag**, **Play Favorites** or
+saves your place. **Window → FolderVideoPlayer** (`⌘0`) brings it back, and so
+does the Dock icon, and so does anything that starts something: **Open New…**, **Play Tag**, **Play Favorites** or
 **Resume** all put the picture back on screen first. Changing track does not,
 so a folder playing while you work in another app never steals focus. A window close should not
 cost you a queue, a place in a video, or a folder scan that is halfway

@@ -1731,6 +1731,13 @@ class AppDelegate(NSObject):
         self.thumbItem.setState_(STATE_ON if self.showThumbs else STATE_OFF)
 
         window = self.menu(bar, "Window")
+        # Closing the window stopped quitting the app, so there has to be a way
+        # back that is not the Dock icon — the Window menu is where anyone
+        # would look for it, and it is the one menu that stays usable when
+        # there is no window on screen.
+        self.add(window, "FolderVideoPlayer", "showPlayerWindow:", "0",
+                 NSEventModifierFlagCommand)
+        window.addItem_(NSMenuItem.separatorItem())
         window.addItemWithTitle_action_keyEquivalent_("Minimize", "performMiniaturize:", "m")
         # ⌃⌘F is the system-standard fullscreen shortcut; ⌘⇧F is Play Favorites
         window.addItemWithTitle_action_keyEquivalent_(
@@ -1740,6 +1747,99 @@ class AppDelegate(NSObject):
         NSApplication.sharedApplication().setMainMenu_(bar)
 
     @objc.python_method
+    @objc.python_method
+    def buildScrubber(self, bar, width):
+        """The position slider and its two clocks, on their own row."""
+        y = 48 + (SCRUB_H - 20) / 2
+        self.elapsedLabel = self.label(NSMakeRect(14, y, TIME_W, 18), 11, 0,
+                                       align=ALIGN_RIGHT, dim=True)
+        self.remainLabel = self.label(NSMakeRect(width - 14 - TIME_W, y, TIME_W, 18),
+                                      11, 0, dim=True)
+        self.remainLabel.setAutoresizingMask_(NSViewMinXMargin)
+        self.scrubber = NSSlider.alloc().initWithFrame_(
+            NSMakeRect(14 + TIME_W + 8, y - 1, width - 2 * (14 + TIME_W + 8), 20))
+        self.scrubber.setMinValue_(0.0)
+        self.scrubber.setMaxValue_(1.0)
+        self.scrubber.setDoubleValue_(0.0)
+        self.scrubber.setAutoresizingMask_(NSViewWidthSizable)
+        self.scrubber.setTarget_(self)
+        self.scrubber.setAction_("scrubbed:")
+        # Fires while the knob moves, so the picture follows the drag rather
+        # than jumping once it is let go.
+        self.scrubber.setContinuous_(True)
+        for v in (self.elapsedLabel, self.remainLabel, self.scrubber):
+            bar.addSubview_(v)
+
+    @objc.python_method
+    def xportButton(self, glyph, action, x, y):
+        """A transport button: a glyph, narrow enough that four fit."""
+        button = NSButton.alloc().initWithFrame_(NSMakeRect(x, y, XPORT_W, BUTTON_H))
+        button.setTitle_(glyph)
+        button.setBezelStyle_(NSBezelStyleRounded)
+        button.setFont_(NSFont.systemFontOfSize_(11))
+        button.setTarget_(self)
+        button.setAction_(action)
+        return button
+
+    def scrubbed_(self, sender):
+        """Drag the slider, move the video."""
+        total = self.mediaLength()
+        if self.item is None or total <= 0:
+            return
+        self.scrubbing = True
+        self.seekTo(total * float(sender.doubleValue()))
+        self.showTimes(total * float(sender.doubleValue()), total)
+        self.performSelector_withObject_afterDelay_("endScrub:", None, 0.35)
+
+    def endScrub_(self, _):
+        self.scrubbing = False
+
+    def togglePlayPause_(self, sender):
+        if self.item is None or self.vlc is None:
+            return
+        if self.vlc.isPlaying():
+            self.vlc.pause()
+        else:
+            self.vlc.play()
+        self.syncTransport()
+
+    def volumeChanged_(self, sender):
+        self.volume = int(sender.doubleValue())
+        audio = self.vlc.audio() if self.vlc else None
+        if audio:
+            audio.setVolume_(self.volume)
+        self.saveState()
+
+    @objc.python_method
+    def syncTransport(self):
+        """Keep the play button and the transport in step with reality."""
+        if getattr(self, "playButton", None) is None:
+            return
+        playing = bool(self.vlc.isPlaying()) if self.vlc else False
+        self.playButton.setTitle_("❚❚" if playing else "▶")
+        more = len(self.playlist) > 1
+        self.prevButton.setEnabled_(more)
+        self.nextButton.setEnabled_(more)
+        self.stopButton.setEnabled_(bool(self.playlist))
+        self.playButton.setEnabled_(bool(self.playlist))
+
+    @objc.python_method
+    def syncScrubber(self):
+        """Follow the playhead, unless the knob is under someone's finger."""
+        if getattr(self, "scrubber", None) is None or self.scrubbing:
+            return
+        total = self.mediaLength()
+        now = self.playhead()
+        self.scrubber.setEnabled_(total > 0)
+        self.scrubber.setDoubleValue_(now / total if total > 0 else 0.0)
+        self.showTimes(now, total)
+
+    @objc.python_method
+    def showTimes(self, now, total):
+        self.elapsedLabel.setStringValue_(clock(now) if total > 0 else "")
+        self.remainLabel.setStringValue_(
+            "-" + clock(max(0.0, total - now)) if total > 0 else "")
+
     @objc.python_method
     def barButton(self, title, action, x, width=None, ypos=None):
         button = NSButton.alloc().initWithFrame_(
@@ -1782,13 +1882,21 @@ class AppDelegate(NSObject):
         content = NSView.alloc().initWithFrame_(rect)
 
         # Video fills everything above the control bar and grows with the window.
-        # A plain view, not an AVPlayerView: VLC renders into whatever it is
-        # given, and the controls are ours now.
-        self.playerView = NSView.alloc().initWithFrame_(
-            NSMakeRect(0, MAIN_BAR_H, rect.size.width, rect.size.height - MAIN_BAR_H))
+        # VLCVideoView, not a plain NSView: VLCKit ships it for exactly this
+        # and it is the drawable the framework expects on macOS. A bare view
+        # gets a vout attached and shows nothing — the picture goes somewhere
+        # you cannot see.
+        frame = NSMakeRect(0, MAIN_BAR_H, rect.size.width,
+                           rect.size.height - MAIN_BAR_H)
+        if VLC_READY:
+            self.playerView = VLCVideoView.alloc().initWithFrame_(frame)
+            self.playerView.setBackColor_(NSColor.blackColor())
+            self.playerView.setFillScreen_(False)   # letterbox, never crop
+        else:
+            self.playerView = NSView.alloc().initWithFrame_(frame)
+            self.playerView.setWantsLayer_(True)
+            self.playerView.layer().setBackgroundColor_(NSColor.blackColor().CGColor())
         self.playerView.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
-        self.playerView.setWantsLayer_(True)
-        self.playerView.layer().setBackgroundColor_(NSColor.blackColor().CGColor())
         click = NSClickGestureRecognizer.alloc().initWithTarget_action_(
             self, "clickedVideo:")
         self.playerView.addGestureRecognizer_(click)
@@ -1800,8 +1908,11 @@ class AppDelegate(NSObject):
         self.vlc = None
         if VLC_READY:
             self.vlc = VLCMediaPlayer.alloc().init()
-            self.vlc.setDrawable_(self.playerView)
             self.vlc.setDelegate_(self)
+            # The drawable is attached later, not here. At this point the view
+            # has no window yet — buildWindow has not handed the content view
+            # over — and VLC creates its video output against the window the
+            # drawable is in. Set it now and the output has nowhere to go.
 
         # The control bar. All of it is ours now — VLC draws a picture and
         # nothing else, so the scrubber, the clock and the transport are as
@@ -2515,6 +2626,10 @@ class AppDelegate(NSObject):
     def openNew_(self, sender):
         self.showOpeningChoice()
 
+    def showPlayerWindow_(self, sender):
+        """Window ▸ FolderVideoPlayer, for when the window has been closed."""
+        self.showPlayer()
+
     @objc.python_method
     def showPlayer(self):
         """Bring the window back if it has been closed.
@@ -2755,6 +2870,7 @@ class AppDelegate(NSObject):
 
         self.itemPath = self.playlist[self.index]
         self.pendingResume = self.progress.get(self.itemPath, 0)
+        self.attachDrawable()
         self.item = VLCMedia.alloc().initWithURL_(
             NSURL.fileURLWithPath_(self.itemPath))
         self.vlc.setMedia_(self.item)
@@ -2935,6 +3051,19 @@ class AppDelegate(NSObject):
         self.vlc.pause()
         self.syncTransport()
         self.syncScrubber()
+
+    @objc.python_method
+    def attachDrawable(self):
+        """Give VLC the view to draw into, once it is really on screen.
+
+        Done on the way into playback rather than at build time, because the
+        video output is created against the drawable's window and the view has
+        no window while the window is still being assembled.
+        """
+        if self.vlc is None or self.playerView.window() is None:
+            return
+        if self.vlc.drawable() is not self.playerView:
+            self.vlc.setDrawable_(self.playerView)
 
     @objc.python_method
     def playhead(self):
