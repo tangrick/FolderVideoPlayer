@@ -3,9 +3,8 @@
 A native macOS media player that plays a whole folder back to back, loops
 forever, and keeps a persistent favorites list that plays the same way.
 
-Built with PyObjC on AVKit/AVFoundation, so playback is hardware accelerated
-and the transport controls, fullscreen and Picture-in-Picture are the real
-system ones.
+Built with PyObjC, playing through VLCKit, so it opens whatever VLC opens —
+`.flv`, `.mkv`, `.avi` and the rest, not just what AVFoundation allows.
 
 ![macOS](https://img.shields.io/badge/macOS-10.15%2B-blue)
 ![universal](https://img.shields.io/badge/arch-universal%20(arm64%20%2B%20x86__64)-lightgrey)
@@ -103,13 +102,6 @@ add a button to the bar; tvOS has `transportBarCustomMenuItems` for precisely
 this and macOS has no equivalent. Drawing chevrons on top of the video was
 tried next and removed again: a control floating over the picture is not a
 control in the bar. Replacing the player was the only real answer.
-
-The app's own bar keeps only what AVKit has no idea about: Favorite, Tag,
-Open New and Playlist.
-
-The rewind and fast-forward buttons AVKit draws itself are *scan* controls —
-they work while held down and do nothing on a click, which is why they never
-behaved like skip buttons.
 
 **Stop** is not pause. Pause means "I am coming back to this spot", so the
 position is kept; stop means "I am done with this", so the video rewinds and
