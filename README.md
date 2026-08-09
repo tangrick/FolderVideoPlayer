@@ -23,31 +23,39 @@ system ones.
 
 - **Pick a folder → it plays.** Every video in it, in order, subfolders
   included. After the last one it wraps to the first and keeps going.
-- **Opens straight into playing.** No dialog on the way in: it carries on
-  from the folder, video and moment you last quit on. Each video remembers
-  how far in you got.
+- **Nothing plays until you say so.** No dialog on the way in and no video
+  starting by itself — **Open New…** offers to resume the folder, video and
+  moment you last stopped on. Each video remembers how far in you got.
 - **Recent folders.** **File → Open Recent** lists the last eight folders you
   played, so a folder you come back to is two clicks away.
 - **Repeat All, Repeat One, Shuffle or Play Once.** Shuffle deals the folder
   into a random order and plays all of it before anything comes round again.
 - **Speed from 0.5× to 2×**, and it stays put across track changes and the
   system play/pause controls.
-- **Tags.** Label videos with any keywords you like, one at a time or a
-  whole selection at once, then filter by them or play everything carrying a
-  tag as one queue across folders.
+- **Tags, with no save step.** Click a tag and it is tagged. Label videos with
+  any keywords you like, one at a time or a whole selection at once, then
+  filter by them or play everything carrying a tag as one queue across
+  folders. Tags on a NAS follow you to another Mac, or to the Apple TV app.
 - **Favorites.** Star anything while it's playing. Favorites can span any
   number of folders and play as one looping list. A favorite is just a video
   tagged `Favorite`, so it lives alongside your other tags.
 - **Playlist drawer.** Slides in from the right, highlights what's playing.
   Click a row, or arrow up and down it, to jump straight to that video. Rows
-  show a ★ and a running time, subfolders get headings, and the filter box at
-  the top makes a 300-file folder navigable.
+  show a poster frame, a ★ and a running time, subfolders get headings, and
+  the filter box at the top makes a 300-file folder navigable.
+- **Find duplicates.** Sweep folders you choose, or let the app notice as you
+  watch — every video you play is fingerprinted for the price of 128 KB.
+  Duplicates are grouped with the keeper already chosen and the reason shown,
+  tags from a discarded copy move to the one you keep, and nothing is ever
+  deleted: copies go to the Trash, or to a folder you nominate on a share that
+  has no Trash.
 - **Open New…** switches folders or jumps to a tag without restarting.
 
 Everything the app remembers lives in
 `~/Library/Application Support/FolderVideoPlayer/`, outside the app bundle, so
-replacing the app never loses it: `tags.json` for tags and favorites, and
-`state.json` for recent folders, resume positions and the last session.
+replacing the app never loses it: `tags.json` for tags and favorites,
+`state.json` for recent folders, resume positions and the last session, and
+`fingerprints.json` for what the duplicate finder has learned.
 `favorites.json` is only read once, to migrate an older version's stars.
 
 ## Controls
