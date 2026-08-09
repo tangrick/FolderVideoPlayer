@@ -2292,7 +2292,40 @@ class AppDelegate(NSObject):
                                              for n in self.tagsFor(path))
 
     @objc.python_method
+    @objc.python_method
+    def chosenIndexes(self):
+        """The playlist indices currently selected, ignoring headings."""
+        return [self.rows[r][0] for r in self.table.selectedRowIndexes()
+                if 0 <= r < len(self.rows) and self.rows[r][0] is not None]
+
+    @objc.python_method
+    def reselect(self, indexes):
+        """Select those playlist items again, wherever they are now.
+
+        Returns whether anything was restored, so a rebuild that lost them all
+        — a filter that hid them, say — still falls back to showing what is
+        playing rather than leaving nothing selected.
+        """
+        if len(indexes) < 2:
+            return False              # one row is the highlight's business
+        wanted = set(indexes)
+        rows = [r for r, (i, _) in enumerate(self.rows) if i in wanted]
+        if not rows:
+            return False
+        self.syncing = True
+        try:
+            self.table.deselectAll_(None)
+            for r in rows:
+                self.table.selectRowIndexes_byExtendingSelection_(
+                    NSIndexSet.indexSetWithIndex_(r), True)
+            self.revealedIndex = self.index
+        finally:
+            self.syncing = False
+        return True
+
+    @objc.python_method
     def rebuildRows(self):
+        chosen = self.chosenIndexes()
         needle = self.filterText.lower()
         self.rows = []
         heading = object()            # a sentinel no real label can equal
@@ -2307,6 +2340,12 @@ class AppDelegate(NSObject):
                     self.rows.append((None, label))
             self.rows.append((i, name))
         self.table.reloadData()
+        # Put a multi-row selection back where it was. Tagging rebuilds these
+        # rows on every click now that there is no Save button, and moving the
+        # highlight to the playing video each time made tagging a selection
+        # impossible: the first tag threw away the selection the rest needed.
+        if self.reselect(chosen):
+            return
         self.revealCurrentRow(force=True)   # these are different rows now
 
     def controlTextDidChange_(self, notification):

@@ -217,6 +217,11 @@ timer keeps running.
 For one video the field shows what it already has and is the whole truth —
 delete a token to remove that tag, clear the field to remove them all.
 
+A multi-row selection survives being tagged. Every click rebuilds the rows —
+a tag changes what the filter matches — and the selection is put back
+afterwards, because with no Save button the first tag would otherwise throw
+away the selection the rest of them needed.
+
 Select several rows in the playlist drawer and `⌘T` tags them together. That
 case *adds* rather than replaces, and the panel says so: replacing would
 silently wipe tags the other videos had and this one didn't. A chip clicked a
