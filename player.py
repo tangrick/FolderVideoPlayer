@@ -193,6 +193,7 @@ SIDEBAR_W = 320
 SIDEBAR_SLIDE = 0.22          # seconds
 FILTER_H = 24
 ROW_H, GROUP_H = 22, 20
+SELECT_H = 22
 DURATION_W = 52
 NAME_TAG, TIME_TAG, CHIPS_TAG, THUMB_TAG = 1, 2, 3, 4
 THUMB_W, THUMB_H = 64, 36     # 16:9, generated at twice this for retina
@@ -469,6 +470,8 @@ class AppDelegate(NSObject):
         self.revealedIndex = None
         self.scrubbing = False
         self.userPaused = False
+        self.selectMode = False
+        self.batch = set()          # playlist indices ticked for tagging
         self.nameWindow = None
         self.nameTable = None
         self.nameRows = []
@@ -1994,22 +1997,46 @@ class AppDelegate(NSObject):
         self.sidebar.setState_(VIBRANCY_ACTIVE)
         self.sidebar.setAutoresizingMask_(NSViewHeightSizable | NSViewMinXMargin)
 
-        # Filter pinned to the top of the drawer. A folder of 300 files is not
-        # navigable by scrolling alone.
+        # Select mode, above the filter. Selecting a row and playing a row were
+        # the same gesture, so a batch could not be built without playback
+        # jumping about, and a batch of one was impossible. This separates
+        # them: while Select is on, clicking a row ticks it and plays nothing.
+        top = height - SELECT_H - 8
+        self.selectButton = NSButton.alloc().initWithFrame_(
+            NSMakeRect(8, top, 74, SELECT_H))
+        self.selectButton.setTitle_("Select")
+        self.selectButton.setBezelStyle_(NSBezelStyleRounded)
+        self.selectButton.setFont_(NSFont.systemFontOfSize_(11))
+        self.selectButton.setTarget_(self)
+        self.selectButton.setAction_("toggleSelectMode:")
+        self.selectButton.setAutoresizingMask_(NSViewMinYMargin)
+        self.batchLabel = self.label(
+            NSMakeRect(88, top + 2, SIDEBAR_W - 96 - 96, SELECT_H - 4), 11, 0, dim=True)
+        self.batchLabel.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
+        self.allButton = self.tinyButton("All", "selectAllRows:", SIDEBAR_W - 96, top)
+        self.noneButton = self.tinyButton("None", "selectNoRows:", SIDEBAR_W - 52, top)
+        for v in (self.selectButton, self.batchLabel, self.allButton, self.noneButton):
+            self.sidebar.addSubview_(v)
+        self.syncSelectMode()             # All and None start hidden
+
+        # Filter pinned below it. A folder of 300 files is not navigable by
+        # scrolling alone.
         self.filterField = NSSearchField.alloc().initWithFrame_(
-            NSMakeRect(8, height - FILTER_H - 8, SIDEBAR_W - 16, FILTER_H))
+            NSMakeRect(8, height - SELECT_H - FILTER_H - 12, SIDEBAR_W - 16, FILTER_H))
         self.filterField.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
         self.filterField.setPlaceholderString_("Filter")
         self.filterField.setDelegate_(self)
         self.sidebar.addSubview_(self.filterField)
 
-        listHeight = height - FILTER_H - 16
+        listHeight = height - FILTER_H - SELECT_H - 20
         self.table = NSTableView.alloc().initWithFrame_(
             NSMakeRect(0, 0, SIDEBAR_W, listHeight))
         column = NSTableColumn.alloc().initWithIdentifier_("name")
         column.setWidth_(SIDEBAR_W - 24)
         self.table.addTableColumn_(column)
         self.table.setHeaderView_(None)
+        self.table.setTarget_(self)
+        self.table.setAction_("rowClicked:")
         self.table.setRowHeight_(ROW_H)
         self.table.setUsesAlternatingRowBackgroundColors_(True)
         # Several rows can be picked so they can be tagged together; playback
@@ -2125,6 +2152,14 @@ class AppDelegate(NSObject):
         # the way out, which looks exactly like the app losing your tag.
         if self.tagPanelOpen:
             self.commitTypedTags()
+        if self.selectMode:
+            # A batch is done with when its panel closes. Leaving Select on
+            # with rows still ticked is how the next click ends up somewhere
+            # surprising.
+            self.selectMode = False
+            self.batch = set()
+            self.syncSelectMode()
+            self.refreshRows()
         self.slideTagPanel(False)
         self.tagTargets = []
         self.window.makeFirstResponder_(self.playerView)
@@ -2292,6 +2327,67 @@ class AppDelegate(NSObject):
                                              for n in self.tagsFor(path))
 
     @objc.python_method
+    @objc.python_method
+    def tinyButton(self, title, action, x, y):
+        b = NSButton.alloc().initWithFrame_(NSMakeRect(x, y, 42, SELECT_H))
+        b.setTitle_(title)
+        b.setBezelStyle_(NSBezelStyleRounded)
+        b.setFont_(NSFont.systemFontOfSize_(10))
+        b.setTarget_(self)
+        b.setAction_(action)
+        b.setAutoresizingMask_(NSViewMinXMargin | NSViewMinYMargin)
+        return b
+
+    def toggleSelectMode_(self, sender):
+        self.selectMode = not self.selectMode
+        if not self.selectMode:
+            self.batch = set()
+        self.syncSelectMode()
+        self.refreshRows()
+
+    def selectAllRows_(self, sender):
+        """Everything the filter is currently showing, not the whole folder."""
+        if not self.selectMode:
+            return
+        self.batch = {i for i, _ in self.rows if i is not None}
+        self.syncSelectMode()
+        self.refreshRows()
+
+    def selectNoRows_(self, sender):
+        self.batch = set()
+        self.syncSelectMode()
+        self.refreshRows()
+
+    def rowClicked_(self, sender):
+        """A click ticks a row while Select is on, and plays it otherwise."""
+        if not self.selectMode:
+            return                        # the selection-change path plays it
+        row = self.table.clickedRow()
+        if not 0 <= row < len(self.rows):
+            return
+        index = self.rows[row][0]
+        if index is None:
+            return                        # a heading is not a video
+        self.batch.symmetric_difference_update({index})
+        self.syncSelectMode()
+        self.refreshRows()
+
+    @objc.python_method
+    def syncSelectMode(self):
+        """Keep the drawer's header honest about what is ticked."""
+        if getattr(self, "selectButton", None) is None:
+            return
+        self.selectButton.setState_(STATE_ON if self.selectMode else STATE_OFF)
+        self.selectButton.setTitle_("Selecting" if self.selectMode else "Select")
+        self.batchLabel.setStringValue_(
+            "%d selected" % len(self.batch) if self.selectMode else "")
+        for b in (self.allButton, self.noneButton):
+            b.setHidden_(not self.selectMode)
+        if self.selectMode and self.batch:
+            self.tagButton.setTitle_("Tag %d ⌃" % len(self.batch))
+        else:
+            self.tagButton.setTitle_("Tag ⌃")
+
     @objc.python_method
     def chosenIndexes(self):
         """The playlist indices currently selected, ignoring headings."""
@@ -2497,8 +2593,11 @@ class AppDelegate(NSObject):
     def videoRow(self, tableView, index, name):
         view = self.reuse(tableView, "video", self.buildVideoRow)
         path = self.playlist[index]
+        tick = ""
+        if self.selectMode:
+            tick = "☑  " if index in self.batch else "☐  "
         view.viewWithTag_(NAME_TAG).setStringValue_(
-            ("★  " if self.isFavorite(path) else "") + name)
+            tick + ("★  " if self.isFavorite(path) else "") + name)
         seconds = self.durations.get(path)
         view.viewWithTag_(TIME_TAG).setStringValue_(clock(seconds) if seconds else "")
         shot = view.viewWithTag_(THUMB_TAG)
@@ -3370,6 +3469,12 @@ open "$APP"
     @objc.python_method
     def selectedPaths(self):
         """What a tag command should act on: the drawer's selection, or what's playing."""
+        if self.selectMode and self.batch:
+            # The ticked set, in playlist order, and immune to the highlight
+            # moving or the rows being rebuilt under it.
+            return [self.playlist[i]
+                    for i in sorted(i for i in self.batch if isinstance(i, int))
+                    if 0 <= i < len(self.playlist)]
         rows = [self.rows[r][0] for r in self.table.selectedRowIndexes()
                 if 0 <= r < len(self.rows) and self.rows[r][0] is not None]
         if len(rows) > 1:

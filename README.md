@@ -209,6 +209,17 @@ timer keeps running.
 For one video the field shows what it already has and is the whole truth —
 delete a token to remove that tag, clear the field to remove them all.
 
+**Select** in the drawer is how you tag a batch. Turn it on and clicking a row
+ticks it instead of playing it; the header counts what is ticked, **All** and
+**None** work on whatever the filter is showing, and `⌘T` tags the lot. It
+turns itself off when the tag panel closes.
+
+It exists because selecting a row and playing a row used to be the same
+gesture. You could not assemble a batch without playback jumping around
+underneath you, and a batch of exactly one video was impossible. The ticked
+set is kept separately from the table's own highlight, so nothing — playback
+moving on, a folder scan, a tag rebuild — can disturb it.
+
 A multi-row selection survives being tagged. Every click rebuilds the rows —
 a tag changes what the filter matches — and the selection is put back
 afterwards, because with no Save button the first tag would otherwise throw
