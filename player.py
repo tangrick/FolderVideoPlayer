@@ -2016,6 +2016,10 @@ class AppDelegate(NSObject):
         self.batchLabel.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
         self.allButton = self.tinyButton("All", "selectAllRows:", SIDEBAR_W - 96, top)
         self.noneButton = self.tinyButton("None", "selectNoRows:", SIDEBAR_W - 52, top)
+        for v in (self.selectButton, self.allButton, self.noneButton):
+            # None of these may take the keyboard: they sit above the list in
+            # the key view loop, and arrow keys belong to the list.
+            v.setRefusesFirstResponder_(True)
         for v in (self.selectButton, self.batchLabel, self.allButton, self.noneButton):
             self.sidebar.addSubview_(v)
         self.syncSelectMode()             # All and None start hidden
@@ -2295,6 +2299,8 @@ class AppDelegate(NSObject):
             return self.syncNameButtons()     # the buttons follow the selection
         if self.syncing or self.isTagTable(table):
             return
+        if self.selectMode:
+            return                        # moving the highlight is not playing
         if self.table.numberOfSelectedRows() == 1:
             self.jumpToRow(self.table.selectedRow())
 
@@ -2369,6 +2375,21 @@ class AppDelegate(NSObject):
         self.syncSelectMode()
         self.refreshRows()
 
+    def tableView_shouldTypeSelectForEvent_withCurrentSearchString_(
+            self, view, event, search):
+        """Space ticks the highlighted row while Select is on.
+
+        Type-select is where a bare keypress in a table ends up, so this is
+        the hook that lets the arrow keys and the space bar work together as
+        the way to build a batch without touching the mouse.
+        """
+        if self.selectMode and view is self.table and str(event.characters()) == " ":
+            self.tickRow(self.table.selectedRow(), False)
+            self.syncSelectMode()
+            self.refreshRows()
+            return False
+        return True
+
     def rowClicked_(self, sender):
         """A click ticks a row while Select is on, and plays it otherwise."""
         if not self.selectMode:
@@ -2421,7 +2442,9 @@ class AppDelegate(NSObject):
         # An open panel has to follow the ticks. It used to pin its subject on
         # opening, which is right when the queue is moving underneath it and
         # wrong when you are deliberately choosing what it acts on.
-        if self.tagPanelOpen and self.selectMode:
+        # getattr, because this now runs while the drawer is being built and
+        # the tag panel does not exist yet at that point.
+        if getattr(self, "tagPanelOpen", False) and self.selectMode:
             self.retargetTagPanel()
 
     @objc.python_method
