@@ -1898,24 +1898,22 @@ class AppDelegate(NSObject):
 
         self.tagCaption = self.label(
             NSMakeRect(14, TAG_PANEL_H - 76, width - 28, 14), 11, 0, dim=True)
-        self.tagCaption.setStringValue_("Tags you already use")
         self.tagCaption.setAutoresizingMask_(NSViewWidthSizable)
 
         self.chipRow = NSView.alloc().initWithFrame_(
             NSMakeRect(14, TAG_PANEL_H - 98, width - 28, CHIP_H))
         self.chipRow.setAutoresizingMask_(NSViewWidthSizable)
 
-        self.tagSave = self.barButton("Save", "saveTagPanel:", width - 14 - BUTTON_W)
-        self.tagSave.setFrameOrigin_((width - 14 - BUTTON_W, 10))
-        self.tagSave.setAutoresizingMask_(NSViewMinXMargin)
-        cancel = self.barButton("Cancel", "closeTagPanel:",
-                                width - 22 - 2 * BUTTON_W)
-        cancel.setFrameOrigin_((width - 22 - 2 * BUTTON_W, 10))
-        cancel.setAutoresizingMask_(NSViewMinXMargin)
-        cancel.setKeyEquivalent_("\033")          # Escape backs out
+        # Done, not Save: everything is applied the moment you click it, so
+        # there is nothing left to commit and nothing to cancel. The button is
+        # here only because a panel needs a way out that is not a keystroke.
+        done = self.barButton("Done", "closeTagPanel:", width - 14 - BUTTON_W)
+        done.setFrameOrigin_((width - 14 - BUTTON_W, 10))
+        done.setAutoresizingMask_(NSViewMinXMargin)
+        done.setKeyEquivalent_("\033")            # Escape closes it too
 
         for view in [self.tagSubject, self.tagField, self.tagCaption,
-                     self.chipRow, self.tagSave, cancel]:
+                     self.chipRow, done]:
             self.tagPanel.addSubview_(view)
         content.addSubview_(self.tagPanel)
 
@@ -1940,12 +1938,10 @@ class AppDelegate(NSObject):
         if len(paths) == 1:
             self.tagSubject.setStringValue_(os.path.basename(paths[0]))
             self.tagField.setObjectValue_(list(self.tagsFor(paths[0])))
-            self.tagSave.setTitle_("Save")
         else:
             self.tagSubject.setStringValue_(
                 "%d videos — tags are added, nothing is removed" % len(paths))
             self.tagField.setObjectValue_([])
-            self.tagSave.setTitle_("Add Tags")
         # Hold the video still while you label it. Anything that was already
         # paused stays paused, so closing never starts something unbidden.
         self.wasPlaying = self.player.rate() != 0
@@ -1956,6 +1952,10 @@ class AppDelegate(NSObject):
         self.window.makeFirstResponder_(self.tagField)
 
     def closeTagPanel_(self, sender):
+        # Anything typed and not yet tokenised would otherwise be dropped on
+        # the way out, which looks exactly like the app losing your tag.
+        if self.tagPanelOpen:
+            self.commitTypedTags()
         self.slideTagPanel(False)
         self.tagTargets = []
         self.window.makeFirstResponder_(self.playerView)
@@ -1970,11 +1970,30 @@ class AppDelegate(NSObject):
         elif resume:
             self.player.play()
 
-    def saveTagPanel_(self, sender):
+    def controlTextDidEndEditing_(self, notification):
+        """A typed tag lands when you finish typing it.
+
+        On the end of editing rather than on every keystroke: the field would
+        otherwise create a tag called "B", then "Bi", then "Big" on the way to
+        one called "Big".
+        """
+        if not self.tagPanelOpen or not notification.object().isEqual_(self.tagField):
+            return
+        self.commitTypedTags()
+
+    @objc.python_method
+    def commitTypedTags(self):
         names = parse_tags(", ".join(str(t) for t in self.tagField.objectValue() or []))
-        self.applyTags(self.tagTargets, names)
-        self.closeTagPanel_(sender)
+        targets = self.tagTargets or ([self.currentPath()] if self.currentPath() else [])
+        if not targets:
+            return
+        if len(targets) == 1 and names == list(self.tagsFor(targets[0])):
+            return                        # nothing actually changed
+        self.applyTags(targets, names)
+        if len(targets) > 1:
+            self.tagField.setObjectValue_([])   # added to all; the field is spent
         self.tagsChanged()
+        self.fillSuggestions()
 
     @objc.python_method
     def applyTags(self, paths, names):
@@ -2000,23 +2019,33 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def fillSuggestions(self):
-        """Chips for tags already in use, most-used first, laid out to fit."""
+        """Chips for tags already in use, most-used first, laid out to fit.
+
+        The ones this video already carries are shown ticked rather than
+        hidden, because they are now the way to take a tag off again as well
+        as to put one on.
+        """
         for old in list(self.chipRow.subviews()):
             old.removeFromSuperview()
-        already = [str(t).lower() for t in self.tagField.objectValue() or []]
+        targets = self.tagTargets or ([self.currentPath()] if self.currentPath() else [])
+        already = set()
+        if len(targets) == 1:
+            already = {n.lower() for n in self.tagsFor(targets[0])}
         self.suggestButtons = []
         width = self.chipRow.frame().size.width
         x = 0
         for name in self.popularTags():
-            if name.lower() in already:
-                continue
-            chip = self.suggestionChip(name)
+            chip = self.suggestionChip(name, name.lower() in already)
             chipWidth = chip.frame().size.width + CHIP_PAD
             if x and x + chipWidth > width:
                 break                     # one row; the rest are reachable by typing
             chip.setFrame_(NSMakeRect(x, 0, chipWidth, CHIP_H))
             self.chipRow.addSubview_(chip)
             x += chipWidth + 5
+        self.tagCaption.setStringValue_(
+            "Click a tag to add or remove it — saved as you go"
+            if len(targets) == 1 else
+            "Click a tag to add it to all %d — saved as you go" % len(targets))
         self.tagCaption.setHidden_(not self.chipRow.subviews())
 
     # -- the playlist drawer ---------------------------------------------
@@ -3088,22 +3117,48 @@ open "$APP"
                 else STATE_OFF)
 
     @objc.python_method
-    def suggestionChip(self, name):
+    def suggestionChip(self, name, applied):
         button = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 10, CHIP_H))
-        button.setTitle_(name)
+        # The name goes on the identifier, not the title: the title carries a
+        # tick when the tag is applied, and reading a name back out of it
+        # would mean parsing decoration.
+        button.setIdentifier_(name)
+        button.setTitle_(("✓ " if applied else "") + name)
         button.setBezelStyle_(BEZEL_INLINE)
         button.setFont_(NSFont.systemFontOfSize_(11))
         button.setTarget_(self)
-        button.setAction_("addSuggestedTag:")
+        button.setAction_("toggleSuggestedTag:")
         button.sizeToFit()
         return button
 
-    def addSuggestedTag_(self, sender):
-        name = str(sender.title())
-        current = [str(t) for t in self.tagField.objectValue() or []]
-        if not any(n.lower() == name.lower() for n in current):
-            self.tagField.setObjectValue_(current + [name])
-        sender.setEnabled_(False)         # it is in the field now
+    def toggleSuggestedTag_(self, sender):
+        """Click a tag, it is tagged. No save step.
+
+        Applied straight to the videos rather than staged in the field: a
+        panel that needs a Save is a panel you can leave without saving, and
+        for something as small as one keyword that is all cost and no benefit.
+        """
+        name = str(sender.identifier())
+        targets = self.tagTargets or ([self.currentPath()] if self.currentPath() else [])
+        if not targets:
+            return
+        if len(targets) == 1:
+            path = targets[0]
+            if self.hasTag(path, name):
+                self.setTagsFor(path, [n for n in self.tagsFor(path)
+                                       if n.lower() != name.lower()])
+            else:
+                self.setTagsFor(path, self.tagsFor(path) + [name])
+            self.tagField.setObjectValue_(list(self.tagsFor(path)))
+        else:
+            # Several: still only ever adds. Un-ticking one here would strip
+            # it from every selected video at once, which is a lot to do by
+            # accident — Manage Tags is where removing in bulk belongs.
+            for path in targets:
+                if not self.hasTag(path, name):
+                    self.setTagsFor(path, self.tagsFor(path) + [name])
+        self.tagsChanged()
+        self.fillSuggestions()
 
     @objc.python_method
     def popularTags(self):

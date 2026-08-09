@@ -158,11 +158,23 @@ and fills in a moment later. Neither is cached between launches.
 ## Tags
 
 The **Tag** button in the control bar, or `⌘T`, slides a panel up over the
-bottom of the video. Tags are chips, not text: type and a comma or return
-completes one, each carries its own delete button, and typing completes
-against tags you already use. Underneath, the tags you use most sit as
-one-click chips, which is what stops `holiday` and `holidays` drifting apart
-in the first place.
+bottom of the video.
+
+**There is no Save.** Click a tag and it is tagged — written, published and
+reflected in the list before you have let go of the mouse. Click it again to
+take it off. The tags you use most sit along the bottom as one-click chips,
+ticked when this video already carries them, which is both the fastest way to
+tag and what stops `holiday` and `holidays` drifting apart.
+
+A panel with a Save button is a panel you can leave without saving, and for
+something as small as one keyword that is all cost and no benefit. The **Done**
+button only closes it; so does Escape, or `⌘T` again.
+
+Typing still works for a tag that is not on a chip yet: the field takes tokens,
+a comma or return completes one, and it completes against tags you already
+use. What you type lands when you finish typing it rather than on every
+keystroke — otherwise typing `Big` would leave you with tags called `B` and
+`Bi` on the way.
 
 The video pauses while the panel is open and picks up where it left off when
 you close it — so what you are looking at is always what you are labelling.
@@ -171,13 +183,16 @@ the transport controls and the menus all keep working, and the resume-position
 timer keeps running.
 
 For one video the field shows what it already has and is the whole truth —
-delete a chip to remove that tag, clear the field to remove them all.
+delete a token to remove that tag, clear the field to remove them all.
 
 Select several rows in the playlist drawer and `⌘T` tags them together. That
-case *adds* rather than replaces, and the sheet says so: replacing would
-silently wipe tags the other videos had and this one didn't. Selecting a
-range never disturbs playback; only a selection of exactly one row jumps the
-player to it.
+case *adds* rather than replaces, and the panel says so: replacing would
+silently wipe tags the other videos had and this one didn't. A chip clicked a
+second time therefore does **not** strip that tag from the whole selection —
+with no Save step to catch it, one stray click would otherwise untag fifty
+videos. Removing in bulk is what **Manage Tags…** is for. Selecting a range
+never disturbs playback; only a selection of exactly one row jumps the player
+to it.
 
 Tagged videos show their tags as chips under the filename in the drawer.
 Only tagged rows grow the extra line — everything else stays dense.
