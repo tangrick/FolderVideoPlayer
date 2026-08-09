@@ -68,6 +68,7 @@ from Cocoa import (
     NSOpenPanel,
     NSPopUpButton,
     NSCharacterSet,
+    NSClickGestureRecognizer,
     NSScrollView,
     NSSearchField,
     NSTableColumn,
@@ -174,6 +175,7 @@ BAR_HEIGHT = 48
 # 96 rather than a roomier width so a fourth button fits on the left at the
 # 680pt minimum window size, instead of making everyone's window bigger.
 BUTTON_W, BUTTON_H = 96, 30
+STOP_W = 68                   # "■ Stop" needs no more
 SIDEBAR_W = 320
 SIDEBAR_SLIDE = 0.22          # seconds
 FILTER_H = 24
@@ -445,6 +447,7 @@ class AppDelegate(NSObject):
         self.verifyDupes = True
         self.dupeStatusLabel = None
         self.folderTable = None
+        self.discardFolder = {}       # volume -> where its discards go
         self.tagName = None           # which tag is playing, in tag mode
         self.tagWindow = None
         self.tagTable = None
@@ -464,11 +467,22 @@ class AppDelegate(NSObject):
         self.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             PROGRESS_TICK, self, "recordProgress:", None, True)
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
-        # No dialog on the way in. If there is something to carry on with, it
-        # just carries on; if not, the window says what to do and waits.
-        self.performSelector_withObject_afterDelay_("resumeLastSession", None, 0.1)
+        # Nothing plays on its own. Opening the app used to carry straight on
+        # from wherever you stopped, which is the wrong default when the app
+        # is opened to look something up rather than to keep watching —
+        # File > Open New… offers to resume, and that is a decision, not an
+        # ambush.
 
     def applicationShouldTerminateAfterLastWindowClosed_(self, sender):
+        # Quit is Cmd-Q. Closing a window is not a request to lose your place,
+        # your queue, or a folder scan that is halfway through.
+        return False
+
+    def applicationShouldHandleReopen_hasVisibleWindows_(self, app, visible):
+        """Clicking the Dock icon brings the player back."""
+        if not visible:
+            self.window.makeKeyAndOrderFront_(None)
+            NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         return True
 
     def applicationWillTerminate_(self, notification):
@@ -1016,10 +1030,12 @@ class AppDelegate(NSObject):
             return self.say("Nothing to remove", "Every group already has one copy.")
         unverified = sum(1 for g, _ in doomed if not g["verified"])
         total = sum(g["size"] for g, _ in doomed)
-        detail = ("%d file%s, freeing %s.\n\nThey go to the Trash, so this is "
-                  "undoable. Tags on a discarded copy move to the one you keep "
-                  "first." % (len(doomed), "" if len(doomed) == 1 else "s",
-                              human_bytes(total)))
+        detail = ("%d file%s, freeing %s.\n\nThey go to the Trash. A volume "
+                  "with no Trash — most shares — asks you for a folder to move "
+                  "them to instead. Nothing is deleted either way, and tags on "
+                  "a discarded copy move to the one you keep first."
+                  % (len(doomed), "" if len(doomed) == 1 else "s",
+                     human_bytes(total)))
         if unverified:
             detail += ("\n\n%d of them matched on size and both ends but were "
                        "not read in full." % unverified)
@@ -1029,6 +1045,9 @@ class AppDelegate(NSObject):
             return
 
         playing = self.currentPath()
+        # Asked afresh each run: a folder chosen an hour ago should not be
+        # reused without saying so.
+        self.discardFolder = {}
         moved, failed, kept_out = 0, [], 0
         for group, key in doomed:
             path = tag_path(key)
@@ -1038,7 +1057,7 @@ class AppDelegate(NSObject):
             # Tags first: a file in the Trash can be dragged back, but labelling
             # thrown away with it cannot.
             self.mergeTagsInto(group["keeper"], key)
-            ok, why = self.trash(path)
+            ok, why = self.discard(path)
             if ok:
                 self.prints.pop(key, None)
                 moved += 1
@@ -1054,7 +1073,10 @@ class AppDelegate(NSObject):
         self.rebuildTagsMenu()
         self.syncDupeMenu()
 
-        note = "%d moved to the Trash." % moved
+        where = set(f for f in self.discardFolder.values() if f)
+        note = "%d moved to the Trash." % moved if not where else (
+            "%d moved — to the Trash, and to %s."
+            % (moved, ", ".join(sorted(where))))
         if kept_out:
             note += "\n\n%d skipped: still playing." % kept_out
         if failed:
@@ -1072,12 +1094,7 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def trash(self, path):
-        """To the Trash, never straight to deletion.
-
-        On a share that will not take a Trash, the app says so rather than
-        quietly deleting — losing a video because a network volume behaves
-        differently from a local one is not an acceptable surprise.
-        """
+        """The Trash, if this volume has one."""
         url = NSURL.fileURLWithPath_(path)
         ok, _, err = NSFileManager.defaultManager().trashItemAtURL_resultingItemURL_error_(
             url, None, None)
@@ -1085,6 +1102,77 @@ class AppDelegate(NSObject):
             return True, ""
         reason = err.localizedDescription() if err else "the volume refused it"
         return False, str(reason)
+
+    @objc.python_method
+    def volumeOf(self, path):
+        """The mount a file lives on, so each is only asked about once."""
+        if path.startswith(VOLUMES):
+            return VOLUMES + path[len(VOLUMES):].split("/")[0]
+        return "/"
+
+    @objc.python_method
+    def discard(self, path):
+        """To the Trash — or, on a volume that has none, to a folder you pick.
+
+        SMB shares generally have no Trash, which is most of this app's
+        library. Refusing to remove anything there would make the whole
+        feature useless on a NAS; deleting instead would be worse. So the
+        third option: move them somewhere you nominate, once per volume, and
+        you delete them yourself when you are satisfied.
+        """
+        ok, why = self.trash(path)
+        if ok:
+            return True, ""
+        volume = self.volumeOf(path)
+        folder = self.discardFolder.get(volume)
+        if folder is None:
+            folder = self.askDiscardFolder(volume, why)
+            self.discardFolder[volume] = folder
+        if not folder:
+            return False, why
+        return self.moveInto(folder, path)
+
+    @objc.python_method
+    def askDiscardFolder(self, volume, why):
+        """Where discards go on a volume with no Trash. False if declined."""
+        if not self.confirm(
+                "“%s” has no Trash" % os.path.basename(volume.rstrip("/")),
+                "%s\n\nThe duplicates can be moved to a folder on that same "
+                "volume instead, which is instant and changes nothing else. "
+                "You delete them yourself once you are happy.\n\nNothing is "
+                "deleted either way." % why, "Choose Folder…"):
+            return False
+        panel = NSOpenPanel.openPanel()
+        panel.setCanChooseFiles_(False)
+        panel.setCanChooseDirectories_(True)
+        panel.setCanCreateDirectories_(True)
+        panel.setPrompt_("Move Here")
+        panel.setMessage_("Where should duplicates from this volume go?")
+        panel.setDirectoryURL_(NSURL.fileURLWithPath_(volume))
+        if panel.runModal() != 1 or not panel.URLs():
+            return False
+        return str(panel.URLs()[0].path())
+
+    @objc.python_method
+    def moveInto(self, folder, path):
+        """Move a file into a folder, without ever overwriting what is there.
+
+        Two folders can hold different videos with the same name, and one
+        quietly replacing the other is exactly the data loss this feature is
+        supposed to prevent.
+        """
+        base = os.path.basename(path)
+        stem, ext = os.path.splitext(base)
+        target = os.path.join(folder, base)
+        n = 2
+        while os.path.exists(target):
+            target = os.path.join(folder, "%s (%d)%s" % (stem, n, ext))
+            n += 1
+        try:
+            shutil.move(path, target)
+            return True, ""
+        except (OSError, shutil.Error) as err:
+            return False, str(err)
 
     # -- the deliberate sweep ---------------------------------------------
 
@@ -1548,6 +1636,7 @@ class AppDelegate(NSObject):
         play.addItem_(NSMenuItem.separatorItem())
         self.add(play, "Next Video", "nextItem:", RIGHT_ARROW, NSEventModifierFlagCommand)
         self.add(play, "Previous Video", "prevItem:", LEFT_ARROW, NSEventModifierFlagCommand)
+        self.add(play, "Stop", "stopPlayback:", ".", NSEventModifierFlagCommand)
 
         play.addItem_(NSMenuItem.separatorItem())
         self.orderItems = []
@@ -1591,9 +1680,32 @@ class AppDelegate(NSObject):
         NSApplication.sharedApplication().setMainMenu_(bar)
 
     @objc.python_method
-    def barButton(self, title, action, x):
+    @objc.python_method
+    def buildActionMenu(self):
+        """The menu button in the floating on-screen controls.
+
+        macOS AVPlayerView gives no way to add transport buttons of your own —
+        this menu is the only supported hook, so Next, Previous and a skip
+        that actually skips live here.
+
+        The buttons AVKit does draw are scan controls: they rewind and
+        fast-forward while held down, and do nothing on a click, which is why
+        they looked broken as skip buttons. They are not skip buttons.
+        """
+        menu = NSMenu.alloc().init()
+        self.add(menu, "Previous Video", "prevItem:")
+        self.add(menu, "Next Video", "nextItem:")
+        menu.addItem_(NSMenuItem.separatorItem())
+        self.add(menu, "Skip Back %d Seconds" % SKIP_SECONDS, "skipBack:")
+        self.add(menu, "Skip Forward %d Seconds" % SKIP_SECONDS, "skipForward:")
+        menu.addItem_(NSMenuItem.separatorItem())
+        self.add(menu, "Stop", "stopPlayback:")
+        return menu
+
+    @objc.python_method
+    def barButton(self, title, action, x, width=None):
         button = NSButton.alloc().initWithFrame_(
-            NSMakeRect(x, (BAR_HEIGHT - BUTTON_H) / 2, BUTTON_W, BUTTON_H))
+            NSMakeRect(x, (BAR_HEIGHT - BUTTON_H) / 2, width or BUTTON_W, BUTTON_H))
         button.setTitle_(title)
         button.setBezelStyle_(NSBezelStyleRounded)
         button.setTarget_(self)
@@ -1612,8 +1724,21 @@ class AppDelegate(NSObject):
         # pointer moving across the video, which is what people expect.
         self.window.setAcceptsMouseMovedEvents_(True)
         self.window.setFrameAutosaveName_("VideoPlayerWindow")
+        # Closing it no longer quits, so it has to outlive the close.
+        self.window.setReleasedWhenClosed_(False)
         # narrow enough and the left-hand buttons would run into the right-hand pair
-        self.window.setMinSize_(NSMakeSize(680, 380))
+        self.window.setMinSize_(NSMakeSize(760, 380))
+        # A remembered frame is restored as-is, minimum size or not — so a
+        # window saved narrower than the bar now needs comes back too narrow
+        # and the buttons overlap. Widen it once, here, rather than leaving
+        # anyone upgrading with a broken control bar.
+        was = self.window.frame()
+        least = self.window.minSize()
+        if was.size.width < least.width or was.size.height < least.height:
+            self.window.setFrame_display_(
+                NSMakeRect(was.origin.x, was.origin.y,
+                           max(was.size.width, least.width),
+                           max(was.size.height, least.height)), False)
         self.window.center()
 
         content = NSView.alloc().initWithFrame_(rect)
@@ -1628,19 +1753,31 @@ class AppDelegate(NSObject):
         self.player = AVPlayer.alloc().init()
         self.player.addObserver_forKeyPath_options_context_(self, "rate", 0, None)
         self.playerView.setPlayer_(self.player)
+        self.playerView.setActionPopUpButtonMenu_(self.buildActionMenu())
+        # A click on the picture plays or pauses. AVKit's own controls take
+        # the clicks that land on them, so this only fires on the video.
+        click = NSClickGestureRecognizer.alloc().initWithTarget_action_(
+            self, "clickedVideo:")
+        self.playerView.addGestureRecognizer_(click)
         content.addSubview_(self.playerView)
 
         # Control bar pinned to the bottom, stretching only horizontally. It sits
         # below the video so it never collides with the floating AVKit controls.
         bar = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, rect.size.width, BAR_HEIGHT))
         bar.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
+        # Stop sits inside the transport cluster, between the two it belongs
+        # with, and is narrow because "■" needs no more room than that.
         self.prevButton = self.barButton("◀ Previous", "prevItem:", 14)
-        self.nextButton = self.barButton("Next ▶", "nextItem:", 14 + BUTTON_W + 8)
+        self.stopButton = self.barButton("■ Stop", "stopPlayback:",
+                                         14 + BUTTON_W + 8, width=STOP_W)
+        self.nextButton = self.barButton("Next ▶", "nextItem:",
+                                         14 + BUTTON_W + STOP_W + 16)
         self.favButton = self.barButton("☆ Favorite", "toggleFavorite:",
-                                        14 + 2 * (BUTTON_W + 8))
+                                        14 + 2 * BUTTON_W + STOP_W + 24)
         self.tagButton = self.barButton("Tag ⌃", "toggleTagPanel:",
-                                        14 + 3 * (BUTTON_W + 8))
+                                        14 + 3 * BUTTON_W + STOP_W + 32)
         bar.addSubview_(self.prevButton)
+        bar.addSubview_(self.stopButton)
         bar.addSubview_(self.nextButton)
         bar.addSubview_(self.favButton)
         bar.addSubview_(self.tagButton)
@@ -2614,6 +2751,35 @@ class AppDelegate(NSObject):
             item.setState_(STATE_ON if float(item.representedObject()) == self.speed
                            else STATE_OFF)
 
+    def stopPlayback_(self, sender):
+        """Stop, as opposed to pause: back to the start, and staying there.
+
+        The resume position goes too. Pause means "I am coming back to this
+        spot"; stop means "I am done with it", and finding yourself dropped
+        two thirds of the way in next time would contradict that.
+        """
+        if self.item is None:
+            return
+        self.player.pause()
+        self.player.seekToTime_(CMTimeMakeWithSeconds(0, 600))
+        if self.itemPath:
+            self.progress.pop(self.itemPath, None)
+        self.saveState()
+        self.updateUI()
+
+    def clickedVideo_(self, sender):
+        """A click anywhere on the picture plays or pauses.
+
+        AVKit's own controls swallow clicks that land on them, so this only
+        ever fires on the video itself.
+        """
+        if self.item is None:
+            return
+        if self.player.rate() == 0:
+            self.player.play()
+        else:
+            self.player.pause()
+
     def skipBack_(self, sender):
         self.seekBy(-SKIP_SECONDS)
 
@@ -3270,8 +3436,11 @@ open "$APP"
             self.dupeStatusLabel = None
             self.dupeWindow = None
         elif closing.isEqual_(self.window):
-            # Otherwise closing the player leaves the app alive behind a stray
-            # utility window instead of quitting.
+            # Video playing on into a window that is not on screen is a
+            # confusing way to lose track of what the app is doing.
+            self.player.pause()
+            self.notePosition()
+            self.saveState()
             if self.tagWindow is not None:
                 self.tagWindow.close()
             if self.nameWindow is not None:

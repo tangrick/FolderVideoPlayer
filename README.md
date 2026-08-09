@@ -45,6 +45,7 @@ replacing the app never loses it: `tags.json` for tags and favorites, and
 
 | | |
 |---|---|
+| `⌘.` | stop — back to the start and staying there |
 | `⌘⇧D` | favorite / unfavorite the current video |
 | `⌘T` | tag the current video, or the drawer's selection |
 | `←` `→` | skip back / forward 15 seconds |
@@ -55,15 +56,34 @@ replacing the app never loses it: `tags.json` for tags and favorites, and
 | `⌘⇧F` | play favorites |
 | `⌃⌘F` | fullscreen |
 
-Space plays and pauses.
+Space plays and pauses, and so does clicking anywhere on the picture.
+
+**Stop** is not pause. Pause means "I am coming back to this spot", so the
+position is kept; stop means "I am done with this", so the video rewinds and
+forgets where it had got to.
+
+The floating on-screen controls carry a menu button with **Previous**,
+**Next**, **Skip Back**, **Skip Forward** and **Stop**. macOS gives no way to
+add transport buttons of your own to an `AVPlayerView`, and that menu is the
+only hook it offers. The rewind and fast-forward buttons AVKit draws itself
+are *scan* controls — they work while held down and do nothing on a click,
+which is why they never behaved like skip buttons.
 
 ## Resuming
 
-Opening the app carries on where you left off — same folder, same video,
-same moment — without asking. If that folder has since been renamed, moved,
-or lives on a drive that is not mounted, the app says nothing and simply
-waits with an empty window; being met by an error before you have even seen
-the app is worse than being met by nothing.
+Nothing plays on its own. Opening the app leaves the window waiting, because
+the app gets opened to look something up at least as often as to carry on
+watching, and starting a video unbidden is the wrong default for the first of
+those.
+
+**Open New…** offers **Resume** when there is something to carry on with, so
+picking up where you left off is one click and a decision rather than an
+ambush. Everything is still remembered either way.
+
+Closing the window does not quit — Cmd-Q does. Closing it pauses playback and
+saves your place, and the Dock icon brings it back. A window close should not
+cost you a queue, a place in a video, or a folder scan that is halfway
+through.
 
 A video you leave part-way through is remembered, and starts from there the
 next time you reach it — whether that is later in the same session, or after a
