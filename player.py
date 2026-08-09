@@ -42,6 +42,7 @@ from AVKit import AVPlayerView
 from CoreMedia import CMTimeGetSeconds, CMTimeMakeWithSeconds, kCMTimeZero
 from Cocoa import (
     NSAlert,
+    NSAttributedString,
     NSAnimationContext,
     NSApplication,
     NSAutoreleasePool,
@@ -57,6 +58,8 @@ from Cocoa import (
     NSColor,
     NSFileManager,
     NSFont,
+    NSFontAttributeName,
+    NSForegroundColorAttributeName,
     NSMakeRect,
     NSMakeSize,
     NSImage,
@@ -200,7 +203,10 @@ CHIP_H = 17
 # Previous and Next, drawn over the video
 NAV_SIZE = 44
 NAV_INSET = 12
-NAV_ALPHA = 0.28
+# The disc carries the contrast; the whole control is then dimmed a
+# little so it sits on the picture without shouting.
+NAV_ALPHA = 0.75
+NAV_DISC_ALPHA = 0.45
 CHIP_PAD = 7
 SUGGEST_MAX = 12              # tags offered as one-click chips; type for the rest
 TAG_ROW_H = 38                # a row showing its tags; untagged rows stay ROW_H
@@ -1746,15 +1752,29 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def navButton(self, glyph, action):
+        """A white chevron on a dark disc.
+
+        Both halves of that matter. A borderless button draws its title in the
+        default label colour, which is black in light appearance — black on a
+        dark video, at any opacity, is nothing at all. And a bare glyph with
+        no disc behind it disappears the moment the video underneath is pale,
+        so the contrast has to be carried by the control rather than borrowed
+        from whatever happens to be playing.
+        """
         button = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, NAV_SIZE, NAV_SIZE))
-        button.setTitle_(glyph)
-        button.setFont_(NSFont.systemFontOfSize_(34))
         button.setBordered_(False)
+        button.setTitle_(glyph)
+        button.setAttributedTitle_(
+            NSAttributedString.alloc().initWithString_attributes_(
+                glyph, {NSForegroundColorAttributeName: NSColor.whiteColor(),
+                        NSFontAttributeName: NSFont.systemFontOfSize_(30)}))
+        button.setWantsLayer_(True)
+        button.layer().setBackgroundColor_(
+            NSColor.colorWithCalibratedWhite_alpha_(0.0, NAV_DISC_ALPHA).CGColor())
+        button.layer().setCornerRadius_(NAV_SIZE / 2.0)
+        button.setAlphaValue_(NAV_ALPHA)
         button.setTarget_(self)
         button.setAction_(action)
-        # Faint, because they sit on top of the picture the whole time. Bright
-        # enough to find, dim enough to forget while you are watching.
-        button.setAlphaValue_(NAV_ALPHA)
         return button
 
     @objc.python_method
