@@ -472,6 +472,7 @@ class AppDelegate(NSObject):
         self.userPaused = False
         self.selectMode = False
         self.batch = set()          # playlist indices ticked for tagging
+        self.batchAnchor = None     # row a shift-click extends from
         self.nameWindow = None
         self.nameTable = None
         self.nameRows = []
@@ -2350,6 +2351,7 @@ class AppDelegate(NSObject):
                 self.syncTransport()
         else:
             self.batch = set()
+        self.batchAnchor = None
         self.syncSelectMode()
         self.refreshRows()
 
@@ -2363,6 +2365,7 @@ class AppDelegate(NSObject):
 
     def selectNoRows_(self, sender):
         self.batch = set()
+        self.batchAnchor = None
         self.syncSelectMode()
         self.refreshRows()
 
@@ -2376,9 +2379,29 @@ class AppDelegate(NSObject):
         index = self.rows[row][0]
         if index is None:
             return                        # a heading is not a video
-        self.batch.symmetric_difference_update({index})
+
+        event = NSApplication.sharedApplication().currentEvent()
+        shifted = bool(event and event.modifierFlags() & NSEventModifierFlagShift)
+        self.tickRow(row, shifted)
         self.syncSelectMode()
         self.refreshRows()
+
+    @objc.python_method
+    def tickRow(self, row, shifted):
+        """Tick one row, or the run back to the last one clicked."""
+        if not 0 <= row < len(self.rows) or self.rows[row][0] is None:
+            return
+        if shifted and self.batchAnchor is not None:
+            # Shift ticks the run between the last row clicked and this one,
+            # and only ticks: a range that untucked whatever it passed over
+            # would undo the selection it was meant to extend.
+            first, last = sorted((self.batchAnchor, row))
+            for r in range(first, last + 1):
+                if 0 <= r < len(self.rows) and self.rows[r][0] is not None:
+                    self.batch.add(self.rows[r][0])
+        else:
+            self.batch.symmetric_difference_update({self.rows[row][0]})
+            self.batchAnchor = row        # where a later shift-click reaches from
 
     @objc.python_method
     def syncSelectMode(self):
