@@ -2340,7 +2340,15 @@ class AppDelegate(NSObject):
 
     def toggleSelectMode_(self, sender):
         self.selectMode = not self.selectMode
-        if not self.selectMode:
+        if self.selectMode:
+            # Picking videos out of a list is not watching them. Playing on
+            # underneath means the highlight, the sound and the thing you are
+            # ticking all disagree about what you are looking at.
+            if self.vlc is not None and self.vlc.isPlaying():
+                self.userPaused = True
+                self.vlc.pause()
+                self.syncTransport()
+        else:
             self.batch = set()
         self.syncSelectMode()
         self.refreshRows()
@@ -2387,6 +2395,34 @@ class AppDelegate(NSObject):
             self.tagButton.setTitle_("Tag %d ⌃" % len(self.batch))
         else:
             self.tagButton.setTitle_("Tag ⌃")
+        # An open panel has to follow the ticks. It used to pin its subject on
+        # opening, which is right when the queue is moving underneath it and
+        # wrong when you are deliberately choosing what it acts on.
+        if self.tagPanelOpen and self.selectMode:
+            self.retargetTagPanel()
+
+    @objc.python_method
+    def retargetTagPanel(self):
+        """Point the open tag panel at whatever is ticked now.
+
+        Reads the batch rather than selectedPaths, because that falls back to
+        the playing video when nothing is ticked — which is right for Cmd-T
+        and wrong here, where an empty batch means empty.
+        """
+        paths = [self.playlist[i] for i in sorted(self.batch)
+                 if isinstance(i, int) and 0 <= i < len(self.playlist)]
+        self.tagTargets = paths
+        if len(paths) == 1:
+            self.tagSubject.setStringValue_(os.path.basename(paths[0]))
+            self.tagField.setObjectValue_(list(self.tagsFor(paths[0])))
+        elif paths:
+            self.tagSubject.setStringValue_(
+                "%d videos — tags are added, nothing is removed" % len(paths))
+            self.tagField.setObjectValue_([])
+        else:
+            self.tagSubject.setStringValue_("Nothing selected — tick a row")
+            self.tagField.setObjectValue_([])
+        self.fillSuggestions()
 
     @objc.python_method
     def chosenIndexes(self):
