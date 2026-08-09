@@ -33,12 +33,8 @@ except ImportError:
 import objc
 from AVFoundation import (
     AVAssetImageGenerator,
-    AVPlayer,
-    AVPlayerItem,
-    AVPlayerItemDidPlayToEndTimeNotification,
     AVURLAsset,
 )
-from AVKit import AVPlayerView
 from CoreMedia import CMTimeGetSeconds, CMTimeMakeWithSeconds, kCMTimeZero
 from Cocoa import (
     NSAlert,
@@ -71,6 +67,7 @@ from Cocoa import (
     NSClickGestureRecognizer,
     NSScrollView,
     NSSearchField,
+    NSSlider,
     NSTableColumn,
     NSTableView,
     NSTextField,
@@ -138,7 +135,19 @@ LEGACY_TAGS = os.path.join(SHARE_DIR, "tags.json")
 DEVICE_TAGS = "tags-%s.json"
 
 # What AVFoundation can actually decode. .mkv and .avi are deliberately absent.
-VIDEO_EXT = {".mp4", ".m4v", ".mov"}
+# What VLC will play. AVFoundation managed three of these; the rest — .flv
+# most of all — is why the app carries VLCKit at all.
+VIDEO_EXT = {".mp4", ".m4v", ".mov", ".flv", ".webm", ".avi",
+             ".mkv", ".wmv", ".mpg", ".mpeg", ".m2ts", ".ts", ".rm", ".rmvb",
+             ".3gp", ".ogv", ".divx", ".vob", ".asf", ".f4v"}
+
+# The three AVFoundation can read. Poster frames and durations use it for
+# those, because it does the job in 0.6s where VLC takes 1.5 to 4 — and on a
+# library that is mostly .mp4 that difference is the whole scan.
+FAST_EXT = {".mp4", ".m4v", ".mov"}
+
+# VLCMediaPlayerState, from VLCMediaPlayer.h
+VLC_ENDED, VLC_ERROR, VLC_PLAYING, VLC_PAUSED = 3, 4, 5, 6
 
 # Duplicate detection. 64 KB from each end is enough that two different videos
 # colliding is not a thing that happens, and small enough that the cost per
@@ -166,12 +175,13 @@ ORDER_NAMES = {value: title for title, value in ORDERS}
 SPEEDS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 NORMAL_SPEED = 1.0
 
-# 2, not 1. AVPlayerViewControlsStyleInline is 1 and is also the default, so
-# the old value quietly asked for inline controls glued to the bottom edge of
-# the video — right where this app puts its own bar — instead of the floating
-# HUD that appears wherever the pointer is.
-CONTROLS_FLOATING = 2         # AVPlayerViewControlsStyleFloating
 BAR_HEIGHT = 48
+# The main window's bar is taller: it carries the scrubber on its own row
+# above the buttons, because AVKit no longer draws one for us.
+MAIN_BAR_H = 74
+SCRUB_H = 26
+TIME_W = 58
+XPORT_W = 42                  # a transport button holds a glyph, not a word
 # 96 rather than a roomier width so a fourth button fits on the left at the
 # 680pt minimum window size, instead of making everyone's window bigger.
 BUTTON_W, BUTTON_H = 96, 30
@@ -202,7 +212,6 @@ TAG_ROW_H = 38                # a row showing its tags; untagged rows stay ROW_H
 
 VIBRANCY_SIDEBAR = 7          # NSVisualEffectMaterialSidebar
 VIBRANCY_ACTIVE = 0           # NSVisualEffectStateFollowsWindowActiveState
-STATUS_READY, STATUS_FAILED = 1, 2
 NS_OK = 1
 FIRST_BUTTON = 1000
 STATE_ON, STATE_OFF = 1, 0    # NSControlStateValue
@@ -396,6 +405,31 @@ def save_json(path, data):
         raise
 
 
+@objc.python_method
+def load_vlc():
+    """Load VLCKit, from inside the app or from vendor/ when run from source.
+
+    Not a build-time link: py2app copies the framework into the bundle and
+    PyObjC opens it at startup, which keeps the dependency to one directory
+    that can be fetched rather than committed.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    inside = NSBundle.mainBundle().privateFrameworksPath()
+    for path in [os.path.join(inside, "VLCKit.framework") if inside else "",
+                 os.path.join(here, "vendor", "VLCKit.framework"),
+                 os.path.join(here, "..", "vendor", "VLCKit.framework")]:
+        if path and os.path.isdir(path):
+            try:
+                objc.loadBundle("VLCKit", globals(), bundle_path=path)
+                return True
+            except Exception:
+                continue
+    return False
+
+
+VLC_READY = load_vlc()
+
+
 class ChipHolder(NSView):
     """Holds a row's tag chips.
 
@@ -429,6 +463,7 @@ class AppDelegate(NSObject):
         self.thumbs = {}
         self.durationGen = 0
         self.revealedIndex = None
+        self.scrubbing = False
         self.nameWindow = None
         self.nameTable = None
         self.nameRows = []
@@ -465,6 +500,14 @@ class AppDelegate(NSObject):
         self.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             PROGRESS_TICK, self, "recordProgress:", None, True)
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        if not VLC_READY:
+            self.emptyHint.setStringValue_(
+                "VLCKit is missing — run Tools/fetch-vlckit.sh and rebuild")
+            self.say("VLCKit is missing",
+                     "This app plays video through VLCKit, which is fetched "
+                     "rather than committed because it is 87 MB of somebody "
+                     "else's code.\n\nRun Tools/fetch-vlckit.sh and build "
+                     "again. Everything except playback still works meanwhile.")
         # Nothing plays on its own. Opening the app used to carry straight on
         # from wherever you stopped, which is the wrong default when the app
         # is opened to look something up rather than to keep watching —
@@ -490,10 +533,8 @@ class AppDelegate(NSObject):
         self.timer.invalidate()
         self.durationGen += 1         # tell any duration scan to give up
         self.detachItem()
-        try:
-            self.player.removeObserver_forKeyPath_(self, "rate")
-        except Exception:
-            pass
+        if getattr(self, "vlc", None) is not None:
+            self.vlc.stop()
 
     @objc.python_method
     def setDockIcon(self):
@@ -1533,6 +1574,7 @@ class AppDelegate(NSObject):
         self.device = str(state.get("device") or uuid.uuid4().hex[:8])
         self.lastMerge = state.get("lastMerge") or 0
         self.showThumbs = state.get("thumbnails") is not False
+        self.volume = int(state.get("volume", 100))
         # Where discards go on volumes with no Trash. Remembered so the
         # question is asked once, not once a session.
         saved = state.get("discardFolders")
@@ -1558,6 +1600,7 @@ class AppDelegate(NSObject):
             "device": self.device,
             "lastMerge": self.lastMerge,
             "thumbnails": self.showThumbs,
+            "volume": self.volume,
             "discardFolders": {v: f for v, f in self.discardFolder.items() if f},
             "watchDupes": self.watchDupes,
             "verifyDupes": self.verifyDupes,
@@ -1698,31 +1741,10 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     @objc.python_method
-    def buildActionMenu(self):
-        """The menu button in the floating on-screen controls.
-
-        macOS AVPlayerView gives no way to add transport buttons of your own —
-        this menu is the only supported hook, so Next, Previous and a skip
-        that actually skips live here.
-
-        The buttons AVKit does draw are scan controls: they rewind and
-        fast-forward while held down, and do nothing on a click, which is why
-        they looked broken as skip buttons. They are not skip buttons.
-        """
-        menu = NSMenu.alloc().init()
-        self.add(menu, "Previous Video", "prevItem:")
-        self.add(menu, "Next Video", "nextItem:")
-        menu.addItem_(NSMenuItem.separatorItem())
-        self.add(menu, "Skip Back %d Seconds" % SKIP_SECONDS, "skipBack:")
-        self.add(menu, "Skip Forward %d Seconds" % SKIP_SECONDS, "skipForward:")
-        menu.addItem_(NSMenuItem.separatorItem())
-        self.add(menu, "Stop", "stopPlayback:")
-        return menu
-
-    @objc.python_method
-    def barButton(self, title, action, x, width=None):
+    def barButton(self, title, action, x, width=None, ypos=None):
         button = NSButton.alloc().initWithFrame_(
-            NSMakeRect(x, (BAR_HEIGHT - BUTTON_H) / 2, width or BUTTON_W, BUTTON_H))
+            NSMakeRect(x, (BAR_HEIGHT - BUTTON_H) / 2 if ypos is None else ypos,
+                       width or BUTTON_W, BUTTON_H))
         button.setTitle_(title)
         button.setBezelStyle_(NSBezelStyleRounded)
         button.setTarget_(self)
@@ -1760,45 +1782,67 @@ class AppDelegate(NSObject):
         content = NSView.alloc().initWithFrame_(rect)
 
         # Video fills everything above the control bar and grows with the window.
-        self.playerView = AVPlayerView.alloc().initWithFrame_(
-            NSMakeRect(0, BAR_HEIGHT, rect.size.width, rect.size.height - BAR_HEIGHT))
-        self.playerView.setControlsStyle_(CONTROLS_FLOATING)
+        # A plain view, not an AVPlayerView: VLC renders into whatever it is
+        # given, and the controls are ours now.
+        self.playerView = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, MAIN_BAR_H, rect.size.width, rect.size.height - MAIN_BAR_H))
         self.playerView.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
-        self.playerView.setVideoGravity_("AVLayerVideoGravityResizeAspect")
-
-        self.player = AVPlayer.alloc().init()
-        self.player.addObserver_forKeyPath_options_context_(self, "rate", 0, None)
-        self.playerView.setPlayer_(self.player)
-        self.playerView.setActionPopUpButtonMenu_(self.buildActionMenu())
-        # A click on the picture plays or pauses. AVKit's own controls take
-        # the clicks that land on them, so this only fires on the video.
+        self.playerView.setWantsLayer_(True)
+        self.playerView.layer().setBackgroundColor_(NSColor.blackColor().CGColor())
         click = NSClickGestureRecognizer.alloc().initWithTarget_action_(
             self, "clickedVideo:")
         self.playerView.addGestureRecognizer_(click)
         content.addSubview_(self.playerView)
 
-        # Control bar pinned to the bottom, stretching only horizontally. It sits
-        # below the video so it never collides with the floating AVKit controls.
-        bar = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, rect.size.width, BAR_HEIGHT))
-        bar.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
-        # Previous, Next and Stop are not here. They live in the floating
-        # on-screen controls, where the rest of the transport already is, and
-        # a second copy along the bottom of the window was only ever a second
-        # copy. What is left is what AVKit has no idea about.
-        self.favButton = self.barButton("☆ Favorite", "toggleFavorite:", 14)
-        self.tagButton = self.barButton("Tag ⌃", "toggleTagPanel:", 14 + BUTTON_W + 8)
-        bar.addSubview_(self.favButton)
-        bar.addSubview_(self.tagButton)
+        # Without the framework there is no player at all. Everything that
+        # touches self.vlc checks for it, so the app still opens, still shows
+        # your library and still manages tags — it just cannot play.
+        self.vlc = None
+        if VLC_READY:
+            self.vlc = VLCMediaPlayer.alloc().init()
+            self.vlc.setDrawable_(self.playerView)
+            self.vlc.setDelegate_(self)
 
-        # right-hand group, both pinned to the right edge
-        self.openButton = self.barButton(
-            "Open New…", "openNew:", rect.size.width - 2 * BUTTON_W - 22)
+        # The control bar. All of it is ours now — VLC draws a picture and
+        # nothing else, so the scrubber, the clock and the transport are as
+        # much this app's job as the Favorite button always was.
+        width = rect.size.width
+        bar = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, width, MAIN_BAR_H))
+        bar.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
+        self.buildScrubber(bar, width)
+
+        y = (48 - BUTTON_H) / 2
+        x = 14
+        self.prevButton = self.xportButton("◀◀", "prevItem:", x, y)
+        x += XPORT_W + 6
+        self.playButton = self.xportButton("▶", "togglePlayPause:", x, y)
+        x += XPORT_W + 6
+        self.nextButton = self.xportButton("▶▶", "nextItem:", x, y)
+        x += XPORT_W + 6
+        self.stopButton = self.xportButton("■", "stopPlayback:", x, y)
+        x += XPORT_W + 12
+        self.favButton = self.barButton("☆ Favorite", "toggleFavorite:", x, ypos=y)
+        x += BUTTON_W + 8
+        self.tagButton = self.barButton("Tag ⌃", "toggleTagPanel:", x, ypos=y)
+        for b in (self.prevButton, self.playButton, self.nextButton,
+                  self.stopButton, self.favButton, self.tagButton):
+            bar.addSubview_(b)
+
+        # right-hand group, pinned to the right edge
+        self.volumeSlider = NSSlider.alloc().initWithFrame_(
+            NSMakeRect(width - 292, y + 3, 70, 20))
+        self.volumeSlider.setMinValue_(0.0)
+        self.volumeSlider.setMaxValue_(100.0)
+        self.volumeSlider.setDoubleValue_(self.volume)
+        self.volumeSlider.setTarget_(self)
+        self.volumeSlider.setAction_("volumeChanged:")
+        self.volumeSlider.setAutoresizingMask_(NSViewMinXMargin)
+        self.openButton = self.barButton("Open New…", "openNew:", width - 214, ypos=y)
         self.openButton.setAutoresizingMask_(NSViewMinXMargin)
-        self.listButton = self.barButton(
-            "Playlist", "togglePlaylist:", rect.size.width - BUTTON_W - 14)
+        self.listButton = self.barButton("Playlist", "togglePlaylist:", width - 110, ypos=y)
         self.listButton.setAutoresizingMask_(NSViewMinXMargin)
-        bar.addSubview_(self.openButton)
-        bar.addSubview_(self.listButton)
+        for v in (self.volumeSlider, self.openButton, self.listButton):
+            bar.addSubview_(v)
         content.addSubview_(bar)
 
         # What an empty window says, instead of a dialog demanding an answer
@@ -1824,10 +1868,10 @@ class AppDelegate(NSObject):
     def buildSidebar(self, content, rect):
         """A drawer that slides in over the right edge of the video."""
         self.sidebarOpen = False
-        height = rect.size.height - BAR_HEIGHT
+        height = rect.size.height - MAIN_BAR_H
 
         self.sidebar = NSVisualEffectView.alloc().initWithFrame_(
-            NSMakeRect(rect.size.width, BAR_HEIGHT, SIDEBAR_W, height))
+            NSMakeRect(rect.size.width, MAIN_BAR_H, SIDEBAR_W, height))
         self.sidebar.setMaterial_(VIBRANCY_SIDEBAR)
         self.sidebar.setState_(VIBRANCY_ACTIVE)
         self.sidebar.setAutoresizingMask_(NSViewHeightSizable | NSViewMinXMargin)
@@ -1928,7 +1972,7 @@ class AppDelegate(NSObject):
         content = self.window.contentView().frame()
         # Stop short of the playlist drawer rather than sliding underneath it
         width = content.size.width - (SIDEBAR_W if self.sidebarOpen else 0)
-        y = BAR_HEIGHT if self.tagPanelOpen else -TAG_PANEL_H
+        y = MAIN_BAR_H if self.tagPanelOpen else -TAG_PANEL_H
         return NSMakeRect(0, y, width, TAG_PANEL_H)
 
     def toggleTagPanel_(self, sender):
@@ -1950,9 +1994,9 @@ class AppDelegate(NSObject):
             self.tagField.setObjectValue_([])
         # Hold the video still while you label it. Anything that was already
         # paused stays paused, so closing never starts something unbidden.
-        self.wasPlaying = self.player.rate() != 0
+        self.wasPlaying = bool(self.vlc.isPlaying())
         if self.wasPlaying:
-            self.player.pause()
+            self.vlc.pause()
         self.fillSuggestions()
         self.slideTagPanel(True)
         self.window.makeFirstResponder_(self.tagField)
@@ -1974,7 +2018,7 @@ class AppDelegate(NSObject):
             if nxt is not None:
                 return self.playIndex(nxt)
         elif resume:
-            self.player.play()
+            self.vlc.play()
 
     def controlTextDidEndEditing_(self, notification):
         """A typed tag lands when you finish typing it.
@@ -2060,7 +2104,7 @@ class AppDelegate(NSObject):
     def sidebarFrame(self):
         content = self.window.contentView().frame()
         x = content.size.width - (SIDEBAR_W if self.sidebarOpen else 0)
-        return NSMakeRect(x, BAR_HEIGHT, SIDEBAR_W, content.size.height - BAR_HEIGHT)
+        return NSMakeRect(x, MAIN_BAR_H, SIDEBAR_W, content.size.height - MAIN_BAR_H)
 
     def togglePlaylist_(self, sender):
         self.sidebarOpen = not self.sidebarOpen
@@ -2387,6 +2431,18 @@ class AppDelegate(NSObject):
                                               and path not in self.thumbs)
 
     @objc.python_method
+    def vlcLength(self, path):
+        """How long a video AVFoundation cannot open is, in seconds."""
+        try:
+            media = VLCMedia.alloc().initWithURL_(NSURL.fileURLWithPath_(path))
+            length = media.lengthWaitUntilDate_(
+                NSDate.dateWithTimeIntervalSinceNow_(8))
+            value = length.intValue() if length else 0
+            return value / 1000.0 if value > 0 else 0
+        except Exception:
+            return 0
+
+    @objc.python_method
     def posterFrame(self, asset, seconds):
         """A frame from a little way in — opening frames are so often black."""
         maker = AVAssetImageGenerator.assetImageGeneratorWithAsset_(asset)
@@ -2410,13 +2466,20 @@ class AppDelegate(NSObject):
             for n, path in enumerate(todo):
                 if generation != self.durationGen:
                     return                # the playlist moved on; drop this pass
-                asset = AVURLAsset.URLAssetWithURL_options_(
-                    NSURL.fileURLWithPath_(path), None)
-                seconds = CMTimeGetSeconds(asset.duration())
-                seconds = seconds if seconds == seconds and seconds > 0 else 0
-                self.durations[path] = seconds
-                if self.showThumbs and path not in self.thumbs:
-                    self.thumbs[path] = self.posterFrame(asset, seconds)
+                if os.path.splitext(path)[1].lower() in FAST_EXT:
+                    asset = AVURLAsset.URLAssetWithURL_options_(
+                        NSURL.fileURLWithPath_(path), None)
+                    seconds = CMTimeGetSeconds(asset.duration())
+                    seconds = seconds if seconds == seconds and seconds > 0 else 0
+                    self.durations[path] = seconds
+                    if self.showThumbs and path not in self.thumbs:
+                        self.thumbs[path] = self.posterFrame(asset, seconds)
+                else:
+                    # AVFoundation cannot read these at all, so asking it costs
+                    # a round trip over SMB and returns nothing. VLC answers,
+                    # more slowly, and only for the length — its thumbnailer
+                    # wants a run loop, which this thread does not have.
+                    self.durations[path] = self.vlcLength(path)
                 batch = THUMB_BATCH if self.showThumbs else DURATION_BATCH
                 if n % batch == batch - 1:
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -2679,19 +2742,12 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def detachItem(self):
-        if self.item is None:
-            return
-        NSNotificationCenter.defaultCenter().removeObserver_name_object_(
-            self, AVPlayerItemDidPlayToEndTimeNotification, self.item)
-        try:
-            self.item.removeObserver_forKeyPath_(self, "status")
-        except Exception:
-            pass
+        """Let go of the outgoing video. VLC replaces media in place."""
         self.item = None
 
     @objc.python_method
     def playIndex(self, i):
-        if not self.playlist:
+        if not self.playlist or self.vlc is None:
             return
         self.notePosition()             # the outgoing video keeps its place
         self.index = i % len(self.playlist)
@@ -2699,26 +2755,28 @@ class AppDelegate(NSObject):
 
         self.itemPath = self.playlist[self.index]
         self.pendingResume = self.progress.get(self.itemPath, 0)
-        url = NSURL.fileURLWithPath_(self.itemPath)
-        self.item = AVPlayerItem.playerItemWithURL_(url)
-        self.item.addObserver_forKeyPath_options_context_(self, "status", 0, None)
-        NSNotificationCenter.defaultCenter().addObserver_selector_name_object_(
-            self, "itemDidFinish:", AVPlayerItemDidPlayToEndTimeNotification, self.item)
-
-        self.player.replaceCurrentItemWithPlayerItem_(self.item)
-        self.player.play()
+        self.item = VLCMedia.alloc().initWithURL_(
+            NSURL.fileURLWithPath_(self.itemPath))
+        self.vlc.setMedia_(self.item)
+        self.vlc.play()
+        self.applySpeed()
+        audio = self.vlc.audio()
+        if audio:
+            audio.setVolume_(self.volume)
+        self.syncTransport()
         self.updateUI()
         self.noticeWhilePlaying(self.itemPath)
 
-    def itemDidFinish_(self, notification):
+    @objc.python_method
+    def itemFinished(self):
         if self.tagPanelOpen:
             # Hold here rather than moving on under an open tag panel: you are
             # looking at this video because you are labelling it.
             self.heldAdvance = True
-            return self.player.pause()
+            return self.vlc.pause()
         nxt = self.followOn()
         if nxt is None:
-            return self.player.pause()      # Play Once, and that was the last
+            return self.vlc.stop()          # Play Once, and that was the last
         self.playIndex(nxt)
 
     def nextItem_(self, sender):
@@ -2790,8 +2848,8 @@ class AppDelegate(NSObject):
     def applySpeed(self):
         # Setting a rate on a paused player would start it playing, so the
         # choice is only pushed through while something is actually running.
-        if self.player.rate() not in (0.0, self.speed):
-            self.player.setRate_(self.speed)
+        if abs(self.vlc.rate() - self.speed) > 0.01:
+            self.vlc.setRate_(self.speed)
 
     @objc.python_method
     def syncPlaybackMenu(self):
@@ -2811,8 +2869,11 @@ class AppDelegate(NSObject):
         """
         if self.item is None:
             return
-        self.player.pause()
-        self.player.seekToTime_(CMTimeMakeWithSeconds(0, 600))
+        # Rewind first, then pause: seeking a paused player does nothing, so
+        # pausing first would leave the playhead exactly where it was.
+        self.seekTo(0)
+        if self.vlc.isPlaying():
+            self.performSelector_withObject_afterDelay_("repauseAfterSeek:", None, 0.35)
         if self.itemPath:
             self.progress.pop(self.itemPath, None)
         self.saveState()
@@ -2826,10 +2887,10 @@ class AppDelegate(NSObject):
         """
         if self.item is None:
             return
-        if self.player.rate() == 0:
-            self.player.play()
+        if self.vlc.isPlaying():
+            self.vlc.pause()
         else:
-            self.player.pause()
+            self.vlc.play()
 
     def skipBack_(self, sender):
         self.seekBy(-SKIP_SECONDS)
@@ -2839,35 +2900,71 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def seekBy(self, seconds):
-        if self.item is None:
-            return
-        now = CMTimeGetSeconds(self.player.currentTime())
-        if now != now:                      # NaN until the item is ready
-            return
+        now = self.playhead()
+        total = self.mediaLength()
         target = max(0.0, now + seconds)
-        total = CMTimeGetSeconds(self.item.duration())
-        if total == total and total > 0:    # clamp so we never seek past the end
+        if total > 0:                       # never seek past the end
             target = min(target, max(0.0, total - 0.25))
-        # Zero tolerance, otherwise the seek snaps to the nearest keyframe and a
-        # "15 second" skip can land 20+ seconds away.
-        self.player.seekToTime_toleranceBefore_toleranceAfter_(
-            CMTimeMakeWithSeconds(target, 600), kCMTimeZero, kCMTimeZero)
+        return self.seekTo(target)
+
+    @objc.python_method
+    def seekTo(self, seconds):
+        """Move the playhead — including when the video is paused.
+
+        VLC ignores a seek on a paused player and says nothing about it, so a
+        skip button would simply stop working whenever you had paused, which
+        is exactly when you are most likely to want it. Measured: setPosition
+        while paused does nothing, and play-seek-pause lands within half a
+        second of the target. So it is nudged into playing for the length of
+        the seek and put straight back.
+        """
+        if self.item is None or not self.vlc.isSeekable():
+            return
+        target = max(0.0, seconds)
+        paused = not self.vlc.isPlaying()
+        if paused:
+            self.vlc.play()
+        self.vlc.setTime_(VLCTime.timeWithInt_(int(target * 1000)))
+        if paused:
+            # Long enough for the seek to be acted on; shorter and it lands
+            # back where it started.
+            self.performSelector_withObject_afterDelay_("repauseAfterSeek:", None, 0.35)
         return target
 
-    def observeValueForKeyPath_ofObject_change_context_(self, keyPath, obj, change, ctx):
-        if keyPath == "rate":
-            # play(), and the floating AVKit controls, both reset the rate to 1,
-            # so a chosen speed has to be reasserted rather than set once.
-            return self.applySpeed()
-        # A notification already in flight when we moved on must not be acted on
-        if keyPath != "status" or self.item is None or not obj.isEqual_(self.item):
-            return
-        if obj.status() == STATUS_READY:
+    def repauseAfterSeek_(self, _):
+        self.vlc.pause()
+        self.syncTransport()
+        self.syncScrubber()
+
+    @objc.python_method
+    def playhead(self):
+        """Where we are, in seconds. Zero before anything has opened."""
+        t = self.vlc.time() if getattr(self, "vlc", None) else None
+        return (t.intValue() / 1000.0) if t else 0.0
+
+    @objc.python_method
+    def mediaLength(self):
+        """How long the current video is, in seconds; 0 until VLC knows."""
+        media = self.vlc.media() if getattr(self, "vlc", None) else None
+        length = media.length() if media else None
+        value = length.intValue() if length else 0
+        return value / 1000.0 if value > 0 else 0.0
+
+    def mediaPlayerStateChanged_(self, notification):
+        """VLC's one channel for "something happened to playback"."""
+        state = self.vlc.state()
+        if state == VLC_PLAYING:
             self.failures = 0
             self.applyResume()
             self.applySpeed()
-        elif obj.status() == STATUS_FAILED:
+        elif state == VLC_ERROR:
             self.skipBroken()
+        elif state == VLC_ENDED:
+            self.itemFinished()
+        self.syncTransport()
+
+    def mediaPlayerTimeChanged_(self, notification):
+        self.syncScrubber()
 
     # -- remembering where each video got to -----------------------------
 
@@ -2881,13 +2978,13 @@ class AppDelegate(NSObject):
     @objc.python_method
     def notePosition(self):
         path = self.itemPath
-        if path is None or self.item is None or self.item.status() != STATUS_READY:
+        if path is None or self.item is None:
             return
-        now = CMTimeGetSeconds(self.player.currentTime())
-        if now != now:                      # NaN while the item is still loading
-            return
-        total = CMTimeGetSeconds(self.item.duration())
-        finished = total == total and total > 0 and now > total - RESUME_TAIL
+        now = self.playhead()
+        if now <= 0:
+            return                          # nothing has opened yet
+        total = self.mediaLength()
+        finished = total > 0 and now > total - RESUME_TAIL
         # Only the middle of a video is worth remembering: at either end the
         # right thing to do next time is start from the beginning. Re-inserting
         # rather than assigning keeps the newest entries at the end of the dict,
@@ -2899,13 +2996,12 @@ class AppDelegate(NSObject):
     @objc.python_method
     def applyResume(self):
         seconds, self.pendingResume = self.pendingResume, 0
-        if seconds < RESUME_MIN:
+        if seconds < RESUME_MIN or not self.vlc.isSeekable():
             return
-        total = CMTimeGetSeconds(self.item.duration())
-        if total == total and total > 0:
+        total = self.mediaLength()
+        if total > 0:
             seconds = min(seconds, max(0.0, total - 0.25))
-        self.player.seekToTime_toleranceBefore_toleranceAfter_(
-            CMTimeMakeWithSeconds(seconds, 600), kCMTimeZero, kCMTimeZero)
+        self.seekTo(seconds)
 
     @objc.python_method
     def skipBroken(self):
@@ -3527,7 +3623,7 @@ open "$APP"
         elif closing.isEqual_(self.window):
             # Video playing on into a window that is not on screen is a
             # confusing way to lose track of what the app is doing.
-            self.player.pause()
+            self.vlc.pause()
             self.notePosition()
             self.saveState()
             if self.tagWindow is not None:
@@ -3692,6 +3788,7 @@ open "$APP"
     @objc.python_method
     def updateUI(self):
         path = self.currentPath()
+        self.syncTransport()
         self.listButton.setEnabled_(bool(self.playlist))
         self.favButton.setEnabled_(bool(self.playlist))
         self.tagButton.setEnabled_(bool(self.playlist))

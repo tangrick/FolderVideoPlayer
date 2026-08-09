@@ -50,6 +50,9 @@ setup(
         "py2app": {
             "iconfile": "icon.icns",
             "plist": PLIST,
+            # VLCKit plays what AVFoundation will not — .flv, .webm, .avi and
+            # the rest. One binary, statically linked, no plugin bundle.
+            "frameworks": ["vendor/VLCKit.framework"],
             "packages": ["objc", "AVKit", "AVFoundation", "CoreMedia", "Cocoa",
                          "Foundation", "AppKit", "certifi"],
             # Only Tcl/Tk is safe to drop. Excluding stdlib modules such as

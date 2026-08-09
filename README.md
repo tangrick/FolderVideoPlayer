@@ -75,17 +75,25 @@ replacing the app never loses it: `tags.json` for tags and favorites,
 
 Space plays and pauses, and so does clicking anywhere on the picture.
 
-**The on-screen controls are AVKit's own**, and they cannot be added to.
-`AVPlayerView` exposes exactly one hook — a single menu button — so
-**Previous**, **Next**, **Skip Back**, **Skip Forward** and **Stop** live in
-that menu. There is no API for putting another button in that bar; tvOS has
-`transportBarCustomMenuItems` for precisely this and macOS has no equivalent.
+**The controls are the app's own**, along the bottom of the window: a
+scrubber you can drag, elapsed and remaining time, Previous, Play/Pause, Next,
+Stop, volume, Favorite, Tag, Open New and Playlist. AVKit used to draw a
+floating bar that could not be added to; VLC draws a picture and nothing else,
+so the bar is ours and can hold whatever it needs to.
 
-Drawing buttons on top of the video instead was tried and taken out again: it
-works, but a control floating over the picture is not the same thing as a
-control in the bar, and it is not what the bar being extensible would have
-given. The honest options are this menu, or replacing AVKit's controls
-entirely with a bar of our own.
+Seeking deserves a note. VLC ignores a seek on a paused player and says
+nothing about it, so a skip button would quietly stop working whenever you had
+paused — exactly when you most want it. Measured: `setPosition` while paused
+does nothing at all, while play-seek-pause lands within half a second. So a
+paused player is nudged into playing for the length of the seek and put
+straight back.
+
+Getting here took two wrong turns worth recording. `AVPlayerView` exposes one
+hook for extending its controls — a single menu button — and no way at all to
+add a button to the bar; tvOS has `transportBarCustomMenuItems` for precisely
+this and macOS has no equivalent. Drawing chevrons on top of the video was
+tried next and removed again: a control floating over the picture is not a
+control in the bar. Replacing the player was the only real answer.
 
 The app's own bar keeps only what AVKit has no idea about: Favorite, Tag,
 Open New and Playlist.
@@ -331,8 +339,22 @@ meaningless and updates are never offered.
 
 ## Supported formats
 
-`.mp4` `.m4v` `.mov` — what AVFoundation can decode. `.mkv`, `.avi` and
-`.webm` are not supported; VLC is the better tool for those.
+`.mp4` `.m4v` `.mov` `.flv` `.webm` `.avi` `.mkv` `.wmv` `.mpg` `.ts` and
+more — playback is VLCKit, so the list is essentially whatever VLC plays.
+
+That is why VLCKit is here. Measured on half of one library: 7,815 files
+AVFoundation could open and **656 it could not**, including 610 `.flv` worth
+18.4 GB, which the app used to skip in silence.
+
+The framework is 87 MB and is fetched rather than committed — run
+`Tools/fetch-vlckit.sh` once. Durations and poster frames still come from
+AVFoundation for `.mp4`, `.m4v` and `.mov`, because it answers in 0.6s where
+VLC takes 1.5 to 4, and on a library that is mostly `.mp4` that difference is
+the whole scan. The other formats get their length from VLC and, for now, no
+poster frame.
+
+Picture-in-Picture and AirPlay are gone with AVKit, and are not coming back;
+they were AVPlayerView's, not ours.
 
 ## Install
 
