@@ -1,13 +1,3 @@
-> ### This repository has been retired
->
-> Development continues at **[tangrick/FolderVideoPlayer](https://github.com/tangrick/FolderVideoPlayer)**,
-> starting again at version 1.0.0.
->
-> Everything here stays readable — 19 releases and the full history — but
-> nothing new will land. Copies installed from this repository will not offer
-> the new version automatically, because 1.0.0 is not greater than 1.14.1:
-> download it from the new repository once, and updates resume from there.
-
 # FolderVideoPlayer
 
 A native macOS media player that plays a whole folder back to back, loops
@@ -19,6 +9,15 @@ system ones.
 
 ![macOS](https://img.shields.io/badge/macOS-10.15%2B-blue)
 ![universal](https://img.shields.io/badge/arch-universal%20(arm64%20%2B%20x86__64)-lightgrey)
+![signed](https://img.shields.io/badge/signed-notarized%20by%20Apple-brightgreen)
+
+> Version 1.0.0 is a renumbering, not a rewrite. Everything the app could do
+> at 1.14.1 it still does; the history of how it got there is in the commits.
+> The previous repository is archived at
+> [FolderVideoPlayer-v1-archive](https://github.com/tangrick/FolderVideoPlayer-v1-archive)
+> with its 19 releases intact. **A copy installed from there will not update
+> itself to this one** — 1.0.0 is not greater than 1.14.1 — so download it once
+> from Releases here and updates resume normally.
 
 ## What it does
 

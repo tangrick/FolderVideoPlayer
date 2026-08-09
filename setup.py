@@ -10,7 +10,13 @@ from setuptools import setup
 # "N.M.P", otherwise Check for Updates compares mismatched numbering and
 # never fires. The number must only ever go up — the update check asks
 # whether the release is greater than what is installed, so renumbering
-# downwards would strand every existing copy for good.
+# downwards strands every existing copy for good.
+#
+# Which is exactly what happened here, on purpose. This repository restarted
+# at 1.0.0 having reached 1.14.1 in the one it replaced, so copies installed
+# from the archive will never see an update from here and have to be replaced
+# by hand once. That was a deliberate, one-time choice; from 1.0.0 onwards the
+# rule above holds again and must not be broken a second time.
 #
 #   bug fix or tweak  ->  bump the last part
 #   new feature       ->  bump the middle, reset the last to 0
@@ -19,8 +25,8 @@ PLIST = {
     "CFBundleName": "FolderVideoPlayer",
     "CFBundleDisplayName": "FolderVideoPlayer",
     "CFBundleIdentifier": "local.foldervideoplayer",
-    "CFBundleShortVersionString": "1.14.1",
-    "CFBundleVersion": "1.14.1",
+    "CFBundleShortVersionString": "1.0.0",
+    "CFBundleVersion": "1.0.0",
     "NSHumanReadableCopyright": "",
     "LSMinimumSystemVersion": "10.15",
     "NSHighResolutionCapable": True,
