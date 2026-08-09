@@ -75,13 +75,20 @@ replacing the app never loses it: `tags.json` for tags and favorites,
 
 Space plays and pauses, and so does clicking anywhere on the picture.
 
-**The transport lives in the floating on-screen controls**, not along the
-bottom of the window. Its menu button carries **Previous**, **Next**, **Skip
-Back**, **Skip Forward** and **Stop**. macOS gives no way to add transport
-buttons of your own to an `AVPlayerView`, and that menu is the only hook it
-offers — but once they are there, a second set of the same buttons in the
-app's own bar is just a second set of the same buttons. The bar keeps only
-what AVKit has no idea about: Favorite, Tag, Open New and Playlist.
+**Previous and Next sit on the video itself**, as faint chevrons at the left
+and right edges, and only when there is more than one video to move between.
+**View → Show Next / Previous on Video** turns them off.
+
+They are drawn on top rather than added to AVKit's own controls because macOS
+gives no way to add a button to an `AVPlayerView`. Its action menu is the only
+hook, and a menu is not what anybody means by a Previous button — so that menu
+keeps **Skip Back**, **Skip Forward** and **Stop**, which have no other home
+on screen, and the two that matter are real buttons. A click anywhere else on
+the picture passes straight through, so AVKit's own controls and
+click-to-pause are untouched.
+
+The app's own bar keeps only what AVKit has no idea about: Favorite, Tag,
+Open New and Playlist.
 
 The rewind and fast-forward buttons AVKit draws itself are *scan* controls —
 they work while held down and do nothing on a click, which is why they never
@@ -437,8 +444,9 @@ deleted — copies go to the Trash, and tags on a discarded copy move to the one
 you keep first, because a file can be dragged back out of the Trash and an
 afternoon of labelling cannot.
 
-**Tags → Find Duplicates…** sweeps folders you choose. **Notice Duplicates
-While Playing** does it without a scan: every video you play is fingerprinted
+**Duplicates → Find Duplicates…** sweeps folders you choose, and carries the
+number found so far in its title. **Notice Duplicates While Playing** does it
+without a scan: every video you play is fingerprinted
 as it opens, and the index builds up as you watch.
 
 ### Why it is a cascade and not a hash of everything
@@ -473,8 +481,18 @@ on the row, because a suggestion you cannot interrogate is one you cannot
 trust. Tags win because they are the only part of a video that is your work
 rather than the file's.
 
-The file currently playing is never touched. Where a volume will not accept a
-Trash, the app says so rather than deleting.
+The file currently playing is never touched.
+
+**A share generally has no Trash**, which is where most of a NAS library
+lives. There the app asks for a folder to move discards into instead —
+instant, since nothing is copied — and you delete them yourself once you are
+satisfied. It will not fall back to deleting, and it will not overwrite a file
+already in that folder: a second `clip.mp4` arrives as `clip (2).mp4`.
+
+**It asks once.** The folder is remembered per volume and across launches, and
+named in the confirmation so the destination is never silent. If it is renamed
+or its share goes away the app notices and asks again rather than quietly
+failing. **Duplicates → Forget Where Duplicates Go…** resets it.
 
 ### What it will not catch
 

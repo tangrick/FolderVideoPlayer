@@ -79,6 +79,7 @@ from Cocoa import (
     NSURL,
     NSView,
     NSViewHeightSizable,
+    NSViewMaxXMargin,
     NSViewMaxYMargin,
     NSViewMinXMargin,
     NSViewMinYMargin,
@@ -196,6 +197,10 @@ FAV_NOTE_W = 130
 
 TAG_PANEL_H = 136             # the tag editor, sliding up over the video
 CHIP_H = 17
+# Previous and Next, drawn over the video
+NAV_SIZE = 44
+NAV_INSET = 12
+NAV_ALPHA = 0.28
 CHIP_PAD = 7
 SUGGEST_MAX = 12              # tags offered as one-click chips; type for the rest
 TAG_ROW_H = 38                # a row showing its tags; untagged rows stay ROW_H
@@ -396,6 +401,23 @@ def save_json(path, data):
         raise
 
 
+class VideoOverlay(NSView):
+    """A transparent layer over the video, holding Previous and Next.
+
+    macOS gives no way to add a button to an AVPlayerView's own controls — the
+    action menu is the only hook, and it is a menu, not the pair of buttons
+    anybody means when they ask for Previous and Next on screen. So these are
+    drawn on top instead.
+
+    Clicks pass straight through unless they land on a button, which is what
+    keeps AVKit's controls and click-to-pause working underneath.
+    """
+
+    def hitTest_(self, point):
+        hit = objc.super(VideoOverlay, self).hitTest_(point)
+        return None if hit is self else hit
+
+
 class ChipHolder(NSView):
     """Holds a row's tag chips.
 
@@ -446,7 +468,6 @@ class AppDelegate(NSObject):
         self.verifyDupes = True
         self.dupeStatusLabel = None
         self.folderTable = None
-        self.discardFolder = {}       # volume -> where its discards go
         self.tagName = None           # which tag is playing, in tag mode
         self.tagWindow = None
         self.tagTable = None
@@ -724,11 +745,10 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def syncDupeMenu(self):
+        """One item, carrying the count when there is one to carry."""
         groups = len(duplicate_groups(self.prints))
         self.dupeCountItem.setTitle_(
-            "Duplicates: %d group%s…" % (groups, "" if groups == 1 else "s")
-            if groups else "No Duplicates Found Yet…")
-        self.dupeCountItem.setEnabled_(bool(groups))
+            "Find Duplicates… (%d found)" % groups if groups else "Find Duplicates…")
         self.watchItem.setState_(STATE_ON if self.watchDupes else STATE_OFF)
 
     def toggleWatchDupes_(self, sender):
@@ -1030,11 +1050,16 @@ class AppDelegate(NSObject):
         unverified = sum(1 for g, _ in doomed if not g["verified"])
         total = sum(g["size"] for g, _ in doomed)
         detail = ("%d file%s, freeing %s.\n\nThey go to the Trash. A volume "
-                  "with no Trash — most shares — asks you for a folder to move "
-                  "them to instead. Nothing is deleted either way, and tags on "
-                  "a discarded copy move to the one you keep first."
+                  "with no Trash — most shares — asks you once for a folder to "
+                  "move them to instead, and remembers it. Nothing is deleted "
+                  "either way, and tags on a discarded copy move to the one you "
+                  "keep first."
                   % (len(doomed), "" if len(doomed) == 1 else "s",
                      human_bytes(total)))
+        known = [(v, f) for v, f in sorted(self.discardFolder.items()) if f]
+        if known:
+            detail += "\n\nAlready set: " + "; ".join(
+                "%s → %s" % (os.path.basename(v.rstrip("/")), f) for v, f in known)
         if unverified:
             detail += ("\n\n%d of them matched on size and both ends but were "
                        "not read in full." % unverified)
@@ -1044,9 +1069,6 @@ class AppDelegate(NSObject):
             return
 
         playing = self.currentPath()
-        # Asked afresh each run: a folder chosen an hour ago should not be
-        # reused without saying so.
-        self.discardFolder = {}
         moved, failed, kept_out = 0, [], 0
         for group, key in doomed:
             path = tag_path(key)
@@ -1124,9 +1146,12 @@ class AppDelegate(NSObject):
             return True, ""
         volume = self.volumeOf(path)
         folder = self.discardFolder.get(volume)
+        if folder and not os.path.isdir(folder):
+            folder = None                 # renamed, moved, or the share went away
         if folder is None:
             folder = self.askDiscardFolder(volume, why)
             self.discardFolder[volume] = folder
+            self.saveState()              # remembered for next time, not just this run
         if not folder:
             return False, why
         return self.moveInto(folder, path)
@@ -1179,10 +1204,6 @@ class AppDelegate(NSObject):
         self.openDupeWindow()
         if not self.dupeFolders and self.folder:
             self.dupeFolders = [self.folder]
-        self.refreshDupeManager()
-
-    def showDuplicates_(self, sender):
-        self.openDupeWindow()
         self.refreshDupeManager()
 
     def addDupeFolder_(self, sender):
@@ -1534,6 +1555,11 @@ class AppDelegate(NSObject):
         self.device = str(state.get("device") or uuid.uuid4().hex[:8])
         self.lastMerge = state.get("lastMerge") or 0
         self.showThumbs = state.get("thumbnails") is not False
+        self.showNav = state.get("navButtons") is not False
+        # Where discards go on volumes with no Trash. Remembered so the
+        # question is asked once, not once a session.
+        saved = state.get("discardFolders")
+        self.discardFolder = dict(saved) if isinstance(saved, dict) else {}
         self.watchDupes = state.get("watchDupes") is not False
         self.verifyDupes = state.get("verifyDupes") is not False
 
@@ -1555,6 +1581,8 @@ class AppDelegate(NSObject):
             "device": self.device,
             "lastMerge": self.lastMerge,
             "thumbnails": self.showThumbs,
+            "navButtons": self.showNav,
+            "discardFolders": {v: f for v, f in self.discardFolder.items() if f},
             "watchDupes": self.watchDupes,
             "verifyDupes": self.verifyDupes,
         })
@@ -1668,11 +1696,13 @@ class AppDelegate(NSObject):
         # window of its own while hiding under a heading that did not mention
         # it. Built once — only the count changes, and syncDupeMenu does that.
         dupes = self.menu(bar, "Duplicates")
-        self.add(dupes, "Find Duplicates…", "findDuplicates:")
-        self.dupeCountItem = self.add(dupes, "Duplicates", "showDuplicates:")
+        # One item, not two. "Find Duplicates…" and the count opened the same
+        # window, which is a menu offering you a choice it does not have.
+        self.dupeCountItem = self.add(dupes, "Find Duplicates…", "findDuplicates:")
         dupes.addItem_(NSMenuItem.separatorItem())
         self.watchItem = self.add(dupes, "Notice Duplicates While Playing",
                                   "toggleWatchDupes:")
+        self.add(dupes, "Forget Where Duplicates Go…", "forgetDiscardFolders:")
         self.syncDupeMenu()
 
         view = self.menu(bar, "View")
@@ -1680,6 +1710,8 @@ class AppDelegate(NSObject):
                                  NSEventModifierFlagCommand)
         self.thumbItem = self.add(view, "Show Thumbnails", "toggleThumbnails:")
         self.thumbItem.setState_(STATE_ON if self.showThumbs else STATE_OFF)
+        self.navItem = self.add(view, "Show Next / Previous on Video",
+                                "toggleNavButtons:")
 
         window = self.menu(bar, "Window")
         window.addItemWithTitle_action_keyEquivalent_("Minimize", "performMiniaturize:", "m")
@@ -1691,6 +1723,55 @@ class AppDelegate(NSObject):
         NSApplication.sharedApplication().setMainMenu_(bar)
 
     @objc.python_method
+    @objc.python_method
+    def buildNavButtons(self, rect):
+        """Previous and Next, over the video, at the left and right edges."""
+        video = self.playerView.frame()
+        self.navOverlay = VideoOverlay.alloc().initWithFrame_(video)
+        self.navOverlay.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+
+        self.navPrev = self.navButton("‹", "prevItem:")
+        self.navPrev.setFrame_(NSMakeRect(NAV_INSET, (video.size.height - NAV_SIZE) / 2,
+                                          NAV_SIZE, NAV_SIZE))
+        self.navPrev.setAutoresizingMask_(NSViewMaxXMargin | NSViewMinYMargin
+                                          | NSViewMaxYMargin)
+        self.navNext = self.navButton("›", "nextItem:")
+        self.navNext.setFrame_(NSMakeRect(video.size.width - NAV_INSET - NAV_SIZE,
+                                          (video.size.height - NAV_SIZE) / 2,
+                                          NAV_SIZE, NAV_SIZE))
+        self.navNext.setAutoresizingMask_(NSViewMinXMargin | NSViewMinYMargin
+                                          | NSViewMaxYMargin)
+        self.navOverlay.addSubview_(self.navPrev)
+        self.navOverlay.addSubview_(self.navNext)
+
+    @objc.python_method
+    def navButton(self, glyph, action):
+        button = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, NAV_SIZE, NAV_SIZE))
+        button.setTitle_(glyph)
+        button.setFont_(NSFont.systemFontOfSize_(34))
+        button.setBordered_(False)
+        button.setTarget_(self)
+        button.setAction_(action)
+        # Faint, because they sit on top of the picture the whole time. Bright
+        # enough to find, dim enough to forget while you are watching.
+        button.setAlphaValue_(NAV_ALPHA)
+        return button
+
+    @objc.python_method
+    def syncNavButtons(self):
+        """Only worth showing when there is somewhere to go."""
+        wanted = self.showNav and len(self.playlist) > 1
+        if wanted and self.navOverlay.superview() is None:
+            self.playerView.superview().addSubview_(self.navOverlay)
+        elif not wanted and self.navOverlay.superview() is not None:
+            self.navOverlay.removeFromSuperview()
+        self.navItem.setState_(STATE_ON if self.showNav else STATE_OFF)
+
+    def toggleNavButtons_(self, sender):
+        self.showNav = not self.showNav
+        self.syncNavButtons()
+        self.saveState()
+
     @objc.python_method
     def buildActionMenu(self):
         """The menu button in the floating on-screen controls.
@@ -1764,6 +1845,7 @@ class AppDelegate(NSObject):
         self.player.addObserver_forKeyPath_options_context_(self, "rate", 0, None)
         self.playerView.setPlayer_(self.player)
         self.playerView.setActionPopUpButtonMenu_(self.buildActionMenu())
+        self.buildNavButtons(rect)
         # A click on the picture plays or pauses. AVKit's own controls take
         # the clicks that land on them, so this only fires on the video.
         click = NSClickGestureRecognizer.alloc().initWithTarget_action_(
@@ -3386,6 +3468,24 @@ open "$APP"
         self.refreshNameManager()
         self.nameWindow.makeKeyAndOrderFront_(None)
 
+    def forgetDiscardFolders_(self, sender):
+        """Ask again next time, for volumes that have no Trash."""
+        known = [(v, f) for v, f in sorted(self.discardFolder.items()) if f]
+        if not known:
+            return self.say("Nothing to forget",
+                            "No folder has been set for a volume without a Trash.")
+        if not self.confirm(
+                "Forget where duplicates go?",
+                "You will be asked again the next time duplicates are removed "
+                "from a volume with no Trash.\n\n%s\n\nNothing already moved "
+                "is affected."
+                % "\n".join("%s → %s" % (os.path.basename(v.rstrip("/")), f)
+                             for v, f in known),
+                "Forget"):
+            return
+        self.discardFolder = {}
+        self.saveState()
+
     def refreshNames_(self, sender):
         self.refreshNameManager()
 
@@ -3672,6 +3772,7 @@ open "$APP"
         self.favButton.setEnabled_(bool(self.playlist))
         self.tagButton.setEnabled_(bool(self.playlist))
         self.emptyHint.setHidden_(bool(self.playlist))
+        self.syncNavButtons()
         self.revealCurrentRow()          # keep the highlight on what's playing
         self.syncTagsMenu()              # ...and the ticks on its tags
 
