@@ -14,12 +14,14 @@ import os
 import fnmatch
 import getpass
 import random
+import hashlib
 import re
 import shutil
 import ssl
 import subprocess
 import uuid
 import tempfile
+import time
 import urllib.error
 import urllib.request
 
@@ -53,6 +55,7 @@ from Cocoa import (
     NSEventModifierFlagControl,
     NSEventModifierFlagShift,
     NSColor,
+    NSFileManager,
     NSFont,
     NSMakeRect,
     NSMakeSize,
@@ -136,6 +139,14 @@ DEVICE_TAGS = "tags-%s.json"
 # What AVFoundation can actually decode. .mkv and .avi are deliberately absent.
 VIDEO_EXT = {".mp4", ".m4v", ".mov"}
 
+# Duplicate detection. 64 KB from each end is enough that two different videos
+# colliding is not a thing that happens, and small enough that the cost per
+# file is the round trip rather than the file.
+FP_CHUNK = 64 * 1024
+HASH_BLOCK = 4 * 1024 * 1024      # reading a whole file, for the final check
+FP_FILE = os.path.join(SUPPORT, "fingerprints.json")
+FP_MAX = 40000                    # older entries age out before the file does
+
 SKIP_SECONDS = 15
 
 PROGRESS_TICK = 5.0           # seconds between samples of the playhead
@@ -175,6 +186,11 @@ IMAGE_SCALE_FIT = 3           # NSImageScaleProportionallyUpOrDown
 DURATION_BATCH = 25           # rows to measure between table refreshes
 THUMB_BATCH = 4               # ...and when each row also costs a decoded frame
 FAV_W, FAV_H = 460, 420
+DUPE_W, DUPE_H = 720, 560
+DUPE_ROW_H = 22
+KEEP_TAG = 5
+RADIO_BUTTON = 4              # NSButtonTypeRadio
+SWITCH_BUTTON = 3             # NSButtonTypeSwitch
 FAV_NOTE_W = 130
 
 TAG_PANEL_H = 136             # the tag editor, sliding up over the video
@@ -266,6 +282,90 @@ def parse_tags(text):
 
 
 @objc.python_method
+def fingerprint(path, size=None):
+    """A cheap identity for a video: its size, and both of its ends.
+
+    Reading a whole file to find duplicates is the obvious design and the
+    wrong one here. Measured on this library, hashing everything means moving
+    about four terabytes over SMB. Reading FP_CHUNK from each end costs the
+    same 128 KB whether the file is 4 MB or 400 MB — 0.227s a file over the
+    wire — and two videos agreeing on their size and both ends are not
+    plausibly different videos.
+
+    Not proof, though, which is why removing anything can still verify in
+    full. This is the sieve, not the verdict.
+    """
+    if size is None:
+        size = os.path.getsize(path)
+    digest = hashlib.blake2b(str(size).encode(), digest_size=16)
+    with open(path, "rb") as handle:
+        digest.update(handle.read(FP_CHUNK))
+        if size > FP_CHUNK * 2:
+            # Only worth a second read when the ends do not already overlap.
+            handle.seek(-FP_CHUNK, os.SEEK_END)
+            digest.update(handle.read(FP_CHUNK))
+    return digest.hexdigest()
+
+
+@objc.python_method
+def full_hash(path, stop=None):
+    """The whole file, for the handful that reach the last stage.
+
+    `stop` is checked between blocks so a scan being cancelled does not have
+    to finish reading a 4 GB file first.
+    """
+    digest = hashlib.blake2b(digest_size=16)
+    with open(path, "rb") as handle:
+        while True:
+            if stop is not None and stop():
+                return None
+            block = handle.read(HASH_BLOCK)
+            if not block:
+                return digest.hexdigest()
+            digest.update(block)
+
+
+@objc.python_method
+def duplicate_groups(index, verified_only=False):
+    """The index turned into sets of files that are the same file.
+
+    Grouped on the full hash where there is one and the fingerprint otherwise,
+    so verifying a group tightens it rather than splitting it in two.
+    """
+    groups = {}
+    for key, entry in index.items():
+        mark = entry.get("full") or entry.get("fp")
+        if not mark:
+            continue
+        if verified_only and not entry.get("full"):
+            continue
+        groups.setdefault(("full" if entry.get("full") else "fp", mark), []).append(key)
+    return [sorted(keys) for keys in groups.values() if len(keys) > 1]
+
+
+@objc.python_method
+def size_candidates(sizes):
+    """Keys whose size is shared with something else — the only ones worth reading.
+
+    Four files in five are eliminated here, for free, because the size came
+    with the directory listing. A file with a size nothing else shares cannot
+    be a byte-for-byte duplicate of anything.
+    """
+    counts = {}
+    for size in sizes.values():
+        counts[size] = counts.get(size, 0) + 1
+    return sorted(key for key, size in sizes.items() if counts[size] > 1)
+
+
+@objc.python_method
+def human_bytes(count):
+    for unit in ("bytes", "KB", "MB", "GB", "TB"):
+        if count < 1024 or unit == "TB":
+            return "%d %s" % (count, unit) if unit == "bytes" else "%.1f %s" % (count, unit)
+        count /= 1024.0
+
+
+@objc.python_method
 def clock(seconds):
     """Seconds as 4:07, or 1:02:30 once there is an hour to show."""
     seconds = int(seconds)
@@ -331,12 +431,27 @@ class AppDelegate(NSObject):
         self.nameWindow = None
         self.nameTable = None
         self.nameRows = []
+        self.prints = {}              # video key -> what we know of its identity
+        self.dupeCache = None         # dupeSets(), until the index changes
+        self.printGen = 0
+        self.dupeWindow = None
+        self.dupeTable = None
+        self.dupeRows = []
+        self.dupeFolders = []
+        self.dupeScanning = False
+        self.dupeStop = False
+        self.dupeStatus = ""
+        self.dupeKeep = {}            # group id -> the key to keep
+        self.verifyDupes = True
+        self.dupeStatusLabel = None
+        self.folderTable = None
         self.tagName = None           # which tag is playing, in tag mode
         self.tagWindow = None
         self.tagTable = None
         self.tagRows = []
         self.tagItems = []
         self.loadTags()
+        self.loadPrints()
         self.loadState()
         self.migrateFavorites()
         self.mergeShared()            # anything tagged on another device
@@ -484,6 +599,633 @@ class AppDelegate(NSObject):
     @objc.python_method
     def myTagFile(self):
         return os.path.join(self.myTagFolder(), DEVICE_TAGS % self.slug(self.device))
+
+    # -- duplicates ------------------------------------------------------
+
+    @objc.python_method
+    def loadPrints(self):
+        self.prints = load_json(FP_FILE, {})
+        self.dupesChanged()
+
+    @objc.python_method
+    def savePrints(self):
+        if len(self.prints) > FP_MAX:
+            # Oldest first. An index is a convenience, not a record, so it is
+            # allowed to forget rather than grow without limit.
+            order = sorted(self.prints, key=lambda k: self.prints[k].get("seen", 0))
+            for key in order[:len(self.prints) - FP_MAX]:
+                del self.prints[key]
+        try:
+            save_json(FP_FILE, self.prints)
+        except OSError:
+            pass                      # an index that cannot be saved still works
+
+    @objc.python_method
+    def printIsFresh(self, key, path):
+        """Whether what we already know about this file is still true."""
+        known = self.prints.get(key)
+        if not known or not known.get("fp"):
+            return False
+        try:
+            stat = os.stat(path)
+        except OSError:
+            return False              # gone; leave the entry for the sweep to clear
+        return (known.get("size") == stat.st_size
+                and abs(known.get("mtime", 0) - stat.st_mtime) < 1)
+
+    @objc.python_method
+    def takePrint(self, path, stat=None):
+        """Fingerprint one file into the index. Returns its key, or None.
+
+        128 KB of reading, wherever the file is and however big it is.
+        """
+        key = tag_key(path)
+        try:
+            stat = stat or os.stat(path)
+            mark = fingerprint(path, stat.st_size)
+        except OSError:
+            return None
+        self.prints[key] = {"size": stat.st_size, "mtime": stat.st_mtime,
+                            "fp": mark, "full": None, "seen": time.time()}
+        return key
+
+    @objc.python_method
+    def dupeSets(self):
+        """Every group of two or more, as {key: [the others]}.
+
+        Cached, because the playlist asks per row and again for every row
+        height — recomputing over an index of tens of thousands on each of
+        those would make scrolling crawl. Anything that changes the index
+        clears it.
+        """
+        if self.dupeCache is None:
+            out = {}
+            for group in duplicate_groups(self.prints):
+                for key in group:
+                    out[key] = [k for k in group if k != key]
+            self.dupeCache = out
+        return self.dupeCache
+
+    @objc.python_method
+    def dupesChanged(self):
+        self.dupeCache = None
+
+    @objc.python_method
+    def dupesFor(self, path):
+        """The other copies of this file that the index knows about."""
+        return self.dupeSets().get(tag_key(path), [])
+
+    @objc.python_method
+    def noticeWhilePlaying(self, path):
+        """Fingerprint what just started playing, off the main thread.
+
+        The whole point of this mode is that it is not a scan: one file, the
+        one you are already watching, 128 KB. Anything already known and
+        unchanged costs nothing at all.
+        """
+        if not self.watchDupes or not path:
+            return
+        if self.printIsFresh(tag_key(path), path):
+            return
+        self.performSelectorInBackground_withObject_("printOne:", path)
+
+    def printOne_(self, path):
+        pool = NSAutoreleasePool.alloc().init()
+        try:
+            key = self.takePrint(path)
+            if key:
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "printArrived:", key, False)
+        finally:
+            del pool
+
+    def printArrived_(self, key):
+        self.dupesChanged()
+        self.savePrints()
+        self.syncDupeMenu()
+        # Only redraw when this actually changed what the list should say.
+        if self.dupeSets().get(key):
+            self.refreshRows()
+        if self.dupeWindow is not None:
+            self.refreshDupeManager()
+
+    @objc.python_method
+    def syncDupeMenu(self):
+        groups = len(duplicate_groups(self.prints))
+        self.dupeCountItem.setTitle_(
+            "Duplicates: %d group%s…" % (groups, "" if groups == 1 else "s")
+            if groups else "No Duplicates Found Yet…")
+        self.dupeCountItem.setEnabled_(bool(groups))
+        self.watchItem.setState_(STATE_ON if self.watchDupes else STATE_OFF)
+
+    def toggleWatchDupes_(self, sender):
+        self.watchDupes = not self.watchDupes
+        self.syncDupeMenu()
+        self.saveState()
+        if self.watchDupes:
+            self.noticeWhilePlaying(self.currentPath())
+
+    # -- the Find Duplicates window ----------------------------------------
+
+    @objc.python_method
+    def openDupeWindow(self):
+        if self.dupeWindow is not None:
+            return self.dupeWindow.makeKeyAndOrderFront_(None)
+
+        rect = NSMakeRect(0, 0, DUPE_W, DUPE_H)
+        self.dupeWindow = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            rect, NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+            | NSWindowStyleMaskResizable, NSBackingStoreBuffered, False)
+        self.dupeWindow.setTitle_("Find Duplicates")
+        self.dupeWindow.setMinSize_(NSMakeSize(560, 420))
+        self.dupeWindow.center()
+        self.dupeWindow.setReleasedWhenClosed_(False)
+        self.dupeWindow.setDelegate_(self)
+
+        content = NSView.alloc().initWithFrame_(rect)
+        top = DUPE_H
+
+        # folders to search
+        top -= 96
+        self.folderTable = NSTableView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, DUPE_W, 96))
+        column = NSTableColumn.alloc().initWithIdentifier_("folder")
+        column.setWidth_(DUPE_W - 24)
+        self.folderTable.addTableColumn_(column)
+        self.folderTable.setHeaderView_(None)
+        self.folderTable.setRowHeight_(ROW_H)
+        self.folderTable.setDataSource_(self)
+        self.folderTable.setDelegate_(self)
+        folders = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(0, top, DUPE_W, 96))
+        folders.setDocumentView_(self.folderTable)
+        folders.setHasVerticalScroller_(True)
+        folders.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
+        content.addSubview_(folders)
+
+        # the scan bar
+        top -= BAR_HEIGHT
+        bar = NSView.alloc().initWithFrame_(NSMakeRect(0, top, DUPE_W, BAR_HEIGHT))
+        bar.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
+        bar.addSubview_(self.barButton("Add Folder…", "addDupeFolder:", 14))
+        bar.addSubview_(self.barButton("Remove", "removeDupeFolder:", 14 + BUTTON_W + 8))
+        self.verifyBox = NSButton.alloc().initWithFrame_(
+            NSMakeRect(14 + 2 * (BUTTON_W + 8), (BAR_HEIGHT - BUTTON_H) / 2,
+                       190, BUTTON_H))
+        self.verifyBox.setButtonType_(SWITCH_BUTTON)
+        self.verifyBox.setTitle_("Verify byte-for-byte")
+        self.verifyBox.setState_(STATE_ON if self.verifyDupes else STATE_OFF)
+        self.verifyBox.setTarget_(self)
+        self.verifyBox.setAction_("toggleVerify:")
+        bar.addSubview_(self.verifyBox)
+        self.scanButton = self.barButton("Scan", "startDupeScan:", DUPE_W - BUTTON_W - 14)
+        self.scanButton.setAutoresizingMask_(NSViewMinXMargin)
+        bar.addSubview_(self.scanButton)
+        content.addSubview_(bar)
+
+        # progress line
+        top -= 24
+        self.dupeStatusLabel = self.label(NSMakeRect(14, top, DUPE_W - 28, 20),
+                                          11, 0, dim=True)
+        self.dupeStatusLabel.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
+        content.addSubview_(self.dupeStatusLabel)
+
+        # results
+        self.dupeTable = NSTableView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, DUPE_W, top - BAR_HEIGHT))
+        column = NSTableColumn.alloc().initWithIdentifier_("dupe")
+        column.setWidth_(DUPE_W - 24)
+        self.dupeTable.addTableColumn_(column)
+        self.dupeTable.setHeaderView_(None)
+        self.dupeTable.setRowHeight_(DUPE_ROW_H)
+        self.dupeTable.setDataSource_(self)
+        self.dupeTable.setDelegate_(self)
+        scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(0, BAR_HEIGHT, DUPE_W, top - BAR_HEIGHT))
+        scroll.setDocumentView_(self.dupeTable)
+        scroll.setHasVerticalScroller_(True)
+        scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        content.addSubview_(scroll)
+
+        # what to keep, and the one destructive button
+        foot = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, DUPE_W, BAR_HEIGHT))
+        foot.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
+        foot.addSubview_(self.barButton("Keep Tagged", "keepTagged:", 14))
+        foot.addSubview_(self.barButton("Keep Oldest", "keepOldest:", 14 + BUTTON_W + 8))
+        foot.addSubview_(self.barButton("Shortest Path", "keepShortest:",
+                                        14 + 2 * (BUTTON_W + 8)))
+        self.reclaimLabel = self.label(
+            NSMakeRect(DUPE_W - 340, (BAR_HEIGHT - 18) / 2, 160, 18),
+            11, 0, align=ALIGN_RIGHT, dim=True)
+        self.reclaimLabel.setAutoresizingMask_(NSViewMinXMargin)
+        foot.addSubview_(self.reclaimLabel)
+        self.removeButton = self.barButton("Move to Trash…", "removeDuplicates:",
+                                           DUPE_W - BUTTON_W - 60)
+        self.removeButton.setFrame_(NSMakeRect(DUPE_W - 170, (BAR_HEIGHT - BUTTON_H) / 2,
+                                               156, BUTTON_H))
+        self.removeButton.setAutoresizingMask_(NSViewMinXMargin)
+        foot.addSubview_(self.removeButton)
+        content.addSubview_(foot)
+
+        self.dupeWindow.setContentView_(content)
+        self.dupeWindow.makeKeyAndOrderFront_(None)
+
+    def toggleVerify_(self, sender):
+        self.verifyDupes = self.verifyBox.state() == STATE_ON
+        self.saveState()
+
+    @objc.python_method
+    def refreshDupeManager(self):
+        if self.dupeTable is None:
+            return
+        # One flat list of rows: a heading, then the files under it. An outline
+        # view would nest properly and cost a second data source for no gain
+        # when nothing is ever collapsed.
+        self.dupeRows = []
+        groups = self.dupeGroupsForDisplay()
+        reclaim = 0
+        for group in groups:
+            self.dupeRows.append({"head": group})
+            for key in group["keys"]:
+                self.dupeRows.append({"group": group, "key": key})
+            reclaim += group["reclaim"]
+
+        self.folderTable.reloadData()
+        self.dupeTable.reloadData()
+        self.updateDupeStatus()
+        self.reclaimLabel.setStringValue_(
+            "%s in %d group%s" % (human_bytes(reclaim), len(groups),
+                                  "" if len(groups) == 1 else "s")
+            if groups else "")
+        self.removeButton.setEnabled_(bool(groups) and not self.dupeScanning)
+
+    @objc.python_method
+    def updateDupeStatus(self):
+        if self.dupeStatusLabel is None:
+            return
+        self.dupeStatusLabel.setStringValue_(self.dupeStatus)
+        self.scanButton.setTitle_("Stop" if self.dupeScanning else "Scan")
+
+    @objc.python_method
+    def isDupeTable(self, view):
+        return self.dupeTable is not None and view.isEqual_(self.dupeTable)
+
+    @objc.python_method
+    def isFolderTable(self, view):
+        return self.folderTable is not None and view.isEqual_(self.folderTable)
+
+    @objc.python_method
+    def dupeManagerRow(self, tableView, row):
+        item = self.dupeRows[row]
+        if "head" in item:
+            group = item["head"]
+            view = self.reuse(tableView, "dupehead", self.buildManagerRow)
+            view.viewWithTag_(NAME_TAG).setStringValue_(
+                "%d copies · %s each%s" % (len(group["keys"]),
+                                           human_bytes(group["size"]),
+                                           "" if group["verified"] else " · not verified"))
+            note = view.viewWithTag_(TIME_TAG)
+            note.setStringValue_("frees %s" % human_bytes(group["reclaim"]))
+            note.setTextColor_(NSColor.secondaryLabelColor())
+            return view
+
+        group, key = item["group"], item["key"]
+        keeping = key == group["keeper"]
+        view = self.reuse(tableView, "dupefile", self.buildDupeRow)
+        button = view.viewWithTag_(KEEP_TAG)
+        button.setState_(STATE_ON if keeping else STATE_OFF)
+        button.setTitle_("  Keep" if keeping else "")
+        button.setToolTip_(key)
+        button.setTarget_(self)
+        button.setAction_("chooseKeeper:")
+        name = view.viewWithTag_(NAME_TAG)
+        name.setStringValue_("%s  —  %s" % (os.path.basename(key),
+                                            os.path.dirname(key)))
+        name.setTextColor_(NSColor.labelColor() if keeping
+                           else NSColor.secondaryLabelColor())
+        note = view.viewWithTag_(TIME_TAG)
+        note.setStringValue_(group["why"] if keeping else "to Trash")
+        note.setTextColor_(NSColor.secondaryLabelColor() if keeping
+                           else NSColor.systemRedColor())
+        return view
+
+    @objc.python_method
+    def buildDupeRow(self):
+        view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, DUPE_W, DUPE_ROW_H))
+        keep = NSButton.alloc().initWithFrame_(NSMakeRect(10, 2, 72, DUPE_ROW_H - 4))
+        keep.setButtonType_(RADIO_BUTTON)
+        keep.setTag_(KEEP_TAG)
+        view.addSubview_(keep)
+        name = self.label(NSMakeRect(92, 2, DUPE_W - 92 - 92, DUPE_ROW_H - 4),
+                          11, NAME_TAG)
+        name.setAutoresizingMask_(NSViewWidthSizable)
+        view.addSubview_(name)
+        note = self.label(NSMakeRect(DUPE_W - 88, 2, 78, DUPE_ROW_H - 4),
+                          10, TIME_TAG, align=ALIGN_RIGHT, dim=True)
+        note.setAutoresizingMask_(NSViewMinXMargin)
+        view.addSubview_(note)
+        return view
+
+    # -- choosing what survives -------------------------------------------
+
+    @objc.python_method
+    def suggestKeeper(self, group):
+        """Which copy to keep, and why, in words.
+
+        Tags first, because they are the only part of a video that is your
+        work rather than the file's: a re-download can be replaced, an
+        afternoon of labelling cannot. Then the oldest, which is usually the
+        original. Then the shortest path, which is usually the one filed
+        somewhere deliberate rather than dropped in a subfolder.
+        """
+        tagged = [k for k in group if self.tagsFor(tag_path(k))]
+        if len(tagged) == 1:
+            return tagged[0], "has tags"
+        pool = tagged or list(group)
+        dated = [(self.prints.get(k, {}).get("mtime", 0), k) for k in pool]
+        oldest = min(dated)[0]
+        same_age = [k for age, k in dated if abs(age - oldest) < 2]
+        if len(same_age) == 1:
+            return same_age[0], "oldest" + (" of the tagged" if tagged else "")
+        shortest = min(same_age, key=lambda k: (len(k), k))
+        return shortest, "shortest path"
+
+    @objc.python_method
+    def dupeGroupsForDisplay(self):
+        """Groups, biggest reclaim first, each with its keeper decided."""
+        rows = []
+        for group in duplicate_groups(self.prints):
+            alive = [k for k in group if os.path.isfile(tag_path(k))]
+            if len(alive) < 2:
+                continue              # one or none left; nothing to choose between
+            gid = alive[0]
+            keeper = self.dupeKeep.get(gid)
+            if keeper not in alive:
+                keeper, why = self.suggestKeeper(alive)
+            else:
+                why = "your choice"
+            size = self.prints.get(alive[0], {}).get("size", 0)
+            rows.append({"id": gid, "keys": alive, "keeper": keeper,
+                         "why": why, "size": size,
+                         "reclaim": size * (len(alive) - 1),
+                         "verified": all(self.prints.get(k, {}).get("full")
+                                         for k in alive)})
+        rows.sort(key=lambda g: -g["reclaim"])
+        return rows
+
+    def keepTagged_(self, sender):
+        self.applyKeepRule("tags")
+
+    def keepOldest_(self, sender):
+        self.applyKeepRule("oldest")
+
+    def keepShortest_(self, sender):
+        self.applyKeepRule("shortest")
+
+    @objc.python_method
+    def applyKeepRule(self, rule):
+        for group in self.dupeGroupsForDisplay():
+            keys = group["keys"]
+            if rule == "tags":
+                tagged = [k for k in keys if self.tagsFor(tag_path(k))]
+                pick = tagged[0] if tagged else self.suggestKeeper(keys)[0]
+            elif rule == "oldest":
+                pick = min(keys, key=lambda k: self.prints.get(k, {}).get("mtime", 0))
+            else:
+                pick = min(keys, key=lambda k: (len(k), k))
+            self.dupeKeep[group["id"]] = pick
+        self.refreshDupeManager()
+
+    def chooseKeeper_(self, sender):
+        """A radio button in a row: keep this one, discard the rest of its group.
+
+        The row is found from the key on the button rather than from its tag.
+        Cells are reused as the table scrolls, so a tag holding a row number
+        goes stale the moment anything moves — and the key does not.
+        """
+        key = str(sender.toolTip() or "")
+        for item in self.dupeRows:
+            if item.get("key") == key:
+                self.dupeKeep[item["group"]["id"]] = key
+                return self.refreshDupeManager()
+
+    def removeDuplicates_(self, sender):
+        groups = self.dupeGroupsForDisplay()
+        doomed = [(g, k) for g in groups for k in g["keys"] if k != g["keeper"]]
+        if not doomed:
+            return self.say("Nothing to remove", "Every group already has one copy.")
+        unverified = sum(1 for g, _ in doomed if not g["verified"])
+        total = sum(g["size"] for g, _ in doomed)
+        detail = ("%d file%s, freeing %s.\n\nThey go to the Trash, so this is "
+                  "undoable. Tags on a discarded copy move to the one you keep "
+                  "first." % (len(doomed), "" if len(doomed) == 1 else "s",
+                              human_bytes(total)))
+        if unverified:
+            detail += ("\n\n%d of them matched on size and both ends but were "
+                       "not read in full." % unverified)
+        if not self.confirm("Move %d duplicate%s to the Trash?"
+                            % (len(doomed), "" if len(doomed) == 1 else "s"),
+                            detail, "Move to Trash"):
+            return
+
+        playing = self.currentPath()
+        moved, failed, kept_out = 0, [], 0
+        for group, key in doomed:
+            path = tag_path(key)
+            if path == playing:
+                kept_out += 1         # never pull the file out from under playback
+                continue
+            # Tags first: a file in the Trash can be dragged back, but labelling
+            # thrown away with it cannot.
+            self.mergeTagsInto(group["keeper"], key)
+            ok, why = self.trash(path)
+            if ok:
+                self.prints.pop(key, None)
+                moved += 1
+            else:
+                failed.append("%s — %s" % (os.path.basename(path), why))
+
+        self.dupesChanged()
+        self.savePrints()
+        self.saveTags()
+        self.dupeKeep = {}
+        self.refreshDupeManager()
+        self.refreshRows()
+        self.rebuildTagsMenu()
+        self.syncDupeMenu()
+
+        note = "%d moved to the Trash." % moved
+        if kept_out:
+            note += "\n\n%d skipped: still playing." % kept_out
+        if failed:
+            note += "\n\nCould not move:\n" + "\n".join(failed[:8])
+        self.say("Duplicates removed" if moved else "Nothing was moved", note)
+
+    @objc.python_method
+    def mergeTagsInto(self, keeper, doomed):
+        """Carry a discarded copy's tags over to the one being kept."""
+        extra = [n for n in self.tagsFor(tag_path(doomed))
+                 if not self.hasTag(tag_path(keeper), n)]
+        if extra:
+            self.setTagsFor(tag_path(keeper), self.tagsFor(tag_path(keeper)) + extra)
+        self.setTagsFor(tag_path(doomed), [])
+
+    @objc.python_method
+    def trash(self, path):
+        """To the Trash, never straight to deletion.
+
+        On a share that will not take a Trash, the app says so rather than
+        quietly deleting — losing a video because a network volume behaves
+        differently from a local one is not an acceptable surprise.
+        """
+        url = NSURL.fileURLWithPath_(path)
+        ok, _, err = NSFileManager.defaultManager().trashItemAtURL_resultingItemURL_error_(
+            url, None, None)
+        if ok:
+            return True, ""
+        reason = err.localizedDescription() if err else "the volume refused it"
+        return False, str(reason)
+
+    # -- the deliberate sweep ---------------------------------------------
+
+    def findDuplicates_(self, sender):
+        self.openDupeWindow()
+        if not self.dupeFolders and self.folder:
+            self.dupeFolders = [self.folder]
+        self.refreshDupeManager()
+
+    def showDuplicates_(self, sender):
+        self.openDupeWindow()
+        self.refreshDupeManager()
+
+    def addDupeFolder_(self, sender):
+        panel = NSOpenPanel.openPanel()
+        panel.setCanChooseFiles_(False)
+        panel.setCanChooseDirectories_(True)
+        panel.setAllowsMultipleSelection_(True)
+        if panel.runModal() != 1:
+            return
+        for url in panel.URLs():
+            folder = str(url.path())
+            if folder not in self.dupeFolders:
+                self.dupeFolders.append(folder)
+        self.refreshDupeManager()
+
+    def removeDupeFolder_(self, sender):
+        row = self.folderTable.selectedRow()
+        if 0 <= row < len(self.dupeFolders):
+            del self.dupeFolders[row]
+            self.refreshDupeManager()
+
+    def startDupeScan_(self, sender):
+        if self.dupeScanning:
+            self.dupeStop = True
+            return
+        if not self.dupeFolders:
+            return self.say("Nothing to search",
+                            "Add at least one folder to look through.")
+        self.dupeScanning = True
+        self.dupeStop = False
+        self.printGen += 1
+        self.dupeStatus = "Listing files…"
+        self.refreshDupeManager()
+        self.performSelectorInBackground_withObject_("sweep:", self.printGen)
+
+    def sweep_(self, generation):
+        """List, sieve by size, fingerprint, verify. All off the main thread."""
+        pool = NSAutoreleasePool.alloc().init()
+        try:
+            self.sweepStages(generation)
+        finally:
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "sweepDone:", None, False)
+            del pool
+
+    @objc.python_method
+    def sweepStages(self, generation):
+        def cancelled():
+            return self.dupeStop or generation != self.printGen
+
+        def report(text):
+            self.dupeStatus = text
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "sweepProgress:", None, False)
+
+        # 1 — list, taking the size that comes free with the listing
+        sizes, seen = {}, 0
+        for folder in list(self.dupeFolders):
+            for root, dirs, names in os.walk(folder):
+                if cancelled():
+                    return
+                dirs[:] = [d for d in dirs if not d.startswith(".")]
+                for name in names:
+                    if os.path.splitext(name)[1].lower() not in VIDEO_EXT:
+                        continue
+                    path = os.path.join(root, name)
+                    try:
+                        sizes[tag_key(path)] = os.path.getsize(path)
+                    except OSError:
+                        continue
+                    seen += 1
+                    if seen % 200 == 0:
+                        report("Listed %s videos…" % f"{seen:,}")
+
+        # 2 — only files whose size is shared with something can be duplicates
+        candidates = size_candidates(sizes)
+        report("%s of %s share a size — fingerprinting…"
+               % (f"{len(candidates):,}", f"{seen:,}"))
+
+        done = 0
+        for key in candidates:
+            if cancelled():
+                return
+            path = tag_path(key)
+            if not self.printIsFresh(key, path):
+                self.takePrint(path)
+            done += 1
+            if done % 25 == 0:
+                report("Fingerprinting %s of %s…"
+                       % (f"{done:,}", f"{len(candidates):,}"))
+
+        # Anything whose size is unique cannot be a duplicate, so a stale entry
+        # claiming otherwise has to go or it will haunt the results.
+        for key in list(self.prints):
+            if key in sizes and key not in set(candidates):
+                del self.prints[key]
+
+        # 3 — read in full, but only what the fingerprints already agree on
+        if self.verifyDupes:
+            groups = [g for g in duplicate_groups(self.prints)
+                      if any(k in sizes for k in g)]
+            total = sum(len(g) for g in groups)
+            checked = 0
+            for group in groups:
+                for key in group:
+                    if cancelled():
+                        return
+                    entry = self.prints.get(key)
+                    if entry is None or entry.get("full"):
+                        checked += 1
+                        continue
+                    mark = full_hash(tag_path(key), stop=cancelled)
+                    if mark is None:
+                        return
+                    entry["full"] = mark
+                    checked += 1
+                    report("Verifying %s of %s…" % (f"{checked:,}", f"{total:,}"))
+
+    def sweepProgress_(self, _):
+        self.updateDupeStatus()
+
+    def sweepDone_(self, _):
+        self.dupeScanning = False
+        self.dupesChanged()
+        self.savePrints()
+        self.dupeStatus = ("Stopped — what was found is kept."
+                           if self.dupeStop else "Done.")
+        self.syncDupeMenu()
+        self.refreshDupeManager()
+        self.refreshRows()
 
     @objc.python_method
     def sharePeople(self):
@@ -705,6 +1447,8 @@ class AppDelegate(NSObject):
         self.device = str(state.get("device") or uuid.uuid4().hex[:8])
         self.lastMerge = state.get("lastMerge") or 0
         self.showThumbs = state.get("thumbnails") is not False
+        self.watchDupes = state.get("watchDupes") is not False
+        self.verifyDupes = state.get("verifyDupes") is not False
 
     @objc.python_method
     def saveState(self):
@@ -724,6 +1468,8 @@ class AppDelegate(NSObject):
             "device": self.device,
             "lastMerge": self.lastMerge,
             "thumbnails": self.showThumbs,
+            "watchDupes": self.watchDupes,
+            "verifyDupes": self.verifyDupes,
         })
 
     @objc.python_method
@@ -1170,6 +1916,8 @@ class AppDelegate(NSObject):
         # Ignore selection we set ourselves while following playback, otherwise
         # every track change would re-trigger itself.
         table = notification.object()
+        if self.isDupeTable(table) or self.isFolderTable(table):
+            return
         if self.isNameTable(table):
             return self.syncNameButtons()     # the buttons follow the selection
         if self.syncing or self.isTagTable(table):
@@ -1267,9 +2015,15 @@ class AppDelegate(NSObject):
             return len(self.tagRows)
         if self.isNameTable(tableView):
             return len(self.nameRows)
+        if self.isDupeTable(tableView):
+            return len(self.dupeRows)
+        if self.isFolderTable(tableView):
+            return len(self.dupeFolders)
         return len(self.rows)
 
     def tableView_isGroupRow_(self, tableView, row):
+        if self.isDupeTable(tableView):
+            return 0 <= row < len(self.dupeRows) and "head" in self.dupeRows[row]
         return self.isPlainRow(tableView, row) is None
 
     def tableView_shouldSelectRow_(self, tableView, row):
@@ -1281,15 +2035,19 @@ class AppDelegate(NSObject):
             return GROUP_H
         if self.isTagTable(tableView) or self.isNameTable(tableView):
             return ROW_H
+        if self.isDupeTable(tableView) or self.isFolderTable(tableView):
+            return DUPE_ROW_H
         if self.showThumbs:
             return THUMB_ROW_H            # a poster frame needs the same room either way
-        # Only a tagged video pays for the second line; the rest stay dense.
-        return TAG_ROW_H if self.tagsFor(self.playlist[index]) else ROW_H
+        # Only a video with something to say pays for the second line.
+        path = self.playlist[index]
+        return TAG_ROW_H if (self.tagsFor(path) or self.dupesFor(path)) else ROW_H
 
     @objc.python_method
     def isPlainRow(self, tableView, row):
         """The playlist index for a selectable row, or None for a heading."""
-        if self.isTagTable(tableView) or self.isNameTable(tableView):
+        if (self.isTagTable(tableView) or self.isNameTable(tableView)
+                or self.isDupeTable(tableView) or self.isFolderTable(tableView)):
             return row                    # the managers are all plain rows
         if not 0 <= row < len(self.rows):
             return None
@@ -1300,6 +2058,14 @@ class AppDelegate(NSObject):
             return self.tagManagerRow(tableView, row)
         if self.isNameTable(tableView):
             return self.nameManagerRow(tableView, row)
+        if self.isDupeTable(tableView):
+            return self.dupeManagerRow(tableView, row)
+        if self.isFolderTable(tableView):
+            view = self.reuse(tableView, "folderrow", self.buildManagerRow)
+            folder = self.dupeFolders[row]
+            view.viewWithTag_(NAME_TAG).setStringValue_(folder)
+            view.viewWithTag_(TIME_TAG).setStringValue_("")
+            return view
         if not 0 <= row < len(self.rows):
             return None
         index, label = self.rows[row]
@@ -1362,7 +2128,13 @@ class AppDelegate(NSObject):
         shot = view.viewWithTag_(THUMB_TAG)
         shot.setHidden_(not self.showThumbs)
         shot.setImage_(self.thumbs.get(path) if self.showThumbs else None)
-        self.fillChips(view, self.tagsFor(path))
+        # A duplicate reads as a note on the row rather than a warning: it is
+        # information, and nothing is wrong until you decide it is.
+        others = self.dupesFor(path)
+        chips = list(self.tagsFor(path))
+        if others:
+            chips.insert(0, "⧉ %d copies" % (len(others) + 1))
+        self.fillChips(view, chips)
         return view
 
     @objc.python_method
@@ -1748,6 +2520,7 @@ class AppDelegate(NSObject):
         self.player.replaceCurrentItemWithPlayerItem_(self.item)
         self.player.play()
         self.updateUI()
+        self.noticeWhilePlaying(self.itemPath)
 
     def itemDidFinish_(self, notification):
         if self.tagPanelOpen:
@@ -2121,7 +2894,13 @@ open "$APP"
         self.add(self.tagsMenu, "Publish Tags to Share", "publishTagsNow:")
         self.tagNameItem = self.add(self.tagsMenu, "Tagging As…", "changePerson:")
         self.add(self.tagsMenu, "Names on the Share…", "manageNames:")
+        self.tagsMenu.addItem_(NSMenuItem.separatorItem())
+        self.add(self.tagsMenu, "Find Duplicates…", "findDuplicates:")
+        self.dupeCountItem = self.add(self.tagsMenu, "Duplicates", "showDuplicates:")
+        self.watchItem = self.add(self.tagsMenu, "Notice Duplicates While Playing",
+                                  "toggleWatchDupes:")
         self.syncPersonItem()
+        self.syncDupeMenu()
 
     @objc.python_method
     def syncTagsMenu(self):
@@ -2484,6 +3263,12 @@ open "$APP"
         elif self.nameWindow is not None and closing.isEqual_(self.nameWindow):
             self.nameTable = None
             self.nameWindow = None
+        elif self.dupeWindow is not None and closing.isEqual_(self.dupeWindow):
+            self.dupeStop = True          # a sweep has nowhere to report to now
+            self.dupeTable = None
+            self.folderTable = None
+            self.dupeStatusLabel = None
+            self.dupeWindow = None
         elif closing.isEqual_(self.window):
             # Otherwise closing the player leaves the app alive behind a stray
             # utility window instead of quitting.
@@ -2491,6 +3276,8 @@ open "$APP"
                 self.tagWindow.close()
             if self.nameWindow is not None:
                 self.nameWindow.close()
+            if self.dupeWindow is not None:
+                self.dupeWindow.close()
 
     @objc.python_method
     def refreshTagManager(self):

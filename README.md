@@ -368,6 +368,59 @@ line with all the slow work already done.
 Re-sign after changing anything inside the bundle or macOS will refuse to
 launch it. The script always does.
 
+## Duplicates
+
+Two ways to find the same video twice, both feeding one list. Nothing is ever
+deleted — copies go to the Trash, and tags on a discarded copy move to the one
+you keep first, because a file can be dragged back out of the Trash and an
+afternoon of labelling cannot.
+
+**Tags → Find Duplicates…** sweeps folders you choose. **Notice Duplicates
+While Playing** does it without a scan: every video you play is fingerprinted
+as it opens, and the index builds up as you watch.
+
+### Why it is a cascade and not a hash of everything
+
+Hashing every file to group by hash is the obvious design. Measured on a real
+library on a NAS, it means moving about four terabytes over SMB. So each stage
+only pays for what the last one could not rule out:
+
+| | what it costs | what it removes |
+|---|---|---|
+| **Sizes** | free, arrives with the listing | four files in five |
+| **Both ends** | 128 KB and 0.227s per file | everything but real candidates |
+| **The whole file** | seconds, on a handful | any doubt before deleting |
+
+Measured on 17,265 videos: only **21.8%** share a size with anything else, and
+a file whose size is unique cannot be a byte-for-byte duplicate of anything.
+Fingerprinting just those takes about 14 minutes where fingerprinting
+everything takes 65.
+
+The fingerprint is the size plus the first and last 64 KB, so a 400 MB file
+costs exactly what a 4 MB one does. It is deliberately blind to a difference
+in the middle of a file, which is what verifying in full is for, and why that
+is on by default.
+
+Filenames are not a signal. In that same library 4,335 files share a name with
+something of a different size — more name collisions than size collisions.
+
+### Choosing what to keep
+
+Tags first, then the oldest, then the shortest path — and the reason is shown
+on the row, because a suggestion you cannot interrogate is one you cannot
+trust. Tags win because they are the only part of a video that is your work
+rather than the file's.
+
+The file currently playing is never touched. Where a volume will not accept a
+Trash, the app says so rather than deleting.
+
+### What it will not catch
+
+Byte-identical files only. The same video re-encoded, at another quality, or
+with different metadata will not match — not on size, not on fingerprint.
+Finding those means comparing what frames look like rather than what bytes
+say, which is a different and much slower thing.
+
 ## Repository layout
 
 | | |
