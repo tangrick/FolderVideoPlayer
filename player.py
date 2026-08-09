@@ -175,7 +175,6 @@ BAR_HEIGHT = 48
 # 96 rather than a roomier width so a fourth button fits on the left at the
 # 680pt minimum window size, instead of making everyone's window bigger.
 BUTTON_W, BUTTON_H = 96, 30
-STOP_W = 68                   # "■ Stop" needs no more
 SIDEBAR_W = 320
 SIDEBAR_SLIDE = 0.22          # seconds
 FILTER_H = 24
@@ -1664,6 +1663,18 @@ class AppDelegate(NSObject):
         self.tagsMenu = self.menu(bar, "Tags")
         self.rebuildTagsMenu()
 
+        # Its own menu rather than a corner of Tags. Finding duplicates has
+        # nothing to do with labelling, and it had grown to three items and a
+        # window of its own while hiding under a heading that did not mention
+        # it. Built once — only the count changes, and syncDupeMenu does that.
+        dupes = self.menu(bar, "Duplicates")
+        self.add(dupes, "Find Duplicates…", "findDuplicates:")
+        self.dupeCountItem = self.add(dupes, "Duplicates", "showDuplicates:")
+        dupes.addItem_(NSMenuItem.separatorItem())
+        self.watchItem = self.add(dupes, "Notice Duplicates While Playing",
+                                  "toggleWatchDupes:")
+        self.syncDupeMenu()
+
         view = self.menu(bar, "View")
         self.listItem = self.add(view, "Show Playlist", "togglePlaylist:", "l",
                                  NSEventModifierFlagCommand)
@@ -1727,11 +1738,10 @@ class AppDelegate(NSObject):
         # Closing it no longer quits, so it has to outlive the close.
         self.window.setReleasedWhenClosed_(False)
         # narrow enough and the left-hand buttons would run into the right-hand pair
-        self.window.setMinSize_(NSMakeSize(760, 380))
-        # A remembered frame is restored as-is, minimum size or not — so a
-        # window saved narrower than the bar now needs comes back too narrow
-        # and the buttons overlap. Widen it once, here, rather than leaving
-        # anyone upgrading with a broken control bar.
+        self.window.setMinSize_(NSMakeSize(680, 380))
+        # A remembered frame is restored as-is, minimum size or not, so a
+        # window saved smaller than the minimum comes back too small and the
+        # bar overlaps itself. Cheap to rule out.
         was = self.window.frame()
         least = self.window.minSize()
         if was.size.width < least.width or was.size.height < least.height:
@@ -1765,20 +1775,12 @@ class AppDelegate(NSObject):
         # below the video so it never collides with the floating AVKit controls.
         bar = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, rect.size.width, BAR_HEIGHT))
         bar.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
-        # Stop sits inside the transport cluster, between the two it belongs
-        # with, and is narrow because "■" needs no more room than that.
-        self.prevButton = self.barButton("◀ Previous", "prevItem:", 14)
-        self.stopButton = self.barButton("■ Stop", "stopPlayback:",
-                                         14 + BUTTON_W + 8, width=STOP_W)
-        self.nextButton = self.barButton("Next ▶", "nextItem:",
-                                         14 + BUTTON_W + STOP_W + 16)
-        self.favButton = self.barButton("☆ Favorite", "toggleFavorite:",
-                                        14 + 2 * BUTTON_W + STOP_W + 24)
-        self.tagButton = self.barButton("Tag ⌃", "toggleTagPanel:",
-                                        14 + 3 * BUTTON_W + STOP_W + 32)
-        bar.addSubview_(self.prevButton)
-        bar.addSubview_(self.stopButton)
-        bar.addSubview_(self.nextButton)
+        # Previous, Next and Stop are not here. They live in the floating
+        # on-screen controls, where the rest of the transport already is, and
+        # a second copy along the bottom of the window was only ever a second
+        # copy. What is left is what AVKit has no idea about.
+        self.favButton = self.barButton("☆ Favorite", "toggleFavorite:", 14)
+        self.tagButton = self.barButton("Tag ⌃", "toggleTagPanel:", 14 + BUTTON_W + 8)
         bar.addSubview_(self.favButton)
         bar.addSubview_(self.tagButton)
 
@@ -3074,13 +3076,7 @@ open "$APP"
         self.add(self.tagsMenu, "Publish Tags to Share", "publishTagsNow:")
         self.tagNameItem = self.add(self.tagsMenu, "Tagging As…", "changePerson:")
         self.add(self.tagsMenu, "Names on the Share…", "manageNames:")
-        self.tagsMenu.addItem_(NSMenuItem.separatorItem())
-        self.add(self.tagsMenu, "Find Duplicates…", "findDuplicates:")
-        self.dupeCountItem = self.add(self.tagsMenu, "Duplicates", "showDuplicates:")
-        self.watchItem = self.add(self.tagsMenu, "Notice Duplicates While Playing",
-                                  "toggleWatchDupes:")
         self.syncPersonItem()
-        self.syncDupeMenu()
 
     @objc.python_method
     def syncTagsMenu(self):
@@ -3617,9 +3613,6 @@ open "$APP"
     @objc.python_method
     def updateUI(self):
         path = self.currentPath()
-        enabled = len(self.playlist) > 1
-        self.prevButton.setEnabled_(enabled)
-        self.nextButton.setEnabled_(enabled)
         self.listButton.setEnabled_(bool(self.playlist))
         self.favButton.setEnabled_(bool(self.playlist))
         self.tagButton.setEnabled_(bool(self.playlist))

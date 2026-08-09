@@ -67,16 +67,21 @@ replacing the app never loses it: `tags.json` for tags and favorites, and
 
 Space plays and pauses, and so does clicking anywhere on the picture.
 
+**The transport lives in the floating on-screen controls**, not along the
+bottom of the window. Its menu button carries **Previous**, **Next**, **Skip
+Back**, **Skip Forward** and **Stop**. macOS gives no way to add transport
+buttons of your own to an `AVPlayerView`, and that menu is the only hook it
+offers — but once they are there, a second set of the same buttons in the
+app's own bar is just a second set of the same buttons. The bar keeps only
+what AVKit has no idea about: Favorite, Tag, Open New and Playlist.
+
+The rewind and fast-forward buttons AVKit draws itself are *scan* controls —
+they work while held down and do nothing on a click, which is why they never
+behaved like skip buttons.
+
 **Stop** is not pause. Pause means "I am coming back to this spot", so the
 position is kept; stop means "I am done with this", so the video rewinds and
 forgets where it had got to.
-
-The floating on-screen controls carry a menu button with **Previous**,
-**Next**, **Skip Back**, **Skip Forward** and **Stop**. macOS gives no way to
-add transport buttons of your own to an `AVPlayerView`, and that menu is the
-only hook it offers. The rewind and fast-forward buttons AVKit draws itself
-are *scan* controls — they work while held down and do nothing on a click,
-which is why they never behaved like skip buttons.
 
 ## Resuming
 
@@ -401,6 +406,8 @@ Re-sign after changing anything inside the bundle or macOS will refuse to
 launch it. The script always does.
 
 ## Duplicates
+
+Its own menu, because finding duplicates has nothing to do with labelling.
 
 Two ways to find the same video twice, both feeding one list. Nothing is ever
 deleted — copies go to the Trash, and tags on a discarded copy move to the one
