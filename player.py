@@ -47,6 +47,8 @@ from Cocoa import (
     NSBezelStyleRounded,
     NSButton,
     NSIndexSet,
+    NSMutableIndexSet,
+    NSProgressIndicator,
     NSEventModifierFlagCommand,
     NSEventModifierFlagControl,
     NSEventModifierFlagShift,
@@ -69,6 +71,7 @@ from Cocoa import (
     NSScrollView,
     NSSearchField,
     NSSlider,
+    NSPanel,
     NSTableColumn,
     NSTableView,
     NSTextField,
@@ -89,6 +92,7 @@ from Cocoa import (
     NSWindowStyleMaskMiniaturizable,
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
+    NSWindowStyleMaskUtilityWindow,
 )
 from PyObjCTools import AppHelper
 
@@ -203,14 +207,19 @@ IMAGE_SCALE_FIT = 3           # NSImageScaleProportionallyUpOrDown
 DURATION_BATCH = 25           # rows to measure between table refreshes
 THUMB_BATCH = 4               # ...and when each row also costs a decoded frame
 FAV_W, FAV_H = 460, 420
-DUPE_W, DUPE_H = 780, 560
+DUPE_W, DUPE_H = 780, 640
 DUPE_ROW_H = 22
-DUPE_DECIDE_W = 110           # the right-hand column: "why kept", or the Trash box
+DUPE_HEAD_H = 22              # the column headings above the results
+# The columns of a result row. The header strip is laid out from these same
+# four numbers, so it cannot drift out of line with the rows beneath it.
+DUPE_SN_X, DUPE_SN_W = 10, 40
+DUPE_KEEP_X, DUPE_KEEP_W = 58, 72
+DUPE_NAME_X = 140
+DUPE_DECIDE_W = 110           # the right-hand column: why this copy is the keeper
 KEEP_TAG = 5
-TRASH_TAG = 6
+SN_TAG = 7
 RADIO_BUTTON = 4              # NSButtonTypeRadio
 SWITCH_BUTTON = 3             # NSButtonTypeSwitch
-STATE_MIXED = -1              # NSControlStateValueMixed
 FAV_NOTE_W = 130
 
 # Previewing a duplicate before deciding its fate. Its own window and its own
@@ -355,18 +364,39 @@ def full_hash(path, stop=None):
 def duplicate_groups(index, verified_only=False):
     """The index turned into sets of files that are the same file.
 
-    Grouped on the full hash where there is one and the fingerprint otherwise,
-    so verifying a group tightens it rather than splitting it in two.
+    Grouped on the fingerprint, always. The full hash is a check applied
+    inside a group, not a second way of grouping — keying on it meant a group
+    that had only been half read, because a verify pass was stopped part way
+    through it, split into a verified pair and an unverified leftover and
+    then vanished from the results entirely. Losing sight of duplicates is an
+    alarming thing for a feature about deleting files to do.
+
+    Where two full hashes inside one group disagree, the fingerprint was
+    wrong about at least one of them and the hashes win: the group splits by
+    hash, and anything not yet read is left out until it has been, since
+    there is no way to say which side it belongs on.
     """
-    groups = {}
+    candidates = {}
     for key, entry in index.items():
-        mark = entry.get("full") or entry.get("fp")
-        if not mark:
+        mark = entry.get("fp")
+        if mark:
+            candidates.setdefault(mark, []).append(key)
+
+    groups = []
+    for keys in candidates.values():
+        if len(keys) < 2:
             continue
-        if verified_only and not entry.get("full"):
+        hashes = set(index[k].get("full") for k in keys if index[k].get("full"))
+        if len(hashes) > 1:
+            for mark in sorted(hashes):
+                agree = sorted(k for k in keys if index[k].get("full") == mark)
+                if len(agree) > 1:
+                    groups.append(agree)
             continue
-        groups.setdefault(("full" if entry.get("full") else "fp", mark), []).append(key)
-    return [sorted(keys) for keys in groups.values() if len(keys) > 1]
+        if verified_only and not all(index[k].get("full") for k in keys):
+            continue
+        groups.append(sorted(keys))
+    return groups
 
 
 @objc.python_method
@@ -389,6 +419,25 @@ def human_bytes(count):
         if count < 1024 or unit == "TB":
             return "%d %s" % (count, unit) if unit == "bytes" else "%.1f %s" % (count, unit)
         count /= 1024.0
+
+
+@objc.python_method
+def when_words(stamp):
+    """How long ago, in the words someone would actually use.
+
+    A date is no use for deciding whether a scan is worth re-running; "three
+    days ago" is exactly the question being asked.
+    """
+    gap = time.time() - stamp
+    if gap < 90:
+        return "just now"
+    for size, unit, limit in ((60, "minute", 3600), (3600, "hour", 86400),
+                              (86400, "day", 86400 * 7),
+                              (86400 * 7, "week", 86400 * 63)):
+        if gap < limit:
+            count = int(gap // size)
+            return "%d %s%s ago" % (count, unit, "" if count == 1 else "s")
+    return "on " + time.strftime("%-d %b %Y", time.localtime(stamp))
 
 
 @objc.python_method
@@ -458,6 +507,38 @@ class ChipHolder(NSView):
         return CHIPS_TAG
 
 
+class KeyTable(NSTableView):
+    """A table that hands the space bar and escape to its delegate.
+
+    The arrow keys are left alone — NSTableView already moves the selection
+    with them, which is what walking a group of copies wants. Space normally
+    scrolls a page and escape does nothing, and here both mean something: the
+    preview, opened and closed the way Quick Look does it.
+    """
+
+    def keyDown_(self, event):
+        chars = str(event.charactersIgnoringModifiers() or "")
+        delegate = self.delegate()
+        if delegate is not None and chars == " ":
+            return delegate.togglePreviewFromList_(self)
+        if delegate is not None and chars == "\x1b":
+            return delegate.closePreviewFromList_(self)
+        NSTableView.keyDown_(self, event)
+
+
+class PreviewPanel(NSPanel):
+    """The preview window. A panel, so it can float without taking the keyboard.
+
+    That is the whole trick behind Quick Look feeling the way it does: the
+    list keeps the focus, so the arrow keys go on walking it and the preview
+    follows. A window that made itself key would take the keyboard away and
+    leave you clicking back and forth.
+    """
+
+    def cancelOperation_(self, sender):
+        self.close()          # escape, while the panel itself has the focus
+
+
 class AppDelegate(NSObject):
 
     # -- lifecycle -------------------------------------------------------
@@ -489,11 +570,32 @@ class AppDelegate(NSObject):
         self.nameRows = []
         self.prints = {}              # video key -> what we know of its identity
         self.dupeCache = None         # dupeSets(), until the index changes
+        self.groupCache = None        # the derived results, until they change
         self.printGen = 0
         self.dupeWindow = None
         self.dupeTable = None
         self.dupeRows = []
-        self.dupeFolders = []
+        # A scan is a set of folders with a name, kept between launches. What
+        # it found is not kept: results are derived from the fingerprint index
+        # every time, so they cannot go stale, cannot disagree between two
+        # scans that overlap, and cannot be hollowed out when the index ages an
+        # entry out. The folders are the only part that could not be recomputed.
+        self.scans = []               # [{id, name, folders, ran, seen, groups}]
+        self.scanId = None            # the selected one; None is "Everything"
+        self.scanPicker = None
+        self.scanSummaryLabel = None
+        self.sweptCount = 0           # videos the last sweep listed
+        self.trashing = False         # a removal is running on another thread
+        self.trashStop = False
+        self.trashQueue = []
+        self.trashSheet = None
+        self.trashBar = None
+        self.trashLabel = None
+        self.trashDone = 0
+        self.trashNow = ""
+        self.trashMoved = 0
+        self.trashFailed = []
+        self.trashSkipped = 0
         self.dupeScanning = False
         self.dupeStop = False
         self.dupeStatus = ""
@@ -749,14 +851,21 @@ class AppDelegate(NSObject):
         if self.dupeCache is None:
             out = {}
             for group in duplicate_groups(self.prints):
-                for key in group:
-                    out[key] = [k for k in group if k != key]
+                # A copy taken out of the list is a decision already made, so
+                # the playlist stops badging it and the while-playing notice
+                # stops raising it. Nowhere should keep asking.
+                live = [k for k in group if k not in self.dupeSpared]
+                if len(live) < 2:
+                    continue
+                for key in live:
+                    out[key] = [k for k in live if k != key]
             self.dupeCache = out
         return self.dupeCache
 
     @objc.python_method
     def dupesChanged(self):
         self.dupeCache = None
+        self.groupCache = None        # the results are derived from the index
 
     @objc.python_method
     def dupesFor(self, path):
@@ -799,11 +908,23 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def syncDupeMenu(self):
-        """One item, carrying the count when there is one to carry."""
-        groups = len(duplicate_groups(self.prints))
+        """One item, carrying the count when there is one to carry.
+
+        Counted the cheap way, from the index alone: this runs whenever a
+        fingerprint arrives, and checking the disk for every file in every
+        group would put a stat storm on a NAS behind a menu title.
+        """
+        groups = sum(1 for group in duplicate_groups(self.prints)
+                     if sum(1 for k in group if k not in self.dupeSpared) > 1)
         self.dupeCountItem.setTitle_(
             "Find Duplicates… (%d found)" % groups if groups else "Find Duplicates…")
         self.watchItem.setState_(STATE_ON if self.watchDupes else STATE_OFF)
+        # Titled with the count rather than greyed out when there is none:
+        # the menu enables items itself unless the delegate validates them,
+        # so setEnabled_ here would be a call that quietly does nothing.
+        removed = len(self.dupeSpared)
+        self.restoreItem.setTitle_("Put Removed Copies Back… (%d)" % removed
+                                   if removed else "Put Removed Copies Back…")
 
     def toggleWatchDupes_(self, sender):
         self.watchDupes = not self.watchDupes
@@ -824,7 +945,7 @@ class AppDelegate(NSObject):
             rect, NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
             | NSWindowStyleMaskResizable, NSBackingStoreBuffered, False)
         self.dupeWindow.setTitle_("Find Duplicates")
-        self.dupeWindow.setMinSize_(NSMakeSize(560, 420))
+        self.dupeWindow.setMinSize_(NSMakeSize(640, 520))
         self.dupeWindow.center()
         self.dupeWindow.setReleasedWhenClosed_(False)
         self.dupeWindow.setDelegate_(self)
@@ -832,7 +953,32 @@ class AppDelegate(NSObject):
         content = NSView.alloc().initWithFrame_(rect)
         top = DUPE_H
 
-        # folders to search
+        # which scan is on screen, and what it last did
+        top -= BAR_HEIGHT
+        picker = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, top, DUPE_W, BAR_HEIGHT))
+        picker.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
+        self.scanPicker = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            NSMakeRect(14, (BAR_HEIGHT - BUTTON_H) / 2, 250, BUTTON_H), False)
+        self.scanPicker.setTarget_(self)
+        self.scanPicker.setAction_("scanChosen:")
+        picker.addSubview_(self.scanPicker)
+        x = 14 + 250 + 8
+        for title, action, width in (("New Scan…", "newScan:", 104),
+                                     ("Rename…", "renameScan:", 88),
+                                     ("Delete", "deleteScan:", 80)):
+            picker.addSubview_(self.barButton(title, action, x, width=width))
+            x += width + 8
+        content.addSubview_(picker)
+
+        top -= 22
+        self.scanSummaryLabel = self.label(NSMakeRect(16, top, DUPE_W - 32, 18),
+                                           11, 0, dim=True)
+        self.scanSummaryLabel.setAutoresizingMask_(NSViewWidthSizable
+                                                   | NSViewMinYMargin)
+        content.addSubview_(self.scanSummaryLabel)
+
+        # folders this scan looks through
         top -= 96
         self.folderTable = NSTableView.alloc().initWithFrame_(
             NSMakeRect(0, 0, DUPE_W, 96))
@@ -856,11 +1002,10 @@ class AppDelegate(NSObject):
         bar.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
         bar.addSubview_(self.barButton("Add Folder…", "addDupeFolder:", 14))
         bar.addSubview_(self.barButton("Remove", "removeDupeFolder:", 14 + BUTTON_W + 8))
-        self.clearFoldersButton = self.barButton("Clear", "clearDupeFolders:",
-                                                 14 + 2 * (BUTTON_W + 8))
-        bar.addSubview_(self.clearFoldersButton)
+        # No Clear here. Emptying a scan's folders and then filling them again
+        # is just a different scan, and there is a picker full of those.
         self.verifyBox = NSButton.alloc().initWithFrame_(
-            NSMakeRect(14 + 3 * (BUTTON_W + 8), (BAR_HEIGHT - BUTTON_H) / 2,
+            NSMakeRect(14 + 2 * (BUTTON_W + 8), (BAR_HEIGHT - BUTTON_H) / 2,
                        190, BUTTON_H))
         self.verifyBox.setButtonType_(SWITCH_BUTTON)
         self.verifyBox.setTitle_("Verify byte-for-byte")
@@ -880,9 +1025,15 @@ class AppDelegate(NSObject):
         self.dupeStatusLabel.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
         content.addSubview_(self.dupeStatusLabel)
 
+        # column headings, above the results and outside the scroll view so
+        # they stay put rather than scrolling away with the first group
+        top -= DUPE_HEAD_H
+        content.addSubview_(self.dupeHeaderStrip(top))
+
         # results
-        self.dupeTable = NSTableView.alloc().initWithFrame_(
-            NSMakeRect(0, 0, DUPE_W, top - BAR_HEIGHT))
+        FOOT_H = 2 * BAR_HEIGHT       # two rows of buttons, laid out below
+        self.dupeTable = KeyTable.alloc().initWithFrame_(
+            NSMakeRect(0, 0, DUPE_W, top - FOOT_H))
         column = NSTableColumn.alloc().initWithIdentifier_("dupe")
         column.setWidth_(DUPE_W - 24)
         self.dupeTable.addTableColumn_(column)
@@ -892,37 +1043,88 @@ class AppDelegate(NSObject):
         self.dupeTable.setDelegate_(self)
         self.dupeTable.setTarget_(self)
         self.dupeTable.setDoubleAction_("previewDuplicate:")
+        # Several at once, because "keep these three" is one decision and
+        # should not be three clicks in three different places.
+        self.dupeTable.setAllowsMultipleSelection_(True)
         scroll = NSScrollView.alloc().initWithFrame_(
-            NSMakeRect(0, BAR_HEIGHT, DUPE_W, top - BAR_HEIGHT))
+            NSMakeRect(0, FOOT_H, DUPE_W, top - FOOT_H))
         scroll.setDocumentView_(self.dupeTable)
         scroll.setHasVerticalScroller_(True)
         scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
         content.addSubview_(scroll)
 
-        # what to keep, and the one destructive button
-        foot = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, DUPE_W, BAR_HEIGHT))
+        # Two rows: deciding which copy survives, then what to do about it.
+        # One row could not hold both without the labels shrinking to initials.
+        foot = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, DUPE_W, FOOT_H))
         foot.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
-        foot.addSubview_(self.barButton("Keep Tagged", "keepTagged:", 14))
-        foot.addSubview_(self.barButton("Keep Oldest", "keepOldest:", 14 + BUTTON_W + 8))
-        foot.addSubview_(self.barButton("Shortest Path", "keepShortest:",
-                                        14 + 2 * (BUTTON_W + 8)))
-        foot.addSubview_(self.barButton("Preview", "previewDuplicate:",
-                                        14 + 3 * (BUTTON_W + 8)))
+
+        picks = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, BAR_HEIGHT, DUPE_W, BAR_HEIGHT))
+        picks.setAutoresizingMask_(NSViewWidthSizable)
+        caption = self.label(NSMakeRect(14, (BAR_HEIGHT - 18) / 2, 74, 18),
+                             11, 0, dim=True, bold=True)
+        caption.setStringValue_("Keep the")
+        picks.addSubview_(caption)
+        picks.addSubview_(self.barButton("Tagged", "keepTagged:", 92))
+        picks.addSubview_(self.barButton("Oldest", "keepOldest:", 92 + BUTTON_W + 8))
+        picks.addSubview_(self.barButton("Shortest Path", "keepShortest:",
+                                         92 + 2 * (BUTTON_W + 8), width=118))
+        foot.addSubview_(picks)
+
+        acts = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, DUPE_W, BAR_HEIGHT))
+        acts.setAutoresizingMask_(NSViewWidthSizable)
+        acts.addSubview_(self.barButton("Preview", "previewDuplicate:", 14))
+        acts.addSubview_(self.barButton("Remove from List", "removeFromList:",
+                                        14 + BUTTON_W + 8, width=140))
         self.reclaimLabel = self.label(
             NSMakeRect(DUPE_W - 350, (BAR_HEIGHT - 18) / 2, 170, 18),
             11, 0, align=ALIGN_RIGHT, dim=True)
         self.reclaimLabel.setAutoresizingMask_(NSViewMinXMargin)
-        foot.addSubview_(self.reclaimLabel)
+        acts.addSubview_(self.reclaimLabel)
         self.removeButton = self.barButton("Move to Trash…", "removeDuplicates:",
-                                           DUPE_W - BUTTON_W - 60)
-        self.removeButton.setFrame_(NSMakeRect(DUPE_W - 170, (BAR_HEIGHT - BUTTON_H) / 2,
-                                               156, BUTTON_H))
+                                           DUPE_W - 170, width=156)
         self.removeButton.setAutoresizingMask_(NSViewMinXMargin)
-        foot.addSubview_(self.removeButton)
+        acts.addSubview_(self.removeButton)
+        foot.addSubview_(acts)
         content.addSubview_(foot)
 
         self.dupeWindow.setContentView_(content)
         self.dupeWindow.makeKeyAndOrderFront_(None)
+
+    @objc.python_method
+    def dupeHeaderStrip(self, bottom):
+        """The row of column names above the results.
+
+        Its own view rather than an NSTableHeaderView: the results are one
+        wide column carrying a custom row, so a real header would have one
+        title to show. Laid out from the same constants as the rows, so the
+        two cannot drift apart.
+        """
+        strip = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, bottom, DUPE_W, DUPE_HEAD_H))
+        strip.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
+        y = (DUPE_HEAD_H - 14) / 2
+        columns = [
+            ("#", DUPE_SN_X, DUPE_SN_W, ALIGN_RIGHT, 0),
+            ("Keep", DUPE_KEEP_X, DUPE_KEEP_W, None, 0),
+            ("File", DUPE_NAME_X, DUPE_W - DUPE_NAME_X - DUPE_DECIDE_W - 12,
+             None, NSViewWidthSizable),
+            ("Status", DUPE_W - DUPE_DECIDE_W - 10, DUPE_DECIDE_W, ALIGN_RIGHT,
+             NSViewMinXMargin),
+        ]
+        for title, x, width, align, mask in columns:
+            head = self.label(NSMakeRect(x, y, width, 14), 10, 0,
+                              align=align, dim=True, bold=True)
+            head.setStringValue_(title)
+            if mask:
+                head.setAutoresizingMask_(mask)
+            strip.addSubview_(head)
+        rule = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, DUPE_W, 1))
+        rule.setWantsLayer_(True)
+        rule.layer().setBackgroundColor_(NSColor.separatorColor().CGColor())
+        rule.setAutoresizingMask_(NSViewWidthSizable)
+        strip.addSubview_(rule)
+        return strip
 
     def toggleVerify_(self, sender):
         self.verifyDupes = self.verifyBox.state() == STATE_ON
@@ -939,24 +1141,47 @@ class AppDelegate(NSObject):
         self.dupeRows = []
         groups = self.dupeGroupsForDisplay()
         reclaim, doomed = 0, 0
-        for group in groups:
-            self.dupeRows.append({"head": group})
-            for key in group["keys"]:
-                self.dupeRows.append({"group": group, "key": key})
-            reclaim += group["reclaim"]
-            doomed += len(group["doomed"])
+        for number, group in enumerate(groups, 1):
+            # "band" alternates per group, not per row, so a set reads as one
+            # block however many copies are in it.
+            band = number % 2
+            self.dupeRows.append({"head": group, "sn": "%d" % number,
+                                  "band": band})
+            # Copies are numbered inside their set — 3.1, 3.2 — rather than
+            # straight down the window. A running count would put the same
+            # number in the column as the set heading above it, meaning two
+            # different things, and it would not tell you which set a row
+            # belongs to once its heading has scrolled off.
+            for index, key in enumerate(group["keys"], 1):
+                self.dupeRows.append({"group": group, "key": key, "band": band,
+                                      "sn": "%d.%d" % (number, index)})
 
+        self.syncScanPicker()
         self.folderTable.reloadData()
         self.dupeTable.reloadData()
         self.reselectDupe(was)
         self.updateDupeStatus()
-        # What will actually happen, not what could: a copy you have spared
-        # counts towards neither the space freed nor the button's number.
+        self.updateDupeTotals()
+
+    @objc.python_method
+    def updateDupeTotals(self):
+        """The footer's two numbers, and whether the button can be pressed.
+
+        Read off the groups already on screen, so editing one group can put
+        this right without rebuilding the list.
+        """
+        if self.dupeTable is None:
+            return
+        groups = self.dupeGroupsForDisplay()
+        reclaim = sum(g["reclaim"] for g in groups)
+        doomed = sum(len(g["doomed"]) for g in groups)
+        # What is actually going to happen, in both numbers: everything on
+        # screen is a copy still in the running.
         self.reclaimLabel.setStringValue_(
-            "%s · %d to remove" % (human_bytes(reclaim), doomed) if groups else "")
-        self.removeButton.setEnabled_(bool(doomed) and not self.dupeScanning)
-        self.clearFoldersButton.setEnabled_(bool(self.dupeFolders)
-                                            and not self.dupeScanning)
+            "%s · %d to remove" % (human_bytes(reclaim), doomed) if groups else
+            "nothing left in the list" if self.dupeSpared else "")
+        self.removeButton.setEnabled_(bool(doomed) and not self.dupeScanning
+                                      and not self.trashing)
 
     @objc.python_method
     def updateDupeStatus(self):
@@ -977,12 +1202,12 @@ class AppDelegate(NSObject):
     def dupeManagerRow(self, tableView, row):
         item = self.dupeRows[row]
         if "head" in item:
-            return self.dupeHeadRow(tableView, item["head"])
+            return self.dupeHeadRow(tableView, item["head"], item["sn"])
 
         group, key = item["group"], item["key"]
         keeping = key == group["keeper"]
-        going = key in group["doomed"]
         view = self.reuse(tableView, "dupefile", self.buildDupeRow)
+        view.viewWithTag_(SN_TAG).setStringValue_(item["sn"])
         button = view.viewWithTag_(KEEP_TAG)
         button.setState_(STATE_ON if keeping else STATE_OFF)
         button.setTitle_("  Keep" if keeping else "")
@@ -992,83 +1217,62 @@ class AppDelegate(NSObject):
         name = view.viewWithTag_(NAME_TAG)
         name.setStringValue_("%s  —  %s" % (os.path.basename(key),
                                             os.path.dirname(key)))
-        name.setTextColor_(NSColor.labelColor() if keeping or not going
+        name.setTextColor_(NSColor.labelColor() if keeping
                            else NSColor.secondaryLabelColor())
-        # The right-hand column says one of two things, so both live in the
-        # same place and only one is ever shown: why this copy is the one
-        # being kept, or a box you can untick to spare a copy that is not.
         note = view.viewWithTag_(TIME_TAG)
-        trash = view.viewWithTag_(TRASH_TAG)
-        note.setHidden_(not keeping)
-        trash.setHidden_(keeping)
-        note.setStringValue_(group["why"] if keeping else "")
-        trash.setState_(STATE_ON if going else STATE_OFF)
-        trash.setToolTip_(key)
-        trash.setTarget_(self)
-        trash.setAction_("toggleDoomed:")
+        note.setStringValue_(group["why"] if keeping else "to Trash")
+        note.setTextColor_(NSColor.secondaryLabelColor() if keeping
+                           else NSColor.systemRedColor())
         return view
 
     @objc.python_method
-    def dupeHeadRow(self, tableView, group):
+    def dupeHeadRow(self, tableView, group, number):
         view = self.reuse(tableView, "dupehead", self.buildDupeHeadRow)
+        view.viewWithTag_(SN_TAG).setStringValue_(number)
         view.viewWithTag_(NAME_TAG).setStringValue_(
             "%d copies · %s each%s" % (len(group["keys"]),
                                        human_bytes(group["size"]),
                                        "" if group["verified"] else " · not verified"))
         note = view.viewWithTag_(TIME_TAG)
-        note.setStringValue_("frees %s" % human_bytes(group["reclaim"])
-                             if group["doomed"] else "keeping all")
+        note.setStringValue_("frees %s" % human_bytes(group["reclaim"]))
         note.setTextColor_(NSColor.secondaryLabelColor())
-        # Mixed is a display state only. Clicking cycles through three states
-        # of its own accord, which nobody wants from a "do the lot" control,
-        # so the action ignores the button and decides from the group.
-        spare = len(group["keys"]) - 1 - len(group["doomed"])
-        box = view.viewWithTag_(TRASH_TAG)
-        box.setState_(STATE_OFF if not group["doomed"]
-                      else STATE_MIXED if spare else STATE_ON)
-        box.setToolTip_(group["id"])
-        box.setTarget_(self)
-        box.setAction_("toggleWholeGroup:")
+        return view
+
+    @objc.python_method
+    def buildDupeHeadRow(self):
+        """A set's heading: its number, what it holds, what it would free."""
+        view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, DUPE_W, DUPE_ROW_H))
+        number = self.label(NSMakeRect(DUPE_SN_X, 2, DUPE_SN_W, DUPE_ROW_H - 4),
+                            11, SN_TAG, align=ALIGN_RIGHT, bold=True)
+        view.addSubview_(number)
+        name = self.label(
+            NSMakeRect(DUPE_KEEP_X, 2,
+                       DUPE_W - DUPE_KEEP_X - DUPE_DECIDE_W - 12, DUPE_ROW_H - 4),
+            11, NAME_TAG, bold=True)
+        name.setAutoresizingMask_(NSViewWidthSizable)
+        view.addSubview_(name)
+        note = self.label(NSMakeRect(DUPE_W - DUPE_DECIDE_W - 10, 2,
+                                     DUPE_DECIDE_W, DUPE_ROW_H - 4),
+                          10, TIME_TAG, align=ALIGN_RIGHT, dim=True)
+        note.setAutoresizingMask_(NSViewMinXMargin)
+        view.addSubview_(note)
         return view
 
     @objc.python_method
     def buildDupeRow(self):
         view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, DUPE_W, DUPE_ROW_H))
-        keep = NSButton.alloc().initWithFrame_(NSMakeRect(10, 2, 72, DUPE_ROW_H - 4))
+        number = self.label(NSMakeRect(DUPE_SN_X, 2, DUPE_SN_W, DUPE_ROW_H - 4),
+                            10, SN_TAG, align=ALIGN_RIGHT, dim=True)
+        view.addSubview_(number)
+        keep = NSButton.alloc().initWithFrame_(
+            NSMakeRect(DUPE_KEEP_X, 2, DUPE_KEEP_W, DUPE_ROW_H - 4))
         keep.setButtonType_(RADIO_BUTTON)
         keep.setTag_(KEEP_TAG)
         view.addSubview_(keep)
         name = self.label(
-            NSMakeRect(92, 2, DUPE_W - 92 - DUPE_DECIDE_W - 12, DUPE_ROW_H - 4),
+            NSMakeRect(DUPE_NAME_X, 2,
+                       DUPE_W - DUPE_NAME_X - DUPE_DECIDE_W - 12, DUPE_ROW_H - 4),
             11, NAME_TAG)
-        name.setAutoresizingMask_(NSViewWidthSizable)
-        view.addSubview_(name)
-        right = NSMakeRect(DUPE_W - DUPE_DECIDE_W - 10, 2,
-                           DUPE_DECIDE_W, DUPE_ROW_H - 4)
-        note = self.label(right, 10, TIME_TAG, align=ALIGN_RIGHT, dim=True)
-        note.setAutoresizingMask_(NSViewMinXMargin)
-        view.addSubview_(note)
-        trash = NSButton.alloc().initWithFrame_(right)
-        trash.setButtonType_(SWITCH_BUTTON)
-        trash.setTitle_("Trash")
-        trash.setFont_(NSFont.systemFontOfSize_(10))
-        trash.setTag_(TRASH_TAG)
-        trash.setAutoresizingMask_(NSViewMinXMargin)
-        view.addSubview_(trash)
-        return view
-
-    @objc.python_method
-    def buildDupeHeadRow(self):
-        view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, DUPE_W, DUPE_ROW_H))
-        box = NSButton.alloc().initWithFrame_(NSMakeRect(10, 2, 20, DUPE_ROW_H - 4))
-        box.setButtonType_(SWITCH_BUTTON)
-        box.setTitle_("")
-        box.setAllowsMixedState_(True)
-        box.setTag_(TRASH_TAG)
-        view.addSubview_(box)
-        name = self.label(
-            NSMakeRect(34, 2, DUPE_W - 34 - DUPE_DECIDE_W - 12, DUPE_ROW_H - 4),
-            11, NAME_TAG, bold=True)
         name.setAutoresizingMask_(NSViewWidthSizable)
         view.addSubview_(name)
         note = self.label(NSMakeRect(DUPE_W - DUPE_DECIDE_W - 10, 2,
@@ -1104,12 +1308,46 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def dupeGroupsForDisplay(self):
-        """Groups, biggest reclaim first, each with its keeper decided."""
+        """The groups on screen, derived once and then held.
+
+        Deriving asks the disk whether every copy in every group still exists.
+        Over SMB that is a network round trip each: measured at 300 groups it
+        is 900 of them, around a second of dead application per call. It used
+        to run on every click, including picking a keeper, which is why doing
+        that appeared to hang the app.
+
+        So it is held until something actually changes what the answer would
+        be — the index, the scan, or which copies you have taken out. Choosing
+        a keeper is not one of those: it edits the group in place instead.
+        """
+        if self.groupCache is None:
+            self.groupCache = self.deriveDupeGroups()
+        return self.groupCache
+
+    @objc.python_method
+    def deriveDupeGroups(self):
+        """Groups, biggest reclaim first, each with its keeper decided.
+
+        A copy you have taken out of the list is gone from here entirely, not
+        marked up in some way — which is the point of taking it out. A group
+        that drops to one copy that way stops being a group and disappears
+        with it, because there is nothing left to choose between.
+
+        With a scan selected, a group is shown when any of its copies is
+        inside that scan's folders — and then all of them are, including the
+        ones outside it. Hiding those would leave a "group" of one, and the
+        thing worth knowing is precisely that the file you scanned also exists
+        somewhere you did not.
+        """
         rows = []
+        folders = self.scanFolders()
         for group in duplicate_groups(self.prints):
-            alive = [k for k in group if os.path.isfile(tag_path(k))]
+            alive = [k for k in group
+                     if k not in self.dupeSpared and os.path.isfile(tag_path(k))]
             if len(alive) < 2:
                 continue              # one or none left; nothing to choose between
+            if folders and not any(self.under(tag_path(k), folders) for k in alive):
+                continue
             gid = alive[0]
             keeper = self.dupeKeep.get(gid)
             if keeper not in alive:
@@ -1117,9 +1355,7 @@ class AppDelegate(NSObject):
             else:
                 why = "your choice"
             size = self.prints.get(alive[0], {}).get("size", 0)
-            # Everything but the keeper goes, unless you have said otherwise.
-            doomed = [k for k in alive
-                      if k != keeper and k not in self.dupeSpared]
+            doomed = [k for k in alive if k != keeper]
             rows.append({"id": gid, "keys": alive, "keeper": keeper,
                          "why": why, "size": size, "doomed": doomed,
                          "reclaim": size * len(doomed),
@@ -1148,8 +1384,22 @@ class AppDelegate(NSObject):
                 pick = min(keys, key=lambda k: self.prints.get(k, {}).get("mtime", 0))
             else:
                 pick = min(keys, key=lambda k: (len(k), k))
-            self.dupeKeep[group["id"]] = pick
-        self.refreshDupeManager()
+            self.setKeeper(group, pick, "your choice")
+        # Every group changed, so the whole table is redrawn — but the groups
+        # themselves were edited rather than derived again, so the disk is
+        # not asked about a single file.
+        if self.dupeTable is not None:
+            self.dupeTable.reloadData()
+        self.updateDupeTotals()
+
+    @objc.python_method
+    def setKeeper(self, group, key, why):
+        """Point a group at a different survivor, in place."""
+        self.dupeKeep[group["id"]] = key
+        group["keeper"] = key
+        group["why"] = why
+        group["doomed"] = [k for k in group["keys"] if k != key]
+        group["reclaim"] = group["size"] * len(group["doomed"])
 
     def chooseKeeper_(self, sender):
         """A radio button in a row: keep this one, discard the rest of its group.
@@ -1157,60 +1407,87 @@ class AppDelegate(NSObject):
         The row is found from the key on the button rather than from its tag.
         Cells are reused as the table scrolls, so a tag holding a row number
         goes stale the moment anything moves — and the key does not.
+
+        The group is edited where it sits and only its own rows are redrawn.
+        Re-deriving the list instead would re-stat every file in every group,
+        which is what made this click stall on a large result.
         """
         key = str(sender.toolTip() or "")
         for item in self.dupeRows:
             if item.get("key") == key:
-                self.dupeKeep[item["group"]["id"]] = key
-                # Whatever it was before, the copy you are keeping is not
-                # one that anything is waiting to remove.
-                self.dupeSpared.discard(key)
-                self.saveState()
-                return self.refreshDupeManager()
+                group = item["group"]
+                self.setKeeper(group, key, "your choice")
+                return self.redrawGroup(group)
 
-    def toggleDoomed_(self, sender):
-        """Untick a copy to leave it where it is.
+    @objc.python_method
+    def redrawGroup(self, group):
+        """Repaint one set's rows, and the totals that answer to them."""
+        rows = NSMutableIndexSet.alloc().init()
+        for row, item in enumerate(self.dupeRows):
+            if item.get("group") is group or item.get("head") is group:
+                rows.addIndex_(row)
+        if rows.count():
+            self.dupeTable.reloadDataForRowIndexes_columnIndexes_(
+                rows, NSIndexSet.indexSetWithIndex_(0))
+        self.updateDupeTotals()
 
-        The default is that every copy but one goes, which is the point of the
-        feature; this is for the times two of them are worth keeping — a
-        different cut, a different language — and you want the group to stop
-        asking.
+    def removeFromList_(self, sender):
+        """Take the selected copies out of the list, and so out of the run.
+
+        This is how you say "keep this one too". Everything left in a group is
+        something you are still choosing between, so a copy you have decided
+        to keep does not belong there — leaving it in place with a mark on it
+        would mean reading the mark on every row, every time, forever after.
+
+        A group that falls to one copy this way goes with it: one file is not
+        a duplicate of anything, and there is nothing left to decide.
         """
-        key = str(sender.toolTip() or "")
-        if not key:
-            return
-        if key in self.dupeSpared:
-            self.dupeSpared.discard(key)
-        else:
-            self.dupeSpared.add(key)
+        keys = self.selectedDupeKeys()
+        if not keys:
+            return self.say(
+                "Nothing selected",
+                "Select the copies you want to keep — ⌘-click or shift-click "
+                "for several — and they come out of the list. Whatever is "
+                "left is what Move to Trash acts on.")
+        self.dupeSpared.update(keys)
         self.saveState()
+        self.dupesChanged()           # the playlist should stop flagging them,
+                                      # and the results are a copy short
         self.refreshDupeManager()
+        self.refreshRows()
+        self.syncDupeMenu()
 
-    def toggleWholeGroup_(self, sender):
-        """Spare or re-arm a whole group at once, from its heading."""
-        gid = str(sender.toolTip() or "")
-        for group in self.dupeGroupsForDisplay():
-            if group["id"] != gid:
-                continue
-            others = [k for k in group["keys"] if k != group["keeper"]]
-            if group["doomed"]:
-                self.dupeSpared.update(others)
-            else:
-                self.dupeSpared.difference_update(others)
-            break
+    def restoreRemoved_(self, sender):
+        """Put every copy taken out of the list back into it."""
+        count = len(self.dupeSpared)
+        if not count:
+            return self.say("Nothing has been removed",
+                            "Every copy the index knows about is still in the "
+                            "list.")
+        if not self.confirm(
+                "Put %d copy%s back in the list?" % (count,
+                                                     "" if count == 1 else "ies"),
+                "They were taken out because you wanted to keep them. Putting "
+                "them back means being asked about them again.\n\nNo file is "
+                "moved either way.", "Put Back"):
+            return
+        self.dupeSpared = set()
         self.saveState()
+        self.dupesChanged()
         self.refreshDupeManager()
+        self.refreshRows()
+        self.syncDupeMenu()
 
     def removeDuplicates_(self, sender):
         groups = self.dupeGroupsForDisplay()
         doomed = [(g, k) for g in groups for k in g["doomed"]]
         if not doomed:
-            spared = sum(1 for g in groups for k in g["keys"]
-                         if k != g["keeper"] and k in self.dupeSpared)
             return self.say(
                 "Nothing to remove",
-                "Every copy here is one you have said to keep."
-                if spared else "Every group already has one copy.")
+                "There is nothing left in the list. Everything you took out "
+                "of it is where it was; Duplicates → Put Removed Copies Back "
+                "brings it all back."
+                if self.dupeSpared else "Every group already has one copy.")
         unverified = sum(1 for g, _ in doomed if not g["verified"])
         total = sum(g["size"] for g, _ in doomed)
         detail = ("%d file%s, freeing %s.\n\nThey go to the Trash. A volume "
@@ -1233,22 +1510,117 @@ class AppDelegate(NSObject):
             return
 
         playing = self.currentPath()
-        moved, failed, kept_out = 0, [], 0
-        for group, key in doomed:
-            path = tag_path(key)
-            if path == playing:
-                kept_out += 1         # never pull the file out from under playback
-                continue
-            # Tags first: a file in the Trash can be dragged back, but labelling
-            # thrown away with it cannot.
-            self.mergeTagsInto(group["keeper"], key)
-            ok, why = self.discard(path)
-            if ok:
-                self.prints.pop(key, None)
-                moved += 1
-            else:
-                failed.append("%s — %s" % (os.path.basename(path), why))
+        queue = [pair for pair in doomed if tag_path(pair[1]) != playing]
+        self.trashSkipped = len(doomed) - len(queue)   # never pulled from under
+        self.trashMoved, self.trashFailed = 0, []
 
+        # Any volume that still needs somewhere to put discards is settled
+        # here, on this thread, because asking is a modal panel and the moving
+        # is about to happen on another one. Whether a volume needs the
+        # question is only truly answered by trying, so the first file on each
+        # unsettled volume goes now.
+        queue = self.settleDestinations(queue)
+
+        self.trashQueue = queue
+        self.trashDone = 0
+        self.trashStop = False
+        self.trashing = True
+        self.showTrashSheet(len(queue))
+        self.performSelectorInBackground_withObject_("trashRun:", None)
+
+    @objc.python_method
+    def settleDestinations(self, queue):
+        """Move the first file on each volume we have no destination for.
+
+        Returns what is left to do. Anything on a volume you decline to
+        nominate a folder for is taken out of the run and reported, rather
+        than the whole removal being abandoned: the other volumes are fine.
+        """
+        rest, refused = [], set()
+        # A folder that has since been deleted counts as unsettled: discard()
+        # would notice and ask again, and asking from the background thread
+        # means a modal panel with no run loop expecting it.
+        settled = set(v for v, f in self.discardFolder.items()
+                      if f and os.path.isdir(f))
+        for group, key in queue:
+            volume = self.volumeOf(tag_path(key))
+            if volume in refused:
+                self.trashFailed.append(
+                    "%s — no folder chosen for “%s”"
+                    % (os.path.basename(tag_path(key)),
+                       os.path.basename(volume.rstrip("/"))))
+                continue
+            if volume in settled:
+                rest.append((group, key))
+                continue
+            ok, why = self.moveOne(group, key)        # this one may ask
+            if ok:
+                self.trashMoved += 1
+                settled.add(volume)
+            elif self.discardFolder.get(volume):
+                settled.add(volume)                   # a folder, but this file failed
+                self.trashFailed.append(
+                    "%s — %s" % (os.path.basename(tag_path(key)), why))
+            else:
+                refused.add(volume)
+                self.trashFailed.append(
+                    "%s — %s" % (os.path.basename(tag_path(key)), why))
+        return rest
+
+    @objc.python_method
+    def moveOne(self, group, key):
+        """One copy: its tags to the keeper first, then the file itself."""
+        # Tags first: a file in the Trash can be dragged back, but labelling
+        # thrown away with it cannot.
+        self.mergeTagsInto(group["keeper"], key)
+        ok, why = self.discard(tag_path(key))
+        if ok:
+            self.prints.pop(key, None)
+        return ok, why
+
+    def trashRun_(self, _):
+        """The moving itself, off the main thread so the app stays alive.
+
+        Three hundred files over SMB is half a minute of nothing, and an app
+        that draws nothing for half a minute has hung as far as anyone can
+        tell. The work reports itself after every file.
+        """
+        pool = NSAutoreleasePool.alloc().init()
+        try:
+            for group, key in self.trashQueue:
+                if self.trashStop:
+                    break
+                self.trashNow = os.path.basename(tag_path(key))
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "trashProgress:", None, False)
+                ok, why = self.moveOne(group, key)
+                if ok:
+                    self.trashMoved += 1
+                else:
+                    self.trashFailed.append(
+                        "%s — %s" % (os.path.basename(tag_path(key)), why))
+                self.trashDone += 1
+        finally:
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "trashFinished:", None, False)
+            del pool
+
+    def trashProgress_(self, _):
+        if self.trashBar is None:
+            return
+        self.trashBar.setDoubleValue_(self.trashDone)
+        self.trashLabel.setStringValue_(
+            "%s of %s · %s" % (f"{self.trashDone + 1:,}",
+                               f"{len(self.trashQueue):,}", self.trashNow))
+
+    def stopTrashing_(self, sender):
+        self.trashStop = True
+        if self.trashLabel is not None:
+            self.trashLabel.setStringValue_("Stopping after this file…")
+
+    def trashFinished_(self, _):
+        self.trashing = False
+        self.closeTrashSheet()
         self.dupesChanged()
         self.savePrints()
         self.saveTags()
@@ -1258,15 +1630,63 @@ class AppDelegate(NSObject):
         self.rebuildTagsMenu()
         self.syncDupeMenu()
 
+        moved = self.trashMoved
         where = set(f for f in self.discardFolder.values() if f)
         note = "%d moved to the Trash." % moved if not where else (
             "%d moved — to the Trash, and to %s."
             % (moved, ", ".join(sorted(where))))
-        if kept_out:
-            note += "\n\n%d skipped: still playing." % kept_out
-        if failed:
-            note += "\n\nCould not move:\n" + "\n".join(failed[:8])
+        if self.trashStop:
+            left = len(self.trashQueue) - self.trashDone
+            note += "\n\nStopped: %d not touched." % max(0, left)
+        if self.trashSkipped:
+            note += "\n\n%d skipped: still playing." % self.trashSkipped
+        if self.trashFailed:
+            note += "\n\nCould not move:\n" + "\n".join(self.trashFailed[:8])
+            if len(self.trashFailed) > 8:
+                note += "\n…and %d more." % (len(self.trashFailed) - 8)
         self.say("Duplicates removed" if moved else "Nothing was moved", note)
+
+    # -- the progress sheet -------------------------------------------------
+
+    @objc.python_method
+    def showTrashSheet(self, total):
+        """A sheet, so the list underneath cannot be edited mid-move."""
+        if self.dupeWindow is None:
+            return
+        rect = NSMakeRect(0, 0, 440, 130)
+        self.trashSheet = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            rect, NSWindowStyleMaskTitled, NSBackingStoreBuffered, False)
+        content = NSView.alloc().initWithFrame_(rect)
+        title = self.label(NSMakeRect(20, 92, 400, 20), 13, 0, bold=True)
+        title.setStringValue_("Moving %s to the Trash" % (
+            "1 duplicate" if total == 1 else "%s duplicates" % f"{total:,}"))
+        content.addSubview_(title)
+        self.trashBar = NSProgressIndicator.alloc().initWithFrame_(
+            NSMakeRect(20, 66, 400, 16))
+        self.trashBar.setIndeterminate_(False)
+        self.trashBar.setMinValue_(0.0)
+        self.trashBar.setMaxValue_(float(max(1, total)))
+        self.trashBar.setDoubleValue_(0.0)
+        content.addSubview_(self.trashBar)
+        self.trashLabel = self.label(NSMakeRect(20, 44, 400, 18), 11, 0, dim=True)
+        self.trashLabel.setStringValue_("Starting…")
+        content.addSubview_(self.trashLabel)
+        stop = self.barButton("Stop", "stopTrashing:", 440 - BUTTON_W - 20,
+                              ypos=8)
+        content.addSubview_(stop)
+        self.trashSheet.setContentView_(content)
+        self.dupeWindow.beginSheet_completionHandler_(self.trashSheet, None)
+
+    @objc.python_method
+    def closeTrashSheet(self):
+        if self.trashSheet is None:
+            return
+        if self.dupeWindow is not None:
+            self.dupeWindow.endSheet_(self.trashSheet)
+        self.trashSheet.orderOut_(None)
+        self.trashSheet = None
+        self.trashBar = None
+        self.trashLabel = None
 
     @objc.python_method
     def mergeTagsInto(self, keeper, doomed):
@@ -1381,6 +1801,15 @@ class AppDelegate(NSObject):
         return None
 
     @objc.python_method
+    def selectedDupeKeys(self):
+        """Every highlighted copy. Headings are not selectable, so all files."""
+        if self.dupeTable is None:
+            return []
+        return [self.dupeRows[row]["key"]
+                for row in self.dupeTable.selectedRowIndexes()
+                if 0 <= row < len(self.dupeRows) and "key" in self.dupeRows[row]]
+
+    @objc.python_method
     def reselectDupe(self, key):
         """Put the highlight back on a key after the table was rebuilt."""
         if key is None or self.dupeTable is None:
@@ -1390,6 +1819,17 @@ class AppDelegate(NSObject):
                 self.dupeTable.selectRowIndexes_byExtendingSelection_(
                     NSIndexSet.indexSetWithIndex_(row), False)
                 return
+
+    def togglePreviewFromList_(self, sender):
+        """Space, from the results list: open the preview, or close it."""
+        if self.previewWindow is not None:
+            return self.previewWindow.close()
+        self.previewDuplicate_(sender)
+
+    def closePreviewFromList_(self, sender):
+        """Escape, from the results list."""
+        if self.previewWindow is not None:
+            self.previewWindow.close()
 
     def previewDuplicate_(self, sender):
         key = self.selectedDupeKey()
@@ -1405,7 +1845,7 @@ class AppDelegate(NSObject):
     def openPreviewWindow(self):
         """The preview window, built on first use. False if it cannot be."""
         if self.previewWindow is not None:
-            self.previewWindow.makeKeyAndOrderFront_(None)
+            self.previewWindow.orderFront_(None)     # front, but not focused
             return True
         if not VLC_READY:
             self.say("Nothing to preview with",
@@ -1413,13 +1853,19 @@ class AppDelegate(NSObject):
             return False
 
         rect = NSMakeRect(0, 0, PREVIEW_W, PREVIEW_H)
-        self.previewWindow = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        self.previewWindow = PreviewPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             rect, NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
-            | NSWindowStyleMaskResizable, NSBackingStoreBuffered, False)
+            | NSWindowStyleMaskResizable | NSWindowStyleMaskUtilityWindow,
+            NSBackingStoreBuffered, False)
         self.previewWindow.setTitle_("Preview")
         self.previewWindow.setMinSize_(NSMakeSize(360, 240))
         self.previewWindow.setReleasedWhenClosed_(False)
         self.previewWindow.setDelegate_(self)
+        # Floats above the list, and only takes the keyboard when something
+        # in it actually needs it — clicking the scrubber, say. Until then the
+        # list keeps the focus and the arrow keys go on walking the group.
+        self.previewWindow.setFloatingPanel_(True)
+        self.previewWindow.setBecomesKeyOnlyIfNeeded_(True)
         self.placePreviewWindow()
 
         content = NSView.alloc().initWithFrame_(rect)
@@ -1462,7 +1908,10 @@ class AppDelegate(NSObject):
         # A quarter-second poll drives the two labels and the slider instead.
         self.previewVLC = VLCMediaPlayer.alloc().init()
         self.previewWindow.setContentView_(content)
-        self.previewWindow.makeKeyAndOrderFront_(None)
+        self.previewWindow.orderFront_(None)
+        # Whatever opened it, the list is what you want to be typing at.
+        if self.dupeWindow is not None and self.dupeTable is not None:
+            self.dupeWindow.makeFirstResponder_(self.dupeTable)
         self.previewTimer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             PREVIEW_TICK, self, "previewTick:", None, True)
         return True
@@ -1522,8 +1971,14 @@ class AppDelegate(NSObject):
 
     @objc.python_method
     def previewSelection(self):
-        """The preview follows the list: one copy at a time, arrow by arrow."""
-        if self.previewWindow is None:
+        """The preview follows the list: one copy at a time, arrow by arrow.
+
+        Only when one row is highlighted. Dragging a selection across five
+        rows would otherwise open five videos on the way past.
+        """
+        if self.previewWindow is None or self.dupeTable is None:
+            return
+        if self.dupeTable.numberOfSelectedRows() != 1:
             return
         key = self.selectedDupeKey()
         if key:
@@ -1605,62 +2060,201 @@ class AppDelegate(NSObject):
             self.vlc.play()
             self.syncTransport()
 
+    # -- scans: a set of folders, with a name and a history -----------------
+    #
+    # "Everything" is not a scan and is not stored. It is the whole index —
+    # every scan that ever ran plus whatever Notice While Playing picked up —
+    # and it is what this window used to show, undifferentiated.
+
+    @objc.python_method
+    def currentScan(self):
+        """The selected scan, or None for Everything."""
+        for scan in self.scans:
+            if scan["id"] == self.scanId:
+                return scan
+        return None
+
+    @objc.python_method
+    def scanFolders(self):
+        scan = self.currentScan()
+        return scan["folders"] if scan else []
+
+    @objc.python_method
+    def defaultScanName(self, folders):
+        if not folders:
+            return "New Scan"
+        first = os.path.basename(folders[0].rstrip("/")) or folders[0]
+        return first if len(folders) == 1 else "%s + %d more" % (first,
+                                                                 len(folders) - 1)
+
+    @objc.python_method
+    def addScan(self, folders, name=None):
+        scan = {"id": uuid.uuid4().hex[:8],
+                "name": name or self.defaultScanName(folders),
+                "folders": list(folders), "ran": 0, "seen": 0, "groups": 0}
+        self.scans.append(scan)
+        self.scanId = scan["id"]
+        self.saveState()
+        self.dupesChanged()       # a new selection is a different list
+        return scan
+
+    @objc.python_method
+    def under(self, path, folders):
+        """Is this file inside any of those folders?"""
+        for folder in folders:
+            root = folder.rstrip("/")
+            if path == root or path.startswith(root + "/"):
+                return True
+        return False
+
+    def newScan_(self, sender):
+        name = self.askText("New scan", "What should it be called? Add the "
+                                        "folders it covers next.",
+                            "Scan %d" % (len(self.scans) + 1))
+        if name is None:
+            return
+        self.addScan([], name.strip() or None)
+        self.refreshDupeManager()
+        self.addDupeFolder_(sender)     # a scan with no folders does nothing
+
+    def renameScan_(self, sender):
+        scan = self.currentScan()
+        if scan is None:
+            return self.say("Everything cannot be renamed",
+                            "It is the whole index rather than a scan you "
+                            "made. Choose one of your own scans to rename.")
+        name = self.askText("Rename scan", "", scan["name"])
+        if name is None or not name.strip():
+            return
+        scan["name"] = name.strip()
+        self.saveState()
+        self.refreshDupeManager()
+
+    def deleteScan_(self, sender):
+        scan = self.currentScan()
+        if scan is None:
+            return self.say("Everything cannot be deleted",
+                            "It is the whole index rather than a scan you made.")
+        if not self.confirm(
+                "Delete the scan “%s”?" % scan["name"],
+                "Only the list of folders goes. Every fingerprint it took is "
+                "kept, so its duplicates are still in Everything and nothing "
+                "has to be read again.", "Delete"):
+            return
+        self.scans = [s for s in self.scans if s["id"] != scan["id"]]
+        self.scanId = None
+        self.saveState()
+        self.dupesChanged()
+        self.refreshDupeManager()
+
+    def scanChosen_(self, sender):
+        item = sender.selectedItem()
+        chosen = item.representedObject() if item else None
+        self.scanId = str(chosen) if chosen else None
+        self.dupesChanged()           # a different scan is a different list
+        self.refreshDupeManager()
+
+    @objc.python_method
+    def syncScanPicker(self):
+        """Rebuild the picker, and say what the selected scan last did."""
+        if self.scanPicker is None:
+            return
+        self.scanPicker.removeAllItems()
+        titles = ["Everything"] + ["%s  (%d folder%s)"
+                                   % (s["name"], len(s["folders"]),
+                                      "" if len(s["folders"]) == 1 else "s")
+                                   for s in self.scans]
+        for index, title in enumerate(titles):
+            # Titles can repeat — two scans may share a name — and
+            # addItemWithTitle_ silently refuses a duplicate, so each is added
+            # against a unique placeholder and then given its real title.
+            self.scanPicker.addItemWithTitle_("row-%d" % index)
+            entry = self.scanPicker.itemAtIndex_(index)
+            entry.setTitle_(title)
+            entry.setRepresentedObject_(None if index == 0
+                                        else self.scans[index - 1]["id"])
+        here = next((i for i, s in enumerate(self.scans)
+                     if s["id"] == self.scanId), -1)
+        self.scanPicker.selectItemAtIndex_(here + 1)
+        self.scanSummaryLabel.setStringValue_(self.scanSummary())
+
+    @objc.python_method
+    def scanSummary(self):
+        scan = self.currentScan()
+        if scan is None:
+            return ("everything fingerprinted so far, from every scan and "
+                    "from watching")
+        if not scan["ran"]:
+            return "never run" + ("" if scan["folders"] else
+                                  " · add a folder for it to look through")
+        return "last run %s · %s videos seen · %s duplicate group%s" % (
+            when_words(scan["ran"]), f"{scan['seen']:,}", f"{scan['groups']:,}",
+            "" if scan["groups"] == 1 else "s")
+
     # -- the deliberate sweep ---------------------------------------------
 
     def findDuplicates_(self, sender):
         self.openDupeWindow()
-        if not self.dupeFolders and self.folder:
-            self.dupeFolders = [self.folder]
+        # Derive afresh on the way in. Files come and go outside this app, and
+        # opening the window is the one moment where paying to ask the disk
+        # about all of them is worth it — as against doing it on every click,
+        # which is what made a large list unusable.
+        self.dupesChanged()
+        # A first run has nothing saved, so the folder already open is a
+        # better opening offer than an empty window.
+        if not self.scans and self.folder:
+            self.addScan([self.folder])
         self.refreshDupeManager()
 
     def addDupeFolder_(self, sender):
+        if self.currentScan() is None:
+            return self.say(
+                "Everything has no folders",
+                "It is the whole index rather than a scan you made. Make a "
+                "scan with New Scan… and add folders to that.")
         panel = NSOpenPanel.openPanel()
         panel.setCanChooseFiles_(False)
         panel.setCanChooseDirectories_(True)
         panel.setAllowsMultipleSelection_(True)
         if panel.runModal() != 1:
             return
+        folders = self.currentScan()["folders"]
         for url in panel.URLs():
             folder = str(url.path())
-            if folder not in self.dupeFolders:
-                self.dupeFolders.append(folder)
+            if folder not in folders:
+                folders.append(folder)
+        self.saveState()
+        self.dupesChanged()           # a wider scan may take in more groups
         self.refreshDupeManager()
 
     def removeDupeFolder_(self, sender):
         # Every selected row, not just the first: the table has always allowed
         # a multiple selection and taking one folder per click from it was
         # only ever an oversight.
+        folders = self.scanFolders()
         rows = sorted(self.folderTable.selectedRowIndexes(), reverse=True)
         for row in rows:
-            if 0 <= row < len(self.dupeFolders):
-                del self.dupeFolders[row]
+            if 0 <= row < len(folders):
+                del folders[row]
         if rows:
+            self.saveState()
+            self.dupesChanged()
             self.refreshDupeManager()
-
-    def clearDupeFolders_(self, sender):
-        """Empty the whole search list in one go."""
-        if not self.dupeFolders:
-            return
-        # One folder is no loss to re-add; a list you have built up is, and
-        # there is no undo for it.
-        if len(self.dupeFolders) > 1 and not self.confirm(
-                "Clear all %d folders?" % len(self.dupeFolders),
-                "This only empties the list of places to search. No files are "
-                "touched, and results already found stay in the list below "
-                "until the next scan.", "Clear"):
-            return
-        self.dupeFolders = []
-        self.refreshDupeManager()
 
     def startDupeScan_(self, sender):
         if self.dupeScanning:
             self.dupeStop = True
             return
-        if not self.dupeFolders:
-            return self.say("Nothing to search",
-                            "Add at least one folder to look through.")
+        if not self.scanFolders():
+            return self.say(
+                "Nothing to search",
+                "Everything is the whole index, not a scan — choose or make a "
+                "scan and give it a folder."
+                if self.currentScan() is None else
+                "Add at least one folder for this scan to look through.")
         self.dupeScanning = True
         self.dupeStop = False
+        self.sweptCount = 0           # not last run's figure, if this one stops
         self.printGen += 1
         self.dupeStatus = "Listing files…"
         self.refreshDupeManager()
@@ -1673,7 +2267,7 @@ class AppDelegate(NSObject):
             self.sweepStages(generation)
         finally:
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                "sweepDone:", None, False)
+                "sweepDone:", generation, False)
             del pool
 
     @objc.python_method
@@ -1688,7 +2282,7 @@ class AppDelegate(NSObject):
 
         # 1 — list, taking the size that comes free with the listing
         sizes, seen = {}, 0
-        for folder in list(self.dupeFolders):
+        for folder in list(self.scanFolders()):
             for root, dirs, names in os.walk(folder):
                 if cancelled():
                     return
@@ -1704,6 +2298,10 @@ class AppDelegate(NSObject):
                     seen += 1
                     if seen % 200 == 0:
                         report("Listed %s videos…" % f"{seen:,}")
+
+        # Recorded here rather than at the end, so a scan you stopped halfway
+        # still says honestly how much of the library it had got through.
+        self.sweptCount = seen
 
         # 2 — only files whose size is shared with something can be duplicates
         candidates = size_candidates(sizes)
@@ -1752,12 +2350,28 @@ class AppDelegate(NSObject):
     def sweepProgress_(self, _):
         self.updateDupeStatus()
 
-    def sweepDone_(self, _):
+    def sweepDone_(self, generation):
+        # A sweep that was superseded has nothing to report: the live one owns
+        # the scanning flag and the scan's record now.
+        if generation is not None and generation != self.printGen:
+            return
         self.dupeScanning = False
         self.dupesChanged()
-        self.savePrints()
-        self.dupeStatus = ("Stopped — what was found is kept."
-                           if self.dupeStop else "Done.")
+        self.savePrints()             # what was learned is kept either way
+        stopped = self.dupeStop
+        self.dupeStatus = (
+            "Stopped — fingerprints taken are kept, and the scan still shows "
+            "its last full run." if stopped else "Done.")
+        # What the scan did, so its line can say whether it is worth running
+        # again. Only a run that finished writes it: stamping a stopped one
+        # would claim the library had just been covered when a fraction of it
+        # had, which is exactly backwards from what that line is for.
+        scan = self.currentScan()
+        if scan is not None and not stopped:
+            scan["ran"] = time.time()
+            scan["seen"] = self.sweptCount
+            scan["groups"] = len(self.dupeGroupsForDisplay())
+            self.saveState()
         self.syncDupeMenu()
         self.refreshDupeManager()
         self.refreshRows()
@@ -1992,6 +2606,28 @@ class AppDelegate(NSObject):
         spared = state.get("sparedDupes")
         self.dupeSpared = set(k for k in spared if isinstance(k, str)) \
             if isinstance(spared, list) else set()
+        # Every field is checked, because a scan with no id or no folder list
+        # would break the window rather than the scan — and a "scans" that is
+        # not a list at all would stop the app launching, which there is no
+        # way back from.
+        self.scans = []
+        saved_scans = state.get("scans")
+        for saved in (saved_scans if isinstance(saved_scans, list) else []):
+            if not isinstance(saved, dict) or not saved.get("id"):
+                continue
+            folders = saved.get("folders")
+            self.scans.append({
+                "id": str(saved["id"]),
+                "name": str(saved.get("name") or "Scan"),
+                "folders": [f for f in folders if isinstance(f, str)]
+                           if isinstance(folders, list) else [],
+                "ran": saved.get("ran") if isinstance(saved.get("ran"), (int, float)) else 0,
+                "seen": saved.get("seen") if isinstance(saved.get("seen"), int) else 0,
+                "groups": saved.get("groups") if isinstance(saved.get("groups"), int) else 0,
+            })
+        chosen = state.get("scan")
+        self.scanId = str(chosen) if any(s["id"] == chosen for s in self.scans) \
+            else None
 
     @objc.python_method
     def saveState(self):
@@ -2016,6 +2652,8 @@ class AppDelegate(NSObject):
             "watchDupes": self.watchDupes,
             "verifyDupes": self.verifyDupes,
             "sparedDupes": sorted(self.dupeSpared),
+            "scans": self.scans,
+            "scan": self.scanId,
         })
 
     @objc.python_method
@@ -2133,6 +2771,12 @@ class AppDelegate(NSObject):
         dupes.addItem_(NSMenuItem.separatorItem())
         self.watchItem = self.add(dupes, "Notice Duplicates While Playing",
                                   "toggleWatchDupes:")
+        # The way back from Remove from List. It lives here rather than in the
+        # window because it undoes work rather than doing any, and because a
+        # decision with no way back is not one anybody should have to make in
+        # a hurry.
+        self.restoreItem = self.add(dupes, "Put Removed Copies Back…",
+                                    "restoreRemoved:")
         self.add(dupes, "Forget Where Duplicates Go…", "forgetDiscardFolders:")
         self.syncDupeMenu()
 
@@ -2977,13 +3621,29 @@ class AppDelegate(NSObject):
         if self.isDupeTable(tableView):
             return len(self.dupeRows)
         if self.isFolderTable(tableView):
-            return len(self.dupeFolders)
+            return len(self.scanFolders())
         return len(self.rows)
 
     def tableView_isGroupRow_(self, tableView, row):
         if self.isDupeTable(tableView):
-            return 0 <= row < len(self.dupeRows) and "head" in self.dupeRows[row]
+            # Not a group row, though it reads as one. AppKit paints group
+            # rows with its own background, which would punch a hole through
+            # the banding that makes a set read as one block. The heading
+            # earns its look from bold text instead.
+            return False
         return self.isPlainRow(tableView, row) is None
+
+    def tableView_didAddRowView_forRow_(self, tableView, rowView, row):
+        """Shade each set differently from the one above it.
+
+        The table's own alternating colours run per row, which is no help
+        when what you need to see is where one set of copies ends and the
+        next begins. Same two system colours, banded per group instead.
+        """
+        if not self.isDupeTable(tableView) or not 0 <= row < len(self.dupeRows):
+            return
+        shades = NSColor.controlAlternatingRowBackgroundColors()
+        rowView.setBackgroundColor_(shades[self.dupeRows[row].get("band", 0)])
 
     def tableView_shouldSelectRow_(self, tableView, row):
         if self.isDupeTable(tableView):
@@ -3025,7 +3685,7 @@ class AppDelegate(NSObject):
             return self.dupeManagerRow(tableView, row)
         if self.isFolderTable(tableView):
             view = self.reuse(tableView, "folderrow", self.buildManagerRow)
-            folder = self.dupeFolders[row]
+            folder = self.scanFolders()[row]
             view.viewWithTag_(NAME_TAG).setStringValue_(folder)
             view.viewWithTag_(TIME_TAG).setStringValue_("")
             return view

@@ -42,20 +42,21 @@ Built with PyObjC, playing through VLCKit, so it opens whatever VLC opens —
   Click a row, or arrow up and down it, to jump straight to that video. Rows
   show a poster frame, a ★ and a running time, subfolders get headings, and
   the filter box at the top makes a 300-file folder navigable.
-- **Find duplicates.** Sweep folders you choose, or let the app notice as you
-  watch — every video you play is fingerprinted for the price of 128 KB.
+- **Find duplicates.** Sweep a named set of folders that is kept between
+  launches, or let the app notice as you watch — every video you play is
+  fingerprinted for the price of 128 KB.
   Duplicates are grouped with the keeper already chosen and the reason shown,
-  any copy can be previewed in its own window before you decide or unticked to
-  keep it, tags from a discarded copy move to the one you keep, and nothing is
-  ever deleted: copies go to the Trash, or to a folder you nominate on a share
-  that has no Trash.
+  any copy can be previewed in its own window before you decide or taken out
+  of the list to keep it, tags from a discarded copy move to the one you keep,
+  and nothing is ever deleted: copies go to the Trash, or to a folder you
+  nominate on a share that has no Trash.
 - **Open New…** switches folders or jumps to a tag without restarting.
 
 Everything the app remembers lives in
 `~/Library/Application Support/FolderVideoPlayer/`, outside the app bundle, so
 replacing the app never loses it: `tags.json` for tags and favorites,
 `state.json` for recent folders, resume positions, the last session and the
-duplicates you have said to keep, and
+your saved scans and the duplicates you have taken out of the list, and
 `fingerprints.json` for what the duplicate finder has learned.
 `favorites.json` is only read once, to migrate an older version's stars.
 
@@ -490,11 +491,56 @@ number found so far in its title. **Notice Duplicates While Playing** does it
 without a scan: every video you play is fingerprinted
 as it opens, and the index builds up as you watch.
 
-The list of folders to sweep is built with **Add Folder…**. **Remove** takes
-out everything selected rather than one row per click, and **Clear** empties
-the list in one go — it asks first if there is more than one folder in it,
-since a list you have built up has no undo. Neither touches a file: they only
-change where the next scan looks.
+### Scans
+
+A **scan** is a named set of folders, and it is kept. Pick one from the menu at
+the top of the window to see what it covers and what it found; the line under
+it says when it last ran, how many videos it saw and how many groups came out,
+which is what you need to decide whether re-running it is worth the wait.
+
+Folders are added to the selected scan with **Add Folder…**, and **Remove**
+takes out everything selected rather than one row per click. Neither touches a
+file, and neither throws away a fingerprint: they only change where the next
+scan looks. There is no Clear — emptying a scan and refilling it is just a
+different scan, and there is a picker full of those.
+
+**Everything** is not a scan. It is the whole index — every scan that ever
+ran, plus whatever Notice Duplicates While Playing picked up in the background
+— and it is what this window used to show, undifferentiated. It has no folders
+and cannot be scanned, renamed or deleted.
+
+Deleting a scan costs nothing but its folder list. Every fingerprint it took
+stays, so its duplicates are still there under Everything and nothing has to
+be read again.
+
+#### What is stored, and what is worked out again
+
+The folders are stored. The results are not — they are derived from the
+fingerprint index each time you look, which is the whole reason this works:
+
+- **They cannot go stale.** A stored result is a claim about files on disk,
+  and a week later half of it may be renamed, moved or already trashed. A
+  derived one notices a copy vanish, or come back, without being re-run.
+- **Two scans over the same folder cannot disagree.** Take a copy out of the
+  list in one, and every other scan showing that file agrees immediately,
+  because there is only ever one answer.
+- **Ageing cannot hollow one out.** The index drops its oldest entries past
+  40,000 files. A stored result would quietly lose members to that; a folder
+  list cannot.
+
+The cost is that you cannot ask for *exactly* the groups you saw on Tuesday —
+if a file has gone since, it has gone. That is the intended trade.
+
+**Stopping a scan** — with the Stop button or by closing the window — keeps
+every fingerprint it managed to take, and leaves the scan's "last run" line
+showing its last *complete* run. A partial run stamping itself as finished
+would answer "is this worth running again" backwards.
+
+Re-running a scan after adding a fourth folder re-lists all four, because a
+directory listing is not cached, but only fingerprints what it has not already
+seen or what has changed since. Adding a folder can also create new work in
+the old ones: candidates are chosen by size collisions across the whole scan
+at once, so a file whose size was unique before may now match something new.
 
 ### Why it is a cascade and not a hash of everything
 
@@ -521,6 +567,67 @@ is on by default.
 Filenames are not a signal. In that same library 4,335 files share a name with
 something of a different size — more name collisions than size collisions.
 
+#### Verify byte-for-byte
+
+Ticked, a group means *the same bytes all the way through*. Unticked, it means
+*the same size, the same first 64 KB and the same last 64 KB* — the last stage
+of the sweep is skipped and nothing else changes.
+
+Unticking buys back the only stage whose cost scales with how big your videos
+are: fingerprinting reads 128 KB per candidate whatever the file size, while
+verifying reads every byte of every file in every group. What it risks is a
+false group — two different videos identical in size and at both ends, differing
+only somewhere in the middle. Unlikely in a real library, but it is exactly the
+case where the wrong file gets thrown away, so unverified groups are labelled
+`· not verified` and the Move to Trash confirmation counts them.
+
+Turning it off discards nothing. Full hashes already taken stay in the index,
+so groups verified by an earlier scan stay verified, and turning it back on
+later only reads what has no hash yet.
+
+Groups are formed on the fingerprint and the full hash is a check applied
+*inside* a group, never a second way of grouping. Keying on it meant a group
+that had only been half read — a verify pass stopped part way through — split
+into a verified pair and an unverified leftover and disappeared from the
+results, which looks exactly like losing files. Where two hashes inside one
+group disagree the hashes win: the group splits, and anything not yet read is
+left out until it has been, since nothing says which side it belongs on.
+
+### Reading the list
+
+Four columns, named in a heading that stays put while the results scroll:
+**#**, **Keep**, **File**, **Status**.
+
+Each set of duplicates gets a number, and its copies are numbered inside it —
+set 3 holds 3.1, 3.2, 3.3. Numbering straight down the window instead would
+put the same figure in the column as the set heading above it meaning
+something different, and would not tell you which set a row belongs to once
+its heading had scrolled away.
+
+Sets are shaded in alternating bands, so a set reads as one block however many
+copies it holds. The table's own alternating colours run per row, which is no
+help when the thing you need to see is where one set ends and the next begins.
+The two shades are the system's own, so they follow light and dark mode.
+
+#### Why a click is instant on a big list
+
+Working out what to show asks the disk whether every copy in every group still
+exists. Measured at 300 groups that is **900 questions**, and over SMB each one
+is a network round trip — around a second of dead application. It used to run
+on every interaction, including picking a keeper, which is why a large result
+appeared to hang.
+
+The derived list is now held between changes, and choosing a keeper edits its
+group where it sits and repaints only that set's rows. Measured on the same
+300 groups: **900 disk questions per click, down to none**, and a whole-table
+redraw down to four rows.
+
+It is derived afresh whenever the answer could differ — a scan finishing, a
+copy taken out of the list, a different scan selected, folders added or
+removed — and whenever you open the window, since files come and go outside
+this app and that is the one moment where asking about all of them is worth
+the pause.
+
 ### Choosing what to keep
 
 Tags first, then the oldest, then the shortest path — and the reason is shown
@@ -530,12 +637,39 @@ rather than the file's.
 
 The file currently playing is never touched.
 
-**Watch one before you decide.** Select a copy and press **Preview**, or
-double-click it. A second window opens with a picture, a scrubber and a clock,
+**Moving shows its progress.** Three hundred files over SMB is half a minute
+of work, and an application that draws nothing for half a minute has hung as
+far as anyone watching can tell. The moving happens on its own thread behind a
+sheet with a bar, a count and the name of the file in hand, and a **Stop**
+button that finishes the file it is on and leaves the rest alone. The summary
+afterwards says what moved, what was stopped short, and what could not be
+moved.
+
+The one question the run cannot ask — *where should discards go on this volume?*
+— is settled before the sheet appears, because it is a modal panel and the run
+is on another thread. Whether a volume needs asking is only truly answered by
+trying, so the first file on each unsettled volume is moved up front. A volume
+you decline to nominate a folder for drops out of the run and is reported;
+the others carry on.
+
+**Watch one before you decide.** Press **space** on a copy — or the **Preview**
+button, or double-click. A panel opens with a picture, a scrubber and a clock,
 and from then on it follows the list: arrow down the group and it plays each
-copy in turn, one at a time. Identical bytes are identical bytes, but which
-one you want to keep is a question about the file's name and where it lives,
-and sometimes the only way to answer it is to look.
+copy in turn. Space again closes it, and so does escape. Identical bytes are
+identical bytes, but which one you want to keep is a question about the file's
+name and where it lives, and sometimes the only way to answer it is to look.
+
+It works the way Quick Look does — and deliberately is not Quick Look. The
+real thing plays video through AVFoundation, which cannot open `.flv`,
+`.webm`, `.mkv` or `.wmv`: exactly the formats VLCKit was brought in for. It
+would show a file icon and "no preview available" for a good part of a
+library. So the panel is ours, with VLC behind it, and only the behaviour is
+borrowed.
+
+The important part of that behaviour is that the panel **floats without
+taking the keyboard**. The list keeps the focus, so the arrow keys go on
+walking it and the preview follows. A window that made itself key would take
+the keyboard away and leave you clicking back and forth to see the next copy.
 
 It has a player of its own rather than borrowing the main one. Loading a
 candidate into the main window would lose your place in the playlist and
@@ -543,17 +677,28 @@ record you as having watched something you were only inspecting. Playback in
 the main window pauses while the preview is open — two soundtracks at once is
 no use to anyone — and starts again when you close it.
 
-**Untick anything you want to keep.** Every copy but the keeper is marked for
-the Trash, which is the point; the box on its row takes it back out. Two cuts
-of the same film worth keeping, a copy you want left where somebody else
-expects to find it — untick it and the total, the count on the button and the
-group's heading all drop to match. The box on a heading does the whole group
-at once, and shows a dash when only some of it is spared.
+**To keep a copy, take it out of the list.** Select it — ⌘-click or
+shift-click for several — and press **Remove from List**. It disappears from
+the results, and everything still on screen is a copy you are still choosing
+between. Two cuts of the same film worth keeping, a copy somebody else expects
+to find where it is: take it out and the group stops asking.
 
-Those decisions are written down and survive a relaunch, which is deliberate.
-A setting that quietly forgot itself would re-arm the Trash button against a
-file you had already said to leave alone, and that is the one mistake this
-whole feature exists to prevent.
+A group that falls to a single copy goes with it. One file is not a duplicate
+of anything, so keeping both of a pair makes that pair vanish in one click.
+The playlist stops badging those files too, and Notice Duplicates While
+Playing stops raising them — a decision made once should not be asked again
+somewhere else.
+
+Those decisions survive a relaunch, which is deliberate: forgetting them would
+re-arm the Trash button against a file you had already said to leave alone,
+and that is the one mistake this whole feature exists to prevent. **Duplicates
+→ Put Removed Copies Back…** is the way back, and carries the count so you can
+see there is one.
+
+This replaced a per-row checkbox, which was the wrong shape for the job. A
+row that stays in the list carrying a mark has to be read on every pass,
+forever, to work out whether it still counts. Taking it out says the same
+thing once.
 
 **A share generally has no Trash**, which is where most of a NAS library
 lives. There the app asks for a folder to move discards into instead —

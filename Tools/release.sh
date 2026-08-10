@@ -104,7 +104,11 @@ else
 fi
 
 echo "==> Building"
-rm -rf build dist
+# Finder drops a .DS_Store into dist the moment the folder is looked at, and
+# it can land between rm walking the directory and removing it — which fails
+# the whole build with "Directory not empty" before anything has been done.
+# One retry is enough; it has never needed two.
+rm -rf build dist 2>/dev/null || { sleep 1; rm -rf build dist; }
 # py2app reports every module it decided not to bundle, which is hundreds of
 # lines of setuptools internals and none of it actionable. Kept in a file so a
 # real failure is still readable.
