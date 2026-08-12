@@ -3950,6 +3950,10 @@ class AppDelegate(NSObject):
         rather than another trip through the file — which is the expensive part
         and the whole reason this exists.
         """
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return                        # vanished since the scan began
         dest = self.publishedPoster(path, size)
         if dest is None or os.path.exists(dest):
             return                        # nowhere to put it, or already there
