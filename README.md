@@ -180,7 +180,29 @@ for a second line.
 
 Running times and frames are both produced in the background when a folder
 opens, in one pass that opens each file once, so the list appears immediately
-and fills in a moment later. Neither is cached between launches.
+and fills in a moment later.
+
+Both are now remembered between launches, which they were not before: they
+lived in a dictionary and nowhere else, so quitting threw away every frame and
+every measured length, and opening the same folder the next day earned the lot
+again from scratch. Lengths go in `durations.json` and frames in a `thumbs`
+folder beside it — 128×72 JPEGs of about 4 KB each, the size the list actually
+draws.
+
+What makes the saving worth having is that the cost is in *opening* the video,
+not in drawing it. AVFoundation has to read a file's `moov` atom before it can
+answer anything, and in a file that is not faststart that atom sits at the very
+end. So the scan skips a remembered video whole — length and frame together —
+rather than opening it to find out what it already knew. A frame alone would
+have saved nothing.
+
+Both are keyed on the file's byte count as well as its path, so a video
+replaced by another of the same name is measured and grabbed again rather than
+wearing the old one's length and picture.
+
+For anything on a share there is usually no work at all: the 480×270 frame
+published for other devices is read back and resampled down, so the picture is
+made once and then merely fetched — by this Mac and by the Apple TV both.
 
 ## Tags
 
@@ -285,6 +307,7 @@ under who made them and which machine wrote them:
 ```
 .FolderVideoPlayer/richard/tags-macbook.json
                           /tags-appletv.json
+                   thumbs/<hash>.jpg
 ```
 
 **Person**, so several people sharing a NAS never overwrite each other.
@@ -325,6 +348,46 @@ publish. Only your own are read — another person's are none of our business,
 and folding them in would put words in their mouth. A file newer than the last
 merge wins the videos it names, per video rather than per tag: coarser, but a
 rule you can hold in your head.
+
+### Poster frames on the share
+
+The `thumbs` folder alongside is the same idea applied to pictures, and it is
+there because the same frame costs wildly different amounts depending on who
+is asking for it.
+
+AVFoundation cannot seek into a video without reading its `moov` atom first,
+and in a file that is not faststart that atom sits at the very end — so one
+frame means reading the head, discovering as much, seeking to the tail and
+pulling back an index that runs to megabytes on a long video. This Mac does
+that over a wired mount in about 0.6s, which is why the scan that measures
+durations gets frames almost for free. An Apple TV doing it over Wi-Fi was
+measured at **2.8 seconds per frame**, for every card, every time.
+
+So the machine that already makes them leaves them where the other one can
+find them. Whenever the duration scan opens a video, it also writes a 480×270
+JPEG — around 30 KB — under a name derived from the share-relative path and
+the byte count. The Apple TV derives the same name and reads the picture
+instead of the video.
+
+Filed under nobody, unlike tags: what a video looks like is not an opinion, so
+one frame serves everyone on the share.
+
+Cheap after the first time in two ways. A frame that already exists is never
+remade, so a second scan of the same folder costs one existence check per
+video. And the asset has already been opened for its duration, so its `moov`
+is parsed and publishing is a seek and a decode rather than another trip
+through the file. It happens whether or not **Show Thumbnails** is on, because
+that setting is a statement about this window, not about the Apple TV in the
+other room.
+
+Keyed on the byte count and deliberately not the modification time: a Mac
+reading a local mount and an Apple TV reading SMB do not agree on the time to
+anything like the precision that would need, and a key that disagrees is a key
+that misses every time. Replacing a video with different content almost always
+changes its length, which is the case worth catching.
+
+Silent, like publishing tags. A read-only share simply keeps its frames on the
+Mac.
 
 ## Favorites are a tag
 

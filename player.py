@@ -31,6 +31,7 @@ except ImportError:
     certifi = None
 
 import objc
+import Quartz                       # ImageIO, for resampling a frame on the way in
 from AVFoundation import (
     AVAssetImageGenerator,
     AVURLAsset,
@@ -45,7 +46,10 @@ from Cocoa import (
     NSApplicationActivationPolicyRegular,
     NSBackingStoreBuffered,
     NSBezelStyleRounded,
+    NSBitmapImageRep,
     NSButton,
+    NSImageCompressionFactor,
+    NSJPEGFileType,
     NSIndexSet,
     NSMutableIndexSet,
     NSProgressIndicator,
@@ -58,6 +62,7 @@ from Cocoa import (
     NSMakePoint,
     NSMakeRect,
     NSMakeSize,
+    NSData,
     NSImage,
     NSImageView,
     NSMenu,
@@ -138,6 +143,38 @@ LEGACY_TAGS = os.path.join(SHARE_DIR, "tags.json")
 # Putting a name on a folder organises tags. It does not hide them: anyone who
 # can read the share can read all of it.
 DEVICE_TAGS = "tags-%s.json"
+
+# Poster frames left on the share for other devices to read.
+#
+#     .FolderVideoPlayer/thumbs/<hash>.jpg
+#
+# Not filed under a person, because what a video looks like is not anybody's
+# opinion — unlike a tag, one frame serves everyone on the share.
+#
+# This exists because the same picture costs wildly different amounts to make
+# depending on who is asking. AVFoundation cannot seek into a video without
+# first reading its moov atom, and in a file that is not faststart that atom
+# sits at the very end — so a frame means reading the head, discovering as
+# much, seeking to the tail and pulling back an index that runs to megabytes
+# on a long video. This Mac does that over a wired mount in about 0.6s. An
+# Apple TV doing it over Wi-Fi was measured at 2.8s, for every card, every
+# time. Reading a 30 KB JPEG instead is one round trip.
+#
+# So the machine that already generates these frames for its own list leaves
+# them where the other one can find them.
+POSTER_DIR = os.path.join(SHARE_DIR, "thumbs")
+POSTER_W, POSTER_H = 480, 270   # what an Apple TV's card can actually show
+POSTER_QUALITY = 0.8
+
+# This Mac's own copies, at the size its list actually draws, for videos that
+# live nowhere shareable — a home folder or an external drive has no share to
+# publish to, and without this their frames were remade on every launch.
+#
+# Frames used to be held in a dictionary and nowhere else, so quitting threw
+# away every one of them and the next launch earned them all again. Durations
+# went the same way, for the same reason and in the same scan.
+THUMB_CACHE = os.path.join(SUPPORT, "thumbs")
+DURATION_FILE = os.path.join(SUPPORT, "durations.json")
 
 # What AVFoundation can actually decode. .mkv and .avi are deliberately absent.
 # What VLC will play. AVFoundation managed three of these; the rest — .flv
@@ -298,6 +335,44 @@ def tag_key(path):
 def tag_path(key):
     """Back to something this Mac can actually open."""
     return key if key.startswith("/") else VOLUMES + key
+
+
+@objc.python_method
+def poster_key(rest, size):
+    """The filename a published poster frame is filed under.
+
+    `rest` is the path from the share root down — "Richard/clips/a.mp4" — the
+    same form the share's tag files are keyed on, and the only form a Mac and
+    an Apple TV both arrive at for one file.
+
+    Keyed on that and the byte count, so a video replaced with different
+    content asks for a new frame while merely re-reading the same one does
+    not. Deliberately not the modification time: a Mac reading a local mount
+    and an Apple TV reading SMB do not agree on it to anything like the
+    precision that would need, and a key that disagrees is a key that misses
+    every time.
+
+    SHA256 rather than the blake2b used for duplicate detection elsewhere in
+    here, because the Apple TV has to arrive at the same name and CryptoKit
+    offers SHA256.
+    """
+    return hashlib.sha256(
+        "{}\0{}".format(rest, size).encode("utf-8")).hexdigest()[:32] + ".jpg"
+
+
+@objc.python_method
+def thumb_key(path, size):
+    """What this Mac files its own copy of a frame under.
+
+    Keyed on `tag_key` rather than the share-relative path the published one
+    uses, because this cache spans everything the app can open: two different
+    shares can hold "Richard/a.mp4" and they are not the same video, while a
+    file in a home folder has no share-relative form at all. The byte count
+    comes along for the same reason as on the share — a video replaced with
+    different content should ask for a new frame.
+    """
+    return hashlib.sha256(
+        "{}\0{}".format(tag_key(path), size).encode("utf-8")).hexdigest()[:32] + ".jpg"
 
 
 @objc.python_method
@@ -558,6 +633,10 @@ class AppDelegate(NSObject):
         self.filterText = ""
         self.durations = {}
         self.thumbs = {}
+        # Lengths measured in earlier launches, so the scan does not open every
+        # video again to learn what it already knew. Loaded in loadState.
+        self.lengths = {}
+        self.lengthsDirty = False
         self.durationGen = 0
         self.revealedIndex = None
         self.scrubbing = False
@@ -2596,6 +2675,10 @@ class AppDelegate(NSObject):
         self.device = str(state.get("device") or uuid.uuid4().hex[:8])
         self.lastMerge = state.get("lastMerge") or 0
         self.showThumbs = state.get("thumbnails") is not False
+        # Kept out of state.json, which is small and rewritten constantly. This
+        # one grows with the library, like fingerprints.json beside it.
+        self.lengths = load_json(DURATION_FILE, {})
+        self.lengthsDirty = False
         self.volume = int(state.get("volume", 100))
         # Where discards go on volumes with no Trash. Remembered so the
         # question is asked once, not once a session.
@@ -3851,18 +3934,230 @@ class AppDelegate(NSObject):
             return 0
 
     @objc.python_method
-    def posterFrame(self, asset, seconds):
-        """A frame from a little way in — opening frames are so often black."""
+    @objc.python_method
+    def publishPoster(self, path, asset, seconds):
+        """Leave a poster frame on the share, for an Apple TV to read instead
+        of making its own.
+
+        Silent by design, like publishing tags: a NAS asleep, unplugged or
+        mounted read-only is a normal Tuesday and not something to interrupt
+        anyone about.
+
+        Cheap after the first time in two ways. The frame is only made if one
+        is not already published, so a second scan of the same folder costs one
+        `exists` per video. And the asset handed in has already been opened for
+        its duration, so its moov is parsed and this is a seek and a decode
+        rather than another trip through the file — which is the expensive part
+        and the whole reason this exists.
+        """
+        dest = self.publishedPoster(path, size)
+        if dest is None or os.path.exists(dest):
+            return                        # nowhere to put it, or already there
+
+        data = self.posterJPEG(asset, seconds, POSTER_W, POSTER_H)
+        if data is None:
+            return
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            # Written beside and moved into place, so a share that drops out
+            # mid-write leaves no half a picture for the TV to choke on.
+            scratch = dest + ".writing"
+            data.writeToFile_atomically_(scratch, True)
+            os.replace(scratch, dest)
+        except OSError:
+            pass                          # read-only share; nothing to say
+
+    @objc.python_method
+    def publishedPoster(self, path, size):
+        """Where this video's published frame belongs, or None if it has no
+        business on a share — a local file is portable nowhere, and a share
+        that has been unmounted mid-scan is not somewhere to write."""
+        key = tag_key(path)
+        if key.startswith("/"):
+            return None
+        share, _, rest = key.partition("/")
+        if not rest:
+            return None
+        root = os.path.join(VOLUMES, share)
+        if not os.path.isdir(root):
+            return None
+        return os.path.join(root, POSTER_DIR, poster_key(rest, size))
+
+    @objc.python_method
+    def posterJPEG(self, asset, seconds, width, height):
+        """A frame as JPEG bytes, at whatever size was asked for.
+
+        Two sizes are asked for: 480x270 for the share, because that is what an
+        Apple TV's card can show, and 128x72 for this Mac's own list. The big
+        one is never kept in `self.thumbs` — decoded it is half a megabyte, and
+        a playlist of a thousand would be half a gigabyte held for nothing. It
+        is encoded, written and dropped.
+        """
         maker = AVAssetImageGenerator.assetImageGeneratorWithAsset_(asset)
         maker.setAppliesPreferredTrackTransform_(True)
-        maker.setMaximumSize_((THUMB_W * 2, THUMB_H * 2))
+        maker.setMaximumSize_((width, height))
+        # Generous, for the same reason the Apple TV is: an exact seek reads
+        # far more of the file for accuracy a poster frame has no use for.
+        maker.setRequestedTimeToleranceBefore_(CMTimeMakeWithSeconds(10, 600))
+        maker.setRequestedTimeToleranceAfter_(CMTimeMakeWithSeconds(10, 600))
         at = min(max(seconds * 0.1, 1.0), 20.0) if seconds else 1.0
         try:
             image, _ = maker.copyCGImageAtTime_actualTime_error_(
                 CMTimeMakeWithSeconds(at, 600), None, None)
         except Exception:
             return None                   # unreadable, or no video track at all
-        return NSImage.alloc().initWithCGImage_size_(image, (0, 0)) if image else None
+        if not image:
+            return None
+        rep = NSBitmapImageRep.alloc().initWithCGImage_(image)
+        return rep.representationUsingType_properties_(
+            NSJPEGFileType, {NSImageCompressionFactor: POSTER_QUALITY})
+
+    @objc.python_method
+    def cachedPoster(self, path, asset, seconds):
+        """The list's frame, from the cheapest place that has one.
+
+        Three places, and the last of them is the 0.6s that used to be paid
+        again on every launch:
+
+          1. this Mac's cache, a 128x72 JPEG of about 4 KB;
+          2. the copy published for other devices, which for anything on a
+             share `publishPoster` has just written — so the frame is read back
+             rather than made a second time;
+          3. making one.
+
+        Anything found in 2 is kept in 1 as well, so the next launch does not
+        even go to the share for it.
+        """
+        stored = self.storedPoster(path)
+        if stored is not None:
+            return stored
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return None
+        data = self.posterJPEG(asset, seconds, THUMB_W * 2, THUMB_H * 2)
+        if data is None:
+            return None
+        self.writePoster(os.path.join(THUMB_CACHE, thumb_key(path, size)), data)
+        return NSImage.alloc().initWithData_(data)
+
+    @objc.python_method
+    def rememberedLength(self, path):
+        """How long this video was, last time anyone asked — or None.
+
+        Guarded by the byte count, so a file swapped for another of the same
+        name is measured again rather than wearing the old one's length.
+        """
+        known = self.lengths.get(tag_key(path))
+        if not isinstance(known, list) or len(known) != 2:
+            return None
+        size, seconds = known
+        try:
+            if size != os.path.getsize(path):
+                return None
+        except OSError:
+            return None
+        return seconds if isinstance(seconds, (int, float)) else None
+
+    @objc.python_method
+    def rememberLength(self, path, seconds):
+        try:
+            self.lengths[tag_key(path)] = [os.path.getsize(path), seconds]
+        except OSError:
+            return
+        self.lengthsDirty = True
+
+    @objc.python_method
+    def saveLengths(self):
+        """Written once a scan finishes rather than per video: a thousand
+        videos would otherwise be a thousand rewrites of the same file."""
+        if not self.lengthsDirty:
+            return
+        self.lengthsDirty = False
+        try:
+            save_json(DURATION_FILE, self.lengths)
+        except OSError:
+            pass                          # a cache that cannot be written is
+                                          # slower, not broken
+
+    @objc.python_method
+    def storedPoster(self, path):
+        """A frame from somewhere it has already been written, or None.
+
+        Separate from `cachedPoster` because this asks nothing of the video
+        itself — no asset, no moov, no read. That is what lets the scan skip a
+        file whole rather than merely skip drawing it.
+        """
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return None
+        local = os.path.join(THUMB_CACHE, thumb_key(path, size))
+
+        if os.path.exists(local):
+            image = NSImage.alloc().initWithContentsOfFile_(local)
+            if image is not None and image.isValid():
+                return image
+
+        shared = self.publishedPoster(path, size)
+        if shared and os.path.exists(shared):
+            data = NSData.dataWithContentsOfFile_(shared)
+            image = self.smallPoster(data) if data else None
+            if image is not None:
+                self.keepPoster(local, image)
+                return image
+        return None
+
+    @objc.python_method
+    def smallPoster(self, data):
+        """A list-sized frame from a published one's bytes.
+
+        Genuinely resampled to 128x72, not merely labelled as such: an NSImage
+        told it is 128x72 while still carrying 480x270 of pixels costs the same
+        half megabyte it always did, and a thousand of those is the half
+        gigabyte this exists to avoid.
+
+        Resampled by ImageIO at decode time rather than drawn into a focused
+        NSImage, which was the first attempt and was wrong: `lockFocus` uses
+        the backing scale of whatever display happens to be current, so on a
+        Retina Mac it quietly produced 256x144 and on an external monitor it
+        would not have. This asks for a pixel count and gets it.
+        """
+        source = Quartz.CGImageSourceCreateWithData(data, None)
+        if source is None:
+            return None
+        image = Quartz.CGImageSourceCreateThumbnailAtIndex(source, 0, {
+            Quartz.kCGImageSourceCreateThumbnailFromImageAlways: True,
+            Quartz.kCGImageSourceThumbnailMaxPixelSize: THUMB_W * 2,
+        })
+        if image is None:
+            return None
+        # (0, 0) means "however many pixels it has", which for a 16:9 frame
+        # capped at 128 across is exactly the 128x72 the list wants.
+        return NSImage.alloc().initWithCGImage_size_(image, (0, 0))
+
+    @objc.python_method
+    def keepPoster(self, local, image):
+        """Put an image already in hand into this Mac's cache."""
+        rep = NSBitmapImageRep.imageRepWithData_(image.TIFFRepresentation())
+        if rep is None:
+            return
+        data = rep.representationUsingType_properties_(
+            NSJPEGFileType, {NSImageCompressionFactor: POSTER_QUALITY})
+        if data is not None:
+            self.writePoster(local, data)
+
+    @objc.python_method
+    def writePoster(self, local, data):
+        """Silent, like everything else that writes a frame: a cache that
+        cannot be written is slower, not broken."""
+        try:
+            os.makedirs(THUMB_CACHE, exist_ok=True)
+            scratch = local + ".writing"
+            data.writeToFile_atomically_(scratch, True)
+            os.replace(scratch, local)
+        except OSError:
+            pass
 
     def scanDurations_(self, generation):
         pool = NSAutoreleasePool.alloc().init()
@@ -3875,13 +4170,39 @@ class AppDelegate(NSObject):
                 if generation != self.durationGen:
                     return                # the playlist moved on; drop this pass
                 if os.path.splitext(path)[1].lower() in FAST_EXT:
+                    # Everything this video needs, possibly without opening it.
+                    #
+                    # Opening the asset is the cost — it is what reads the moov
+                    # atom off the disk or the wire — so the shortcut has to
+                    # cover the length *and* the frame or it saves nothing.
+                    # Both were thrown away on quit before this, which is why
+                    # the same folder was scanned from scratch every launch.
+                    remembered = self.rememberedLength(path)
+                    if remembered is not None:
+                        wantFrame = self.showThumbs and path not in self.thumbs
+                        stored = self.storedPoster(path) if wantFrame else None
+                        if stored is not None or not wantFrame:
+                            self.durations[path] = remembered
+                            if stored is not None:
+                                self.thumbs[path] = stored
+                            continue
                     asset = AVURLAsset.URLAssetWithURL_options_(
                         NSURL.fileURLWithPath_(path), None)
                     seconds = CMTimeGetSeconds(asset.duration())
                     seconds = seconds if seconds == seconds and seconds > 0 else 0
                     self.durations[path] = seconds
+                    self.rememberLength(path, seconds)
+                    # Regardless of showThumbs: this is not for the list on
+                    # this screen, it is for whatever else reads the share.
+                    # Turning poster frames off here is a statement about this
+                    # window, not about the Apple TV in the other room.
+                    #
+                    # Before the list's own frame, so that on a share the frame
+                    # published here is the one read back a moment later rather
+                    # than a second one being decoded for the same video.
+                    self.publishPoster(path, asset, seconds)
                     if self.showThumbs and path not in self.thumbs:
-                        self.thumbs[path] = self.posterFrame(asset, seconds)
+                        self.thumbs[path] = self.cachedPoster(path, asset, seconds)
                 else:
                     # AVFoundation cannot read these at all, so asking it costs
                     # a round trip over SMB and returns nothing. VLC answers,
@@ -3894,6 +4215,7 @@ class AppDelegate(NSObject):
                         "durationsArrived:", None, False)
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "durationsArrived:", None, False)
+            self.saveLengths()
         finally:
             del pool
 
