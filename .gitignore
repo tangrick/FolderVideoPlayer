@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+
+# Xcode
+xcuserdata/
+*.xcuserstate
+DerivedData/
+build/
+
+# Swift Package Manager
+.swiftpm/
+# NOTE: Package.resolved is deliberately NOT ignored. It is the PIN for this
+# app's Swift Package dependencies (WhisperKit): an exact version in the project
+# file still resolves through a git TAG, and a tag can be moved. Committing the
+# resolved revision is what makes a clone build the bytes this machine built.
+# (Same rule the model catalogue follows: pin the commit, not the name.)
+
+# App sandbox / test scratch
+FVP_SUPPORT/
+dist/
+AnalysisEngine/__pycache__/
+# the spike scripts import each other (sface_parity -> sface_torch)
+docs/coreml-spike/__pycache__/
+AnalysisEngine/test_suggest.py
+AnalysisEngine/test_suggest_collision.py
+AnalysisEngine/tune_suggest.py
