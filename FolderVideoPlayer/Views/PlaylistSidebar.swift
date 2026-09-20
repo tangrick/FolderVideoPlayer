@@ -34,6 +34,12 @@ struct PlaylistSidebar: View {
     @State private var aiCandidates: [(key: String, score: Double)] = []
     @State private var aiLoading = false
     @State private var aiNote: String?
+    /// Whether the rows on screen were ranked by FACE rather than by the whole
+    /// frame. Set by the search that produced them, read only by the words
+    /// around them — a person's rows promise something different from a
+    /// scene's, and saying "look like" over a face match is what made the
+    /// waterfalls look like a correct answer.
+    @State private var aiByFace = false
     /// The tag whose tagged videos the search is analysing for itself, so it
     /// knows to run again when that finishes. Without it the user presses Find
     /// Look-alikes, reads "Analysing 1 tagged video…", and nothing else ever
@@ -108,9 +114,13 @@ struct PlaylistSidebar: View {
                 .allowsHitTesting(false)
         }
         .overlay(alignment: .leading) { resizeHandle }
-        // The search starts by analysing that tag's unanalysed videos, so it
-        // must be asked again when that run ends. Without this the work would be
-        // done and the answer never asked for.
+        // A backstop, not the mechanism. The search asks itself again when the
+        // run it started finishes (`runLookAlikeSearch`), because THIS never
+        // fires on its own: the sidebar does not observe the engine — it reaches
+        // it through `app.engine`, and `AppModel.engine` is not published — so
+        // the view is not re-evaluated when the phase changes and `.onChange`
+        // never sees it. It stays because a redraw for any other reason then
+        // picks up a search left pending by something else.
         .onChange(of: app.engine.phase) { _, phase in
             guard case .idle = phase,
                   let tag = pendingSearchTag, aiSuggest,
@@ -637,7 +647,9 @@ struct PlaylistSidebar: View {
             .padding(.horizontal, 10)
             .padding(.top, 8)
             .padding(.bottom, 2)
-            Text("Candidates the AI believes look like “\(playback.tagName ?? "")” from anywhere in your library. Accept the right ones; ✕ the wrong ones to teach it.")
+            Text(aiByFace
+                 ? "Videos whose faces match “\(playback.tagName ?? "")”, from anywhere in your library. Nothing else about the picture was used. Accept the right ones; ✕ the wrong ones to teach it."
+                 : "Candidates the AI believes look like “\(playback.tagName ?? "")” from anywhere in your library. Accept the right ones; ✕ the wrong ones to teach it.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 10)
@@ -679,7 +691,9 @@ struct PlaylistSidebar: View {
                 Spacer()
                 if aiLoading { ProgressView().controlSize(.mini) }
             }
-            Text("Look-alikes for “\(playback.tagName ?? "")” from anywhere in your library.")
+            Text(aiByFace
+                 ? "Face matches for “\(playback.tagName ?? "")” from anywhere in your library."
+                 : "Look-alikes for “\(playback.tagName ?? "")” from anywhere in your library.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             if aiCandidates.isEmpty && !aiLoading {
@@ -791,7 +805,8 @@ struct PlaylistSidebar: View {
                     .truncationMode(.middle)
                 Text(previewing
                      ? String(format: "Previewing — %.0f%% match", cand.score * 100)
-                     : String(format: "AI look-alike — %.0f%% match", cand.score * 100))
+                     : String(format: "%@ — %.0f%% match",
+                              aiByFace ? "Face match" : "AI look-alike", cand.score * 100))
                     .font(.caption2)
                     .foregroundStyle(previewing ? Color.accentColor : Color.secondary.opacity(0.7))
             }
@@ -841,21 +856,174 @@ struct PlaylistSidebar: View {
         runLookAlikeSearch()
     }
 
+    /// Wait until the engine has finished whatever else it is doing, and say
+    /// whether the search is still the one the user is looking at.
+    ///
+    /// Polled, deliberately. The alternative is to observe `AnalysisEngine`
+    /// from this view, and it publishes a status line, a running count and a
+    /// file name several times per video — which would re-evaluate the whole
+    /// playlist at that rate, the same cost that put the playhead in an object
+    /// of its own. A 300 ms poll while a run the user can see is in progress is
+    /// cheaper than that, and it stops the moment they toggle the search off or
+    /// leave the tag.
+    private func engineFree(for tag: String) async -> Bool {
+        while app.engine.isBusy {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled, aiSuggest, playback.tagName == tag else { return false }
+        }
+        return aiSuggest && playback.tagName == tag
+    }
+
+    /// The registry's own spelling of a tag that names a person, or nil.
+    ///
+    /// Asked of the people already in memory rather than of the file: this runs
+    /// on every toggle and every tag change, and the answer is one the store
+    /// keeps current. A tag matching a person case-insensitively IS that person
+    /// — the tag and the registry key are the same name written twice, which is
+    /// exactly what `nameCluster` and `addPerson` write.
+    ///
+    /// Nil while Face Recognition is switched off, so the setting decides
+    /// whether faces are used for anything at all, and the scene search
+    /// answers as it did before.
+    private func namedPerson(_ tag: String) -> String? {
+        guard library.facesEnabled else { return nil }
+        return app.faceStore?.people
+            .first { $0.name.caseInsensitiveCompare(tag) == .orderedSame }?.name
+    }
+
+    /// Find this person in videos that are not tagged with them yet, by face.
+    ///
+    /// Deliberately shorter than the scene search below, because it cannot do
+    /// the two things that make that one long. It never re-analyses anything:
+    /// the face pass is button-triggered (People ▸ Scan), and the hard rule is
+    /// that nothing but the playing video starts work on its own — so a video
+    /// nobody has scanned is COUNTED and named as such, not quietly queued. And
+    /// it needs no prototype rule: one bound face is enough to search with,
+    /// where a scene prototype needs two videos to have any direction at all.
+    private func runFaceLookAlikeSearch(person: String) {
+        aiByFace = true
+        aiLoading = true
+        aiNote = nil
+        aiCandidates = []
+        Task {
+            defer { aiLoading = false }
+            guard let analysis = app.analysis as AnalysisStore? else { return }
+
+            // The index is `faceHash -> absolute paths`; everything the rows
+            // are drawn from is a tag key. Reduced here, on the main actor,
+            // because `library` and `suggestions` live here — and reduced to
+            // what is worth OFFERING, so the ranking below never scores a video
+            // the user has already settled.
+            var offered: [String: [String]] = [:]
+            for (hash, paths) in app.faceStore?.faceVideos ?? [:] {
+                var keep: [String] = []
+                for path in paths {
+                    let key = Paths.tagKey(path)
+                    if library.hidden.contains(key) { continue }
+                    if (library.tags[key] ?? []).contains(where: {
+                        $0.caseInsensitiveCompare(person) == .orderedSame
+                    }) { continue }
+                    // Case-insensitively, unlike the scene search's exact
+                    // lookup: that one asks with the tag as the user sees it
+                    // spelled, which is what `dismissAI` filed the verdict
+                    // under. This one asks with the REGISTRY's spelling of the
+                    // person, and the two can differ in case — an exact lookup
+                    // would offer back a video the user has already rejected.
+                    if let verdicts = suggestions.entry(key)?.verdicts,
+                       verdicts.first(where: {
+                           $0.key.caseInsensitiveCompare(person) == .orderedSame
+                       })?.value == .rejected { continue }
+                    keep.append(key)
+                }
+                if !keep.isEmpty { offered[hash] = keep }
+            }
+            // What the coverage count is measured against: every video the app
+            // holds a record for. A video with a record but no faces indexed is
+            // the one the user cannot see the absence of — it looks searched
+            // and never was.
+            var analysed = Set<String>()
+            for (key, _) in analysis.records where !library.hidden.contains(key) {
+                analysed.insert(key)
+            }
+
+            let profile = Paths.activeProfile
+            let result = await Task.detached(priority: .userInitiated) { () -> FaceLookAlikes.Result in
+                // Reads only: the registry file for this person's bound hashes,
+                // then one `.f32` per distinct face. No model is loaded, which
+                // is what lets this work on a Mac that never downloaded the
+                // face bundle but has a cache from one that did.
+                let registry = FaceRegistry(root: Paths.support, profile: profile)
+                let bound = registry.registry()
+                let key = FaceRegistry.existingKey(person, in: bound) ?? person
+                let references = (bound[key] ?? []).compactMap { registry.vector(for: $0) }
+                return FaceLookAlikes.rank(person: person,
+                                           references: references,
+                                           faceVideos: offered,
+                                           analysed: analysed,
+                                           vector: { registry.vector(for: $0) })
+            }.value
+            guard !Task.isCancelled, aiSuggest,
+                  playback.tagName?.caseInsensitiveCompare(person) == .orderedSame else { return }
+
+            // The same moved-file check the scene search makes, for the same
+            // reason: a cached row whose file has gone cannot be played or
+            // accepted, and carries the name of one that can.
+            let ranked = result.candidates.map { LookAlikes.Candidate(key: $0.key, score: $0.score) }
+            let checked = LookAlikes.live(ranked) { key in
+                FileManager.default.fileExists(atPath: Paths.tagPath(key))
+            }
+            aiCandidates = checked.live.map { (key: $0.key, score: $0.score) }
+
+            var notes: [String] = []
+            if checked.live.isEmpty, let reason = result.reason { notes.append(reason) }
+            if checked.gone > 0 {
+                notes.append("\(checked.gone) candidate\(checked.gone == 1 ? "" : "s") skipped — "
+                           + "the file has moved from the path the faces were cached under.")
+            }
+            // Said even when the answer is full, because it is the one thing
+            // the user cannot see: a face search over a library that has barely
+            // been scanned looks like a complete answer.
+            if result.unscanned > 0 {
+                let noun = result.unscanned == 1 ? "video has" : "videos have"
+                notes.append("\(result.unscanned) \(noun) not been scanned for faces yet — "
+                           + "open People and scan them to widen this search.")
+            }
+            aiNote = notes.isEmpty ? nil : notes.joined(separator: " ")
+        }
+    }
+
     /// Run the search, analysing that tag's unanalysed videos first.
     ///
     /// This is one press that can take two passes: a tag's videos have to be
     /// embedded before they can be prototypes, and a video with no embedding is
     /// not one. So the tag's unanalysed videos are embedded here — all of them,
     /// in library order, not merely enough to clear `LookAlikes.minVideos` —
-    /// and the search re-runs when that run ends (the `.onChange` on the
-    /// engine's phase). Nothing is re-embedded twice, and a video already
-    /// carrying an answer is never touched.
+    /// and the search re-runs when that run ends. It asks ITSELF again, after
+    /// the `classify` it awaited returns: the sidebar does not observe the
+    /// engine, so a watcher on the phase is not woken by the run finishing, and
+    /// the note stayed on screen with the work done and the answer never asked
+    /// for. Nothing is re-embedded twice, and a video already carrying an
+    /// answer is never touched.
+    ///
+    /// `afterAnalysis` marks that re-ask: the second pass never starts a third
+    /// run, so a video that cannot be analysed says so instead of looping.
     ///
     /// Split from the toggle because that re-run needs the body without the
     /// flag flip — and because the tag changing while the toggle is on has to
     /// re-run it too, or the rows would describe the tag the user just left.
-    private func runLookAlikeSearch() {
+    private func runLookAlikeSearch(afterAnalysis: Bool = false) {
         guard let tag = playback.tagName else { return }
+        // A tag that names someone in the face registry is a different
+        // question, and `FaceLookAlikes` says why at length: ranking a person
+        // by the whole frame answers with wherever they were standing. There is
+        // no analyse-then-retry pass on this path — the face scan is
+        // button-triggered, and nothing but the playing video may start work of
+        // its own accord — so `afterAnalysis` has nothing to mark here.
+        if let person = namedPerson(tag) {
+            runFaceLookAlikeSearch(person: person)
+            return
+        }
+        aiByFace = false
         aiLoading = true
         aiNote = nil
         aiCandidates = []
@@ -1011,16 +1179,34 @@ struct PlaylistSidebar: View {
             // again when the run ends.
             if !pending.isEmpty {
                 let noun = pending.count == 1 ? "video" : "videos"
+                // The run this search started has already been and gone, and
+                // these are still unreadable — a refusal (the engine was taken
+                // by something else) or a failure. Say so, in the engine's own
+                // words when it has any, rather than starting the same run again.
+                if afterAnalysis {
+                    aiNote = app.jobNotice
+                        ?? "\(pending.count) tagged \(noun) for “\(tag)” could not be analysed — "
+                         + "try the search again once the engine is free."
+                    return
+                }
                 pendingSearchTag = tag
-                guard !app.engine.isBusy, app.ai.works(.classify) else {
+                guard app.ai.works(.classify) else {
                     aiNote = "\(pending.count) tagged \(noun) for “\(tag)” still to analyse — "
                            + "the search starts the moment the engine is free."
                     return
+                }
+                if app.engine.isBusy {
+                    aiNote = "\(pending.count) tagged \(noun) for “\(tag)” still to analyse — "
+                           + "the search starts the moment the engine is free."
+                    guard await engineFree(for: tag) else { return }
                 }
                 for path in pending { analysis.enqueue([path]) }
                 aiNote = "Analysing \(pending.count) tagged \(noun) for “\(tag)” — "
                        + "the search runs as soon as that finishes."
                 await app.classify(paths: pending)
+                guard aiSuggest, playback.tagName == tag else { return }
+                pendingSearchTag = nil
+                runLookAlikeSearch(afterAnalysis: true)
                 return
             }
 
@@ -1110,12 +1296,16 @@ struct PlaylistSidebar: View {
                 if !widening.batch.isEmpty, app.ai.works(.classify) {
                     let waiting = widening.batch.count == 1 ? "video" : "videos"
                     if app.engine.isBusy {
-                        // Mid-run: the `.onChange` on the engine's phase re-asks
-                        // the search when it goes idle, and this runs then.
+                        // Mid-run: wait for the engine, then ask the search
+                        // again — which takes this same batch, now that nothing
+                        // else is using the engine.
                         pendingSearchTag = tag
                         aiNote = [aiNote, "\(widening.offered) more \(waiting) the search cannot read yet — "
                                 + "analysing them as soon as the engine is free."]
                             .compactMap { $0 }.joined(separator: " ")
+                        guard await engineFree(for: tag) else { return }
+                        pendingSearchTag = nil
+                        runLookAlikeSearch(afterAnalysis: afterAnalysis)
                     } else {
                         // Only what is about to run is checked against the disk,
                         // and it is checked off the main actor. A key whose file
@@ -1167,6 +1357,13 @@ struct PlaylistSidebar: View {
                                     + "the candidates update when that finishes.") + moved]
                             .compactMap { $0 }.joined(separator: " ")
                         await app.classify(paths: disk.live)
+                        // Same re-ask as the tagged-videos pass above, for the
+                        // same reason: nothing else wakes this view. The batch
+                        // just analysed is in `widened`, so the next pass takes
+                        // the next instalment and the walk terminates.
+                        guard aiSuggest, playback.tagName == tag else { return }
+                        pendingSearchTag = nil
+                        runLookAlikeSearch(afterAnalysis: afterAnalysis)
                     }
                 } else if widening.offered + widening.refused + widening.alreadyTried > 0
                             || res.unseen > 0 {

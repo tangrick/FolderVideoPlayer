@@ -19,10 +19,13 @@ final class MediaCache: ObservableObject {
     /// wearing the old one's length.
     private var lengths: [String: [Double]] = [:]
     private var lengthsDirty = false
-    /// Lengths already resolved this session, by path. `rememberedLength`
-    /// costs a stat to check the file has not been swapped; a list redrawing
-    /// would otherwise pay that per visible row, per redraw, over the wire.
+    /// Lengths resolved AND checked against the file this session, by path.
+    /// The check costs a `stat`; a list redrawing would otherwise pay that per
+    /// visible row, per redraw, over the wire.
     private var resolved: [String: Double] = [:]
+    /// Paths whose size check is in flight, so a row drawn sixty times a second
+    /// asks the disk once.
+    private var checking: Set<String> = []
     private var pendingSave: Task<Void, Never>?
     /// Poster frames, held in a cache that evicts rather than a dictionary
     /// that does not: a session spent browsing icon grids over a few
@@ -50,20 +53,66 @@ final class MediaCache: ObservableObject {
 
     // MARK: - durations
 
-    func rememberedLength(_ path: String) -> Double? {
-        guard let known = lengths[Paths.tagKey(path)], known.count == 2,
-              let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-              let size = (attrs[.size] as? NSNumber)?.doubleValue,
-              size == known[0] else { return nil }
-        return known[1]
+    /// A file's byte count, and nothing else.
+    ///
+    /// `FileManager.attributesOfItem` was what this used to ask, and it fetches
+    /// the WHOLE attribute dictionary: an `lstat`, then a `listxattr`, then a
+    /// `getxattr` for every extended attribute the file carries — four round
+    /// trips on a video with the three macOS puts on a download. Over SMB each
+    /// one costs whatever the share costs: measured on the maintainer's
+    /// Diskstation, 2026-09-20, a cold `stat` was 5.5 s and the attribute
+    /// dictionary behind it 7.1 s of blocked main thread at launch. One
+    /// `lstat` is the whole question here.
+    ///
+    /// `lstat` rather than `stat`, to match what `attributesOfItem` reported:
+    /// a symlink's own size, not its target's.
+    nonisolated static func fileSize(_ path: String) -> Double? {
+        var info = Foundation.stat()
+        guard lstat(path, &info) == 0 else { return nil }
+        return Double(info.st_size)
     }
 
     func remember(length seconds: Double, for path: String) {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-              let size = (attrs[.size] as? NSNumber)?.doubleValue else { return }
+        guard let size = Self.fileSize(path) else { return }
         lengths[Paths.tagKey(path)] = [size, seconds]
+        resolved[path] = seconds
         lengthsDirty = true
         scheduleSave()
+    }
+
+    /// Check the remembered length still describes THIS file, off the main
+    /// thread, and correct the record if it does not.
+    ///
+    /// The size is what guards the entry — a file swapped for another of the
+    /// same name must be measured again rather than wearing the old one's
+    /// length — but the guard does not have to be paid before an answer can be
+    /// given. It is paid behind the answer instead, and `revision` is bumped
+    /// only when the answer turns out to have been wrong, so a list is not
+    /// redrawn for every row that was right.
+    private func verifySize(_ path: String, expecting size: Double) {
+        guard !checking.contains(path) else { return }
+        checking.insert(path)
+        Task { [weak self] in
+            let actual = await Task.detached(priority: .utility) {
+                MediaCache.fileSize(path)
+            }.value
+            guard let self else { return }
+            self.checking.remove(path)
+            let key = Paths.tagKey(path)
+            guard let remembered = self.lengths[key], remembered.count == 2,
+                  remembered[0] == size else { return }   // rewritten meanwhile
+            if actual == size {
+                self.resolved[path] = remembered[1]
+            } else {
+                // Not this file any more. Forget the length rather than keep
+                // offering it, and say so: something on screen is wrong.
+                self.lengths.removeValue(forKey: key)
+                self.resolved.removeValue(forKey: path)
+                self.lengthsDirty = true
+                self.scheduleSave()
+                self.revision += 1
+            }
+        }
     }
 
     /// Written once a scan finishes rather than per video: a thousand videos
@@ -76,13 +125,23 @@ final class MediaCache: ObservableObject {
 
     /// How long this video is, if that is already known — a dictionary lookup,
     /// safe to call from a row being drawn.
+    ///
+    /// It says that and it now IS that. It used to `stat` the file on a cache
+    /// miss to check the remembered length still belonged to it, which made
+    /// "safe to call from a row being drawn" false on a share and put a
+    /// spinning wheel on the window at launch, where the resumed video is asked
+    /// its length before anything is drawn (`PlaybackController.play(at:)`).
+    /// The check now runs behind the answer — see `verifySize`.
+    ///
+    /// What the caller gets in that window is the length this video had when it
+    /// was last measured, which is wrong only if the file has been replaced at
+    /// the same path since. Playback corrects itself within a tick either way:
+    /// `head.duration` is re-read from the player as soon as it reports one.
     func length(_ path: String) -> Double? {
         if let known = resolved[path] { return known }
-        if let known = rememberedLength(path) {
-            resolved[path] = known
-            return known
-        }
-        return nil
+        guard let known = lengths[Paths.tagKey(path)], known.count == 2 else { return nil }
+        verifySize(path, expecting: known[0])
+        return known[1]
     }
 
     /// Written once the measuring has gone quiet rather than per video: a

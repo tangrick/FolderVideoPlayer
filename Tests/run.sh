@@ -48,6 +48,10 @@ sh "$here/run_trained_heads.sh"
 # Phase 3: the look-alike search, against engine.py's own tag_candidates.
 sh "$here/run_look_alikes.sh"
 
+# ...and its person half: the same button on a tag that names someone, ranked
+# on face vectors alone. No engine parity — it is the app's own question.
+sh "$here/run_face_look_alikes.sh"
+
 # Phase 3: the library-tag prototypes, against engine.py's own prototypes and
 # baseline — a fixture that writes a real cache tree for engine.py to walk.
 sh "$here/run_tag_prototypes.sh"

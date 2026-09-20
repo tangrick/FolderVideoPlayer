@@ -28,6 +28,9 @@ MODEL_SOURCES=(
     "$model/CoreMLClassifier.swift"
     # Phase 3's maths — no model, no frames, just the vectors already cached.
     "$model/LogisticHead.swift" "$model/LookAlikes.swift" "$model/TagPrototypes.swift"
+    # The person half of the look-alike search: same button, face vectors
+    # instead of the whole frame (added Sep'26). Same rule as every line above.
+    "$model/FaceLookAlikes.swift"
     # Phase 4: the shipped Safe/NSFW verdict, and the suggester that merges
     # every source into one ranked list. `TagPriors` is the optional re-ranking
     # (FVP_SUGGEST_RANK=normalized) the suggester sorts by.
