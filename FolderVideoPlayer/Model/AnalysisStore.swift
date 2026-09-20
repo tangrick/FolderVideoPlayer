@@ -161,12 +161,18 @@ final class AnalysisStore: ObservableObject {
     /// Synchronous on purpose: the callers are the app going away and the
     /// profile changing under it, and a detached write would lose the race
     /// with the process exiting.
-    func flush() {
+    ///
+    /// Returns whether it actually wrote, so the quit path can say in the log
+    /// what it did — "the hook ran" and "the hook saved something" are
+    /// different claims, and only the second one is worth anything.
+    @discardableResult
+    func flush() -> Bool {
         pendingMachineSave?.cancel()
         pendingMachineSave = nil
-        guard machineDirty else { return }
+        guard machineDirty else { return false }
         machineDirty = false
         JSONStore.saveCompact(machineFile, records.mapValues(Self.machineOnly))
+        return true
     }
 
     /// What the store knows about one video, by its path. Takes either form —

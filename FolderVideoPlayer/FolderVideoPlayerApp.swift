@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import SwiftUI
 
 /// Files dropped on the app icon, or opened with “Open With”, arrive here —
@@ -29,7 +30,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// may still be in memory when the app is asked to go away. This is the
     /// one moment that costs something to skip.
     func applicationWillTerminate(_ notification: Notification) {
-        app?.analysis?.flush()
+        let wrote = app?.analysis?.flush()
+        // Logged because there is no other way to see it: the store's own gate
+        // proves `flush` writes what is pending, but nothing proves AppKit
+        // calls this. `log show --predicate 'subsystem == "com.tangrick.
+        // foldervideoplayer"'` after a ⌘Q answers that, and says whether the
+        // quit actually saved anything or merely found nothing waiting.
+        Logger(subsystem: "com.tangrick.foldervideoplayer", category: "lifecycle")
+            .notice("willTerminate: analysis flush wrote=\(wrote == true, privacy: .public)")
     }
 
     private func deliver(_ paths: [String]) {
