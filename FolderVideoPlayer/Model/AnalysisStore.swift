@@ -35,6 +35,25 @@ final class AnalysisStore: ObservableObject {
     private var marksFile: String
     private var profileOpen = true
 
+    /// How long the machine half may sit in memory unwritten.
+    ///
+    /// It used to be written the instant anything changed, which on a library
+    /// of 11,800 records means encoding and writing 7.2 MB per video — twice,
+    /// because `begin` wrote too. macOS filed a disk-writes report on it
+    /// (2026-09-20): **2.1 GB dirtied in 608 seconds**, one ten-minute run,
+    /// with `AnalysisStore.save` as the heaviest stack. Nothing needs that:
+    /// the file is a cache of work that can be redone, and the queue on disk
+    /// already says what is outstanding.
+    ///
+    /// Fifteen seconds bounds a crash to the verdicts of the last few videos,
+    /// which cost a re-analysis rather than anything a user typed. The human
+    /// half is NOT on this clock — marks are somebody's judgement and are a
+    /// couple of kilobytes, so they keep being written the moment they land.
+    private static let machineSaveInterval: TimeInterval = 15
+    /// Something changed that the machine file does not know about yet.
+    private var machineDirty = false
+    private var pendingMachineSave: Task<Void, Never>?
+
     /// Posted whenever a human mark lands, with the absolute path as object.
     /// The player listens so a video marked NSFW *while playing* re-suggests
     /// immediately — the paired-tag chips would otherwise wait until the
@@ -50,10 +69,15 @@ final class AnalysisStore: ObservableObject {
     /// Move to another profile's marks, leaving this one's behind.
     ///
     /// The machine records do not move — they are the same file every profile
-    /// reads — so this is only about whose Safe/NSFW word is in force. Nothing
+    /// reads — so this is only about whose Safe/NSFW word is in force. No MARK
     /// is written here: the marks in hand were already saved when they were
-    /// made, and a write now would go to the file this profile is leaving.
+    /// made, and a write now would go to the file this profile is leaving. The
+    /// machine half is flushed, because it is the shared file and it is about
+    /// to be re-read.
     func reload(profile: String) {
+        // The machine half is shared by every profile, so anything still on
+        // the clock belongs to the file this is about to re-read.
+        flush()
         contextID = UUID()
         profileOpen = !profile.isEmpty
         marksFile = Paths.marksFile(in: profile)
@@ -102,10 +126,47 @@ final class AnalysisStore: ObservableObject {
     }
 
     /// Two files, because they have two owners: the machine's reading of the
-    /// videos, and this profile's judgement about them.
+    /// videos, and this profile's judgement about them — and two clocks, for
+    /// the same reason. The judgement is written now; the machine's half is
+    /// written soon (`machineSaveInterval`).
     private func save() {
-        JSONStore.saveCompact(machineFile, records.mapValues(Self.machineOnly))
+        machineDirty = true
+        scheduleMachineSave()
         if profileOpen { JSONStore.saveCompact(marksFile, marks) }
+    }
+
+    /// Queue a write of the machine half, unless one is already queued — a
+    /// pending write carries whatever else changes before it fires, so a run
+    /// finishing thirty videos in that window still costs one write.
+    private func scheduleMachineSave() {
+        guard pendingMachineSave == nil else { return }
+        pendingMachineSave = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.machineSaveInterval))
+            guard !Task.isCancelled, let self else { return }
+            self.pendingMachineSave = nil
+            guard self.machineDirty else { return }
+            self.machineDirty = false
+            let snapshot = self.records.mapValues(Self.machineOnly)
+            let file = self.machineFile
+            // Encoding megabytes and writing them is not work for the thread
+            // drawing the window.
+            await Task.detached(priority: .utility) {
+                JSONStore.saveCompact(file, snapshot)
+            }.value
+        }
+    }
+
+    /// Write the machine half NOW, if anything is waiting on the clock above.
+    ///
+    /// Synchronous on purpose: the callers are the app going away and the
+    /// profile changing under it, and a detached write would lose the race
+    /// with the process exiting.
+    func flush() {
+        pendingMachineSave?.cancel()
+        pendingMachineSave = nil
+        guard machineDirty else { return }
+        machineDirty = false
+        JSONStore.saveCompact(machineFile, records.mapValues(Self.machineOnly))
     }
 
     /// What the store knows about one video, by its path. Takes either form —
@@ -266,11 +327,16 @@ final class AnalysisStore: ObservableObject {
     }
 
     /// The engine picked a queued video up.
+    ///
+    /// Deliberately not written to disk. `analyzing` is the one phase that
+    /// never needs to survive a crash: `rescueStaleAnalyses` turns it back
+    /// into `queued` at the next run, which is exactly what the unwritten file
+    /// still says. Persisting it bought nothing and cost a full rewrite of the
+    /// machine file per video — half of every run's writes.
     func begin(_ path: String) {
         let key = Paths.tagKey(path)
         guard records[key]?.phase == .queued else { return }
         records[key]?.phase = .analyzing
-        save()
     }
 
     /// Anything still marked analyzing when a run starts is stale: only one

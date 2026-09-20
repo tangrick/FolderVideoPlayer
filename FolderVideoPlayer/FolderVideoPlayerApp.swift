@@ -24,6 +24,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         deliver(waiting)
     }
 
+    /// The machine half of the analysis store is written on a clock now (see
+    /// `AnalysisStore.machineSaveInterval`), so the last few verdicts of a run
+    /// may still be in memory when the app is asked to go away. This is the
+    /// one moment that costs something to skip.
+    func applicationWillTerminate(_ notification: Notification) {
+        app?.analysis?.flush()
+    }
+
     private func deliver(_ paths: [String]) {
         guard let playback = app?.playback else {
             pending.append(contentsOf: paths)

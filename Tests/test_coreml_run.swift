@@ -188,6 +188,9 @@ struct CoreMLRunTest {
         check("the record files itself the way the review window reads it",
               bucket == (prediction.score < 0.5 ? .safe : .nsfw))
 
+        // Flushed first: the machine half is written on a clock now, so what
+        // makes a verdict durable is this call, not the `finish` that filed it.
+        store.flush()
         let onDisk: [String: VideoAnalysis] = JSONStore.load(Paths.analysisFile, fallback: [:])
         check("analysis.json holds the same verdict the memory store does",
               onDisk[Paths.tagKey(video)]?.prediction?.score == prediction.score

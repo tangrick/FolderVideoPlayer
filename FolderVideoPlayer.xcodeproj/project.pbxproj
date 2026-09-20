@@ -279,7 +279,7 @@
 				INFOPLIST_KEY_NSRemovableVolumesUsageDescription = "FolderVideoPlayer needs access to removable volumes to play videos stored on them.";
 				INFOPLIST_KEY_NSSupportsAutomaticTermination = YES;
 				INFOPLIST_KEY_NSSupportsSuddenTermination = YES;
-				MARKETING_VERSION = 1.1.8;
+				MARKETING_VERSION = 1.1.9;
 				PRODUCT_BUNDLE_IDENTIFIER = com.tangrick.foldervideoplayer;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -309,7 +309,7 @@
 				INFOPLIST_KEY_NSRemovableVolumesUsageDescription = "FolderVideoPlayer needs access to removable volumes to play videos stored on them.";
 				INFOPLIST_KEY_NSSupportsAutomaticTermination = YES;
 				INFOPLIST_KEY_NSSupportsSuddenTermination = YES;
-				MARKETING_VERSION = 1.1.8;
+				MARKETING_VERSION = 1.1.9;
 				PRODUCT_BUNDLE_IDENTIFIER = com.tangrick.foldervideoplayer;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

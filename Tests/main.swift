@@ -1112,6 +1112,14 @@ Paths.support = anaPlaySavedSupport
 try? FileManager.default.removeItem(atPath: anaPlaySupport)
 
 // Persistence: the store survives a reload, and tolerates a mangled file.
+//
+// The machine half is written on a clock, not on every change (2026-09-20:
+// writing it per video meant 7.2 MB per verdict, 2.1 GB in a ten-minute run),
+// so durability is what `flush` promises rather than what the last mutation
+// did. The app flushes when it terminates and when the profile changes; here
+// the gate stands in for that. Reading the file without flushing first is the
+// one thing that changed, and it is the reason this line exists.
+anaStore.flush()
 let anaReload = AnalysisStore()
 check("records survive a reload",
       anaReload.records == anaStore.records,
