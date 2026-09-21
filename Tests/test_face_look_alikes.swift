@@ -45,8 +45,9 @@ struct FaceLookAlikesTest {
             "profile":   face(80),       // ...and them again, side on
             "same":      face(60),       // 0.50 against `self`
             "sideOn":    face(85),       // 0.09 to `self`, 0.996 to `profile`
-            "barely":    face(72.5),     // 0.3007 — over the bar
-            "justUnder": face(72.6),     // 0.2990 — under it
+            "barely":    face(66.38),    // 0.4007 — over the bar
+            "justUnder": face(66.5),     // 0.3987 — under it
+            "oldBar":    face(72.5),     // 0.3007 — over the ENGINE's bar only
             "stranger":  face(90),       // 0.0
         ]
         var reads: [String: Int] = [:]
@@ -85,7 +86,7 @@ struct FaceLookAlikesTest {
                    out.candidates.map(\.key), ["a/one.mov", "a/two.mov", "b/three.mov"])
         checkEqual("...best first", out.candidates.first?.score, 0.5)
         checkEqual("...and the one barely over it is last, at its own score",
-                   out.candidates.last?.score, 0.3007)
+                   out.candidates.last?.score, 0.4007)
         check("a face under the bar is not offered",
               !out.candidates.contains { $0.key == "b/four.mov" })
         check("a stranger is not offered",
@@ -119,18 +120,45 @@ struct FaceLookAlikesTest {
                                        analysed: ["a/one.mov"],
                                        vector: read).candidates.count, 1)
 
-        // --- the bar is the suggestion pass's bar -----------------------------
+        // --- the bar is the suggestion pass's bar, and it is NOT the engine's -
 
-        checkEqual("the bar is the one the per-video face pass uses",
+        // Two thresholds, on purpose. 0.30 is engine.py's, for comparing two
+        // crops once, and the face-registry gate asserts it. A video offers
+        // every face it has to that comparison, so the per-video question
+        // needs its own, measured bar (2026-09-20: at 0.30 a fifth of the
+        // library matched anybody with a face bound to them).
+        checkEqual("the engine's one-to-one bar is untouched",
                    SFaceEmbedder.matchCosine, 0.30)
+        checkEqual("the per-video bar is the measured one",
+                   SFaceEmbedder.videoMatchCosine, 0.40)
+        check("...and the two are not the same number",
+              SFaceEmbedder.videoMatchCosine > SFaceEmbedder.matchCosine)
         let onTheBar = FaceLookAlikes.rank(person: "Quincy",
                                            references: [vectors["self"]!],
                                            faceVideos: ["barely": ["in.mov"],
                                                         "justUnder": ["out.mov"]],
                                            analysed: ["in.mov", "out.mov"],
                                            vector: read)
-        checkEqual("0.3007 is in and 0.2990 is out — both were checked",
+        checkEqual("0.4007 is in and 0.3987 is out — both were checked",
                    onTheBar.candidates.map(\.key), ["in.mov"])
+        // A face that would have been offered under the engine's bar is not
+        // offered now — the whole point of the change — but the caller can
+        // still ask for that bar explicitly, which is what keeps the port and
+        // the app's own judgement separable.
+        let underNewBar = FaceLookAlikes.rank(person: "Quincy",
+                                              references: [vectors["self"]!],
+                                              faceVideos: ["oldBar": ["was-offered.mov"]],
+                                              analysed: ["was-offered.mov"],
+                                              vector: read)
+        checkEqual("a 0.3007 face is no longer a match", underNewBar.candidates.count, 0)
+        let atEngineBar = FaceLookAlikes.rank(person: "Quincy",
+                                              references: [vectors["self"]!],
+                                              faceVideos: ["oldBar": ["was-offered.mov"]],
+                                              analysed: ["was-offered.mov"],
+                                              vector: read,
+                                              threshold: SFaceEmbedder.matchCosine)
+        checkEqual("...unless the caller asks for the engine's bar by name",
+                   atEngineBar.candidates.map(\.key), ["was-offered.mov"])
 
         // --- refusals say what to do ------------------------------------------
 

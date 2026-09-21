@@ -25,9 +25,12 @@ import Foundation
 ///  - a video scores the BEST cosine of any face in it against any face bound
 ///    to the person, never a mean — a person photographed from several angles
 ///    has several distinct vectors, and one good sighting is the answer;
-///  - the bar is `SFaceEmbedder.matchCosine`, the same 0.30 the per-video
-///    suggestion pass already uses, so this search and the People chips agree
-///    about who is in a video rather than disagreeing at the margin;
+///  - the bar is `SFaceEmbedder.videoMatchCosine`, the same one the per-video
+///    suggestion pass uses, so this search and the People chips agree about who
+///    is in a video rather than disagreeing at the margin. It is NOT the
+///    engine's 0.30: that is a one-to-one threshold, and asking it of every
+///    face in a video offered a fifth of the library for anybody (measured
+///    2026-09-20 — see that constant);
 ///  - a face with no readable vector is skipped, never zero-filled — the same
 ///    "not looked at" vs "not a match" distinction `LookAlikes` keeps;
 ///  - a video nobody has scanned for faces is COUNTED, never guessed at. It
@@ -74,7 +77,7 @@ enum FaceLookAlikes {
                      faceVideos: [String: [String]],
                      analysed: Set<String>,
                      vector: (String) -> [Float]?,
-                     threshold: Double = SFaceEmbedder.matchCosine,
+                     threshold: Double = SFaceEmbedder.videoMatchCosine,
                      limit: Int = defaultLimit) -> Result {
         var out = Result(person: person)
         guard !references.isEmpty else {

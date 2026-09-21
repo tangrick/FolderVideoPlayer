@@ -130,6 +130,39 @@ actor SFaceEmbedder {
     /// stray edit here fails the gate rather than quietly re-tuning faces.
     static let matchCosine = 0.30
 
+    /// The cosine at which a person is in a VIDEO — a different question from
+    /// the one above, and measured rather than inherited.
+    ///
+    /// `matchCosine` answers "are these two crops the same person", once.
+    /// Asking "is this person anywhere in this video" runs that comparison
+    /// against every face the video yielded — a median of 6 in the
+    /// maintainer's library, a mean of 10.5, up to 55 — and offers the video
+    /// if ANY of them clears the bar. Every extra face is another draw, so a
+    /// per-comparison threshold becomes a much weaker per-video one:
+    ///
+    ///   - 3.5% of unrelated face pairs in that cache clear 0.30;
+    ///   - 1 - (1 - 0.035)^10.5 = 31% expected false hits per person per video;
+    ///   - observed, 2026-09-20: 22-23% of 620 videos matched each of the two
+    ///     most-bound people, and 9 videos were offered for THREE or more of
+    ///     the five named people at once.
+    ///
+    /// The real signal is nowhere near 0.30. Against the videos the maintainer
+    /// had tagged by hand, the best face scored a median 0.738 (p10 0.573) for
+    /// one person and 0.823 (p10 0.690) for another, against medians of 0.179
+    /// and 0.221 for videos they had not tagged.
+    ///
+    /// 0.40 was chosen because it is free: measured against those hand-made
+    /// tags it keeps every video 0.30 keeps (49/52 and 22/22) while cutting the
+    /// untagged suggestions from 88 to 62 and from 119 to 59. 0.50 starts
+    /// costing real matches (47/52, 21/22), and "two faces over 0.30" costs
+    /// more truth than it saves noise (44/52, 19/22).
+    ///
+    /// Deliberately NOT a change to `matchCosine`: that number is engine.py's
+    /// and the face-registry gate asserts it, and it is still the right bar for
+    /// the genuine one-to-one uses — clustering sightings into a person, and
+    /// the add-a-person chooser.
+    static let videoMatchCosine = 0.40
+
     enum SFaceError: Error, LocalizedError, CustomStringConvertible {
         case notInstalled(String)
         case noInput(String)

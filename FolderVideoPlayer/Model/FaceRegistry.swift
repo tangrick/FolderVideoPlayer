@@ -411,8 +411,15 @@ actor FaceRegistry {
     /// ANY detected face, which is the shape the engine's `_face_matches`
     /// returns. Names whose cached vectors have since been pruned simply stop
     /// matching until re-bound — no error, no zero vector.
+    ///
+    /// `threshold` defaults to the engine's own 0.30 so this stays a faithful
+    /// port and the parity gate keeps comparing like with like. The APP asks a
+    /// harder question than the engine's one-to-one comparison — "is this
+    /// person anywhere in this video", against every face in it — and passes
+    /// `SFaceEmbedder.videoMatchCosine`, which is measured for that question.
     nonisolated func matches(vectors: [[Float]],
-                             in registry: [String: [String]]) -> [String: Double] {
+                             in registry: [String: [String]],
+                             threshold: Double = SFaceEmbedder.matchCosine) -> [String: Double] {
         guard !vectors.isEmpty, !registry.isEmpty else { return [:] }
         var hits: [String: Double] = [:]
         for (name, hashes) in registry {
@@ -423,7 +430,7 @@ actor FaceRegistry {
                     best = max(best, SFaceEmbedder.cosine(stored, candidate))
                 }
             }
-            if best >= SFaceEmbedder.matchCosine { hits[name] = best }
+            if best >= threshold { hits[name] = best }
         }
         return hits
     }

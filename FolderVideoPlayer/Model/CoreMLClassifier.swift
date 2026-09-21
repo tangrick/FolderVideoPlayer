@@ -391,8 +391,13 @@ actor CoreMLClassifier {
             let faces = faceEngine()
             detected = (try? await faces.faces(inFrames: sample.frames)) ?? []
             if !detected.isEmpty {
+                // The video-level bar, not the engine's one-to-one one: this
+                // compares against every face the video yielded, so the weaker
+                // threshold offered a fifth of the library for anybody with a
+                // face bound to them. See `SFaceEmbedder.videoMatchCosine`.
                 faceHits = faces.matches(vectors: detected.map(\.vector),
-                                         in: faces.registry())
+                                         in: faces.registry(),
+                                         threshold: SFaceEmbedder.videoMatchCosine)
             }
         }
 
