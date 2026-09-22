@@ -10,6 +10,7 @@ struct PlaylistSidebar: View {
     @EnvironmentObject var media: MediaCache
     @EnvironmentObject var app: AppModel
     @EnvironmentObject var suggestions: SuggestionStore
+    @EnvironmentObject var journal: EvidenceJournal
     /// Find Duplicates opens a window of its own, from the Files menu.
     /// A sub-view does not inherit its parent's environment bindings, so the
     /// sidebar declares its own.
@@ -292,9 +293,15 @@ struct PlaylistSidebar: View {
                 Button("Restart on These \(videos.count) Videos") { classifyVisible() }
                 Button("Stop — \(app.engine.currentName ?? "working")") { app.stopAnalysis() }
             } else {
-                Button("Classify These \(videos.count) Videos — Safe / NSFW") { classifyVisible() }
-                    .disabled(videos.isEmpty || !app.ai.works(.classify))
-                    .help(app.ai.reason(.classify) ?? "")
+                let classified = videos.filter { path in
+                    guard let record = app.analysis.analysis(for: path) else { return false }
+                    return record.userLabel != nil || record.phase == .done
+                }.count
+                Button(Self.batchTitle("Classify", "Unclassified", total: videos.count,
+                                       done: classified, finished: "Classified")) { classifyVisible() }
+                    .disabled(videos.isEmpty || classified == videos.count || !app.ai.works(.classify))
+                    .help(app.ai.reason(.classify)
+                          ?? "Safe / NSFW, for the videos not classified yet. Already classified videos, and ones you marked yourself, are skipped.")
             }
             // Never hidden: a person has to be able to SEE that the feature
             // exists before they can decide to install it.
@@ -312,11 +319,14 @@ struct PlaylistSidebar: View {
                     NotificationCenter.default.post(name: AppModel.cancelTranscribeNotification, object: nil)
                 }
             } else {
-                Button("Transcribe These \(videos.count) Videos") {
+                let transcribed = videos.filter { journal.transcribedPaths.contains($0) }.count
+                Button(Self.batchTitle("Transcribe", "Untranscribed", total: videos.count,
+                                       done: transcribed, finished: "Transcribed")) {
                     NotificationCenter.default.post(name: AppModel.transcribeBatchNotification,
                                                     object: videos)
                 }
-                .disabled(videos.isEmpty || app.transcribingPath != nil || !app.ai.works(.speech))
+                .disabled(videos.isEmpty || transcribed == videos.count
+                          || app.transcribingPath != nil || !app.ai.works(.speech))
                 .help(app.ai.reason(.speech)
                       ?? "Write down what is said in each video, one after another. Videos that already have a transcript are skipped.")
             }
@@ -344,6 +354,20 @@ struct PlaylistSidebar: View {
         .fixedSize()
         .help("Classify, train, and find look-alikes with the local engine")
         .accessibilityLabel("AI menu")
+    }
+
+    /// A playlist-wide AI item that says how much it will actually do. Both
+    /// runs skip what is already done, and "Classify These 1,200 Videos" read
+    /// as if all 1,200 would run again.
+    ///   "Classify These 12 Videos" · "Classify 40 Unclassified Videos (1,160 already done)"
+    ///   · "All 1,200 Videos Classified"
+    static func batchTitle(_ verb: String, _ adjective: String, total: Int, done: Int,
+                           finished: String) -> String {
+        func videos(_ n: Int) -> String { "\(n.formatted()) Video\(n == 1 ? "" : "s")" }
+        let todo = total - done
+        if total > 0 && todo == 0 { return "All \(videos(total)) \(finished)" }
+        if done == 0 { return total == 1 ? "\(verb) This Video" : "\(verb) These \(videos(total))" }
+        return "\(verb) \(todo.formatted()) \(adjective) \(todo == 1 ? "Video" : "Videos") (\(done.formatted()) already done)"
     }
 
     /// Everything that touches files on disk, under one heading.
@@ -1671,6 +1695,25 @@ struct PlaylistSidebar: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(Color.accentColor)
                     .help("Stop \(app.engine.phase.title.lowercased())")
+            }
+            if let run = playback.conversion {
+                // The FFmpeg run the user said yes to: same shape as the jobs
+                // beside it — what, how far, and the way to stop it.
+                Text("·").foregroundStyle(.tertiary)
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.55)
+                    .frame(width: 10, height: 10)
+                Text(run.total > 1 ? "Converting \(run.done + 1) of \(run.total)" : "Converting")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .help(((run.path as NSString).lastPathComponent)
+                          + (run.fraction.map { " — \(Int($0 * 100))%" } ?? ""))
+                Button("Stop") { playback.stopConverting() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+                    .help("Stop converting. Videos already converted stay converted; the one in hand is left as it was.")
             }
             if let batch = app.transcribeBatch {
                 // The playlist run, on the same line and in the same shape as

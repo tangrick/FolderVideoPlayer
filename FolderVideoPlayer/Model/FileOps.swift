@@ -182,6 +182,22 @@ enum FileOps {
         return report
     }
 
+    // MARK: - replacing with a converted copy
+
+    /// A converted copy takes the original's place: its tags, rating, readings
+    /// and resume point move to the copy, then the original goes the way
+    /// `trash` sends anything — the Trash, or the nominated folder on a share
+    /// with none. Never deleted outright. If the original cannot be moved it
+    /// stays where it is and the report says so; the copy keeps the details.
+    @discardableResult
+    static func replace(_ original: String, with copy: String, library: Library,
+                        askFolder: (String, String) -> String?) -> Report {
+        carryBookkeeping(from: original, to: copy, library: library)
+        library.saveTags()
+        library.save()
+        return trash([original], library: library, askFolder: askFolder)
+    }
+
     // MARK: - a tag, gathered into a folder
 
     /// Gather every video carrying a tag into one folder named after it.

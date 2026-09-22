@@ -82,6 +82,33 @@ final class PlaybackController: ObservableObject {
     /// and it is asked off the main thread.
     enum FileProblem { case missing, corrupted }
     @Published private(set) var problems: [String: FileProblem] = [:]
+
+    /// A video AVFoundation could not open, waiting on the user's yes or no
+    /// to converting it (and the rest of the playlist like it) to MP4.
+    struct ConversionOffer: Equatable {
+        let path: String
+        let why: String
+    }
+    @Published private(set) var conversionOffer: ConversionOffer?
+    /// The conversion run in progress: which video, how far, of how many.
+    struct Conversion: Equatable {
+        let path: String
+        var remux: Bool
+        /// 0…1, nil until FFmpeg knows the length.
+        var fraction: Double?
+        var done: Int
+        var total: Int
+    }
+    @Published private(set) var conversion: Conversion?
+    private var conversionTask: Task<Void, Never>?
+    /// Said no to, or already failed, this launch: not offered again.
+    private var conversionDeclined: Set<String> = []
+    /// Puts a finished copy in the original's place: details moved, original
+    /// to the Trash. Supplied by the app, which owns the "which folder, on a
+    /// share with no Trash" question.
+    var replaceOriginal: ((_ original: String, _ copy: String) -> FileOps.Report)?
+    /// The run's closing line, for the app to show.
+    var onConversionFinished: ((String) -> Void)?
     /// Set while a folder is being walked, so the window can say so.
     @Published private(set) var scanning = false
     /// Held open while the tag panel is up: you are looking at this video
@@ -254,6 +281,8 @@ final class PlaybackController: ObservableObject {
     /// the last one across would leave rows on screen that the new profile
     /// has no claim to, and a video playing that it never chose.
     func closePlaylist() {
+        stopConverting()
+        conversionOffer = nil
         stop()
         // stop() only rewinds and pauses — the video is still loaded and still
         // on screen. Switching profile means the window goes blank, so the
@@ -327,6 +356,7 @@ final class PlaybackController: ObservableObject {
         head.duration = media.length(path) ?? 0
         engine.rate = library.speed
         engine.volume = library.volume
+        conversionOffer = nil
         engine.load(URL(fileURLWithPath: path), startAt: library.resumePoint(path))
         engine.play()
         head.playing = true
@@ -390,6 +420,7 @@ final class PlaybackController: ObservableObject {
         head.duration = media.length(path) ?? 0
         engine.rate = library.speed
         engine.volume = library.volume
+        conversionOffer = nil
         engine.load(URL(fileURLWithPath: path), startAt: library.resumePoint(path))
         engine.play()
         head.playing = true
@@ -533,9 +564,159 @@ final class PlaybackController: ObservableObject {
     /// A video that will not play is said so, out loud, and skipped — rather
     /// than a black rectangle nobody can explain. A whole playlist of them
     /// stops rather than spinning through every file in it.
+    // MARK: - the FFmpeg fallback
+
+    /// Formats AVFoundation reads as a rule. Anything else in the playlist is
+    /// a candidate for the run — and still asked `isPlayable` first, because a
+    /// camera's Motion-JPEG `.avi` plays and must not be converted.
+    private static let nativeExtensions: Set<String> = ["mp4", "m4v", "mov"]
+
+    /// The offer's Convert: this video first, then every other one in the
+    /// playlist that AVFoundation cannot play, one at a time. Each finished
+    /// copy replaces its original (`replaceOriginal`).
+    func acceptConversion() {
+        guard let offer = conversionOffer, conversionTask == nil,
+              let tools = PlayableCopy.findTools() else { return }
+        conversionOffer = nil
+        trouble = nil
+        let others = playlist.filter {
+            $0 != offer.path && !Self.nativeExtensions.contains(($0 as NSString).pathExtension.lowercased())
+        }
+        let queue = [offer.path] + others
+        conversion = Conversion(path: offer.path, remux: true, fraction: nil, done: 0, total: queue.count)
+        conversionTask = Task { [weak self] in
+            var converted = 0, skipped = 0
+            var failed: [String] = []
+            var stayed: [String] = []
+            for (i, source) in queue.enumerated() {
+                guard !Task.isCancelled, let self else { break }
+                self.conversion = Conversion(path: source, remux: true, fraction: nil, done: i, total: queue.count)
+                // The first one has just failed to play; the rest are asked.
+                if i > 0, await Self.plays(source) { skipped += 1; continue }
+                let name = (source as NSString).lastPathComponent
+                let target = FileOps.freeName(in: (source as NSString).deletingLastPathComponent,
+                                              for: (name as NSString).deletingPathExtension + ".mp4")
+                do {
+                    try await PlayableCopy.make(from: source, to: target, tools: tools) { progress in
+                        Task { @MainActor [weak self] in self?.noteProgress(progress, for: source) }
+                    }
+                } catch is CancellationError {
+                    break
+                } catch {
+                    failed.append("\(name): \(error.localizedDescription)")
+                    self.conversionDeclined.insert(source)
+                    continue
+                }
+                converted += 1
+                if let report = self.replaceOriginal?(source, target), !report.failed.isEmpty {
+                    stayed.append(name)
+                }
+                self.adopt(source, as: target)
+            }
+            guard let self else { return }
+            let stopped = Task.isCancelled
+            self.conversion = nil
+            self.conversionTask = nil
+            var line = (stopped ? "Stopped. " : "") + "Converted \(converted) video\(converted == 1 ? "" : "s") to MP4."
+            if skipped > 0 { line += " \(skipped) already played and were left alone." }
+            if !stayed.isEmpty { line += " \(stayed.count) original\(stayed.count == 1 ? "" : "s") could not be moved to the Trash and are still there." }
+            if !failed.isEmpty { line += " \(failed.count) could not be converted:\n" + failed.prefix(5).joined(separator: "\n") }
+            self.onConversionFinished?(line)
+        }
+    }
+
+    /// The offer's Not Now: this video is reported the ordinary way, and not
+    /// offered again this launch.
+    func declineConversion() {
+        guard let offer = conversionOffer else { return }
+        conversionOffer = nil
+        conversionDeclined.insert(offer.path)
+        guard offer.path == currentPath else { return }
+        showTrouble(offer.path, offer.why)
+    }
+
+    /// Stop the run. The video in hand is abandoned with nothing half-written;
+    /// the ones already done stay done.
+    func stopConverting() {
+        conversionTask?.cancel()
+    }
+
+    private func noteProgress(_ progress: PlayableCopy.Progress, for path: String) {
+        guard var current = conversion, current.path == path else { return }
+        // Whole percents only: this object is watched by the whole playlist,
+        // and FFmpeg reports twice a second.
+        let rounded = progress.fraction.map { ($0 * 100).rounded() / 100 }
+        guard rounded != current.fraction || progress.remux != current.remux else { return }
+        current.remux = progress.remux
+        current.fraction = rounded
+        conversion = current
+    }
+
+    /// Whether AVFoundation opens a file as it is. An inspection that errors is
+    /// treated as "plays": nothing is converted on a guess.
+    private nonisolated static func plays(_ path: String) async -> Bool {
+        (try? await AVURLAsset(url: URL(fileURLWithPath: path)).load(.isPlayable)) ?? true
+    }
+
+    /// The converted copy is the video now: the list points at it, and if it
+    /// is the one on screen, it plays from where the original was.
+    private func adopt(_ old: String, as new: String) {
+        let wasOnScreen = currentPath == old
+        playlist = playlist.map { $0 == old ? new : $0 }
+        bag = bag.map { $0 == old ? new : $0 }
+        if previewPath == old { previewPath = new }
+        problems.removeValue(forKey: old)
+        rebuildRows()
+        guard wasOnScreen else { return }
+        trouble = nil
+        engine.load(URL(fileURLWithPath: new), startAt: library.resumePoint(new))
+        engine.play()
+        head.playing = true
+        saveSession()
+    }
+
     private func reportTrouble(_ why: String) {
         guard let path = currentPath else { return }
-        trouble = "“\((path as NSString).lastPathComponent)” could not be played — \(why)"
+        // AVFoundation said no. With FFmpeg here, ask before converting — the
+        // answer replaces files — unless a run is already going or this video
+        // has been declined or failed once this launch.
+        //
+        // Only for a definite "this format": a share that did not answer or a
+        // file that has gone is not something converting would fix, and must
+        // never put a Convert button in front of a video that plays.
+        if conversionTask == nil, !conversionDeclined.contains(path), PlayableCopy.findTools() != nil {
+            trouble = nil
+            Task { [weak self] in
+                let definite = await Self.definitelyUnplayable(path)
+                guard let self, self.currentPath == path, self.conversionTask == nil else { return }
+                if definite {
+                    self.conversionOffer = ConversionOffer(path: path, why: why)
+                } else {
+                    self.showTrouble(path, why)
+                }
+            }
+            return
+        }
+        showTrouble(path, why)
+    }
+
+    /// There, and AVFoundation answered "not playable" — not an error.
+    private nonisolated static func definitelyUnplayable(_ path: String) async -> Bool {
+        guard FileManager.default.fileExists(atPath: path) else { return false }
+        return (try? await AVURLAsset(url: URL(fileURLWithPath: path)).load(.isPlayable)) == false
+    }
+
+    private func showTrouble(_ path: String, _ why: String) {
+        // The run is converting this very one: it plays when done (`adopt`),
+        // so there is nothing to report and nowhere to skip to.
+        if conversion?.path == path { trouble = nil; return }
+        var line = "“\((path as NSString).lastPathComponent)” could not be played — \(why)"
+        if conversionTask != nil {
+            line += ". A conversion run is going; this one is converted if it is in the list."
+        } else if PlayableCopy.findTools() == nil {
+            line += ". Installing FFmpeg (brew install ffmpeg) lets the app convert formats like this one."
+        }
+        trouble = line
         // Gone or broken? Only the disk knows, and a sleeping NAS answers in
         // its own time — so the question is asked off the main thread and the
         // badge lands on the row when the answer comes back.

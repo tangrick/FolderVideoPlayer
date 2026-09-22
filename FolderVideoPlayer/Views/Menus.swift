@@ -349,6 +349,17 @@ struct MainMenu: Commands {
                 }
             }
             Divider()
+            Button("Rotate Right") {
+                if let path = playback?.currentPath { app.rotation.rotate(path, clockwise: true) }
+            }
+            .keyboardShortcut("]", modifiers: .command)
+            .disabled(playback?.currentPath == nil)
+            Button("Rotate Left") {
+                if let path = playback?.currentPath { app.rotation.rotate(path, clockwise: false) }
+            }
+            .keyboardShortcut("[", modifiers: .command)
+            .disabled(playback?.currentPath == nil)
+            Divider()
             Button("Stop") { playback?.stop() }
                 .keyboardShortcut(".", modifiers: .command)
         }

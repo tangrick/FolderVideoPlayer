@@ -45,6 +45,11 @@ final class EvidenceJournal: ObservableObject {
     /// them re-reads rather than guessing.
     @Published private(set) var changeCount = 0
 
+    /// The videos this profile has a transcript for. Held rather than asked,
+    /// because the playlist's AI menu reads it on every redraw; refreshed when
+    /// the profile changes and after every transcription pass.
+    private(set) var transcribedPaths: Set<String> = []
+
     private let root: String
     private var store: EvidenceStore?
     private var openProfile: String?
@@ -70,11 +75,13 @@ final class EvidenceJournal: ObservableObject {
         store?.close()
         store = nil
         cache = [:]
+        transcribedPaths = []
         openProfile = profile
         guard !profile.isEmpty else { return }
         do {
             store = try EvidenceStore(root: root, profile: profile)
             problem = nil
+            refreshTranscribed()
         } catch {
             // A store that cannot be opened is reported, not fatal: see the
             // type's comment. The next pass still records its suggestions.
@@ -94,8 +101,13 @@ final class EvidenceJournal: ObservableObject {
                     using transcriber: SpeechTranscribing,
                     onProgress: @escaping (SpeechProgress) -> Void) async throws -> SpeechOutcome {
         guard let store else { throw SpeechPassRefusal.failed("no profile is open") }
+        defer { refreshTranscribed() }
         return try await SpeechPass(transcriber: transcriber, store: store)
             .run(path: path, onProgress: onProgress)
+    }
+
+    private func refreshTranscribed() {
+        transcribedPaths = (try? store?.transcribedPaths()) ?? []
     }
 
     // MARK: - reading (T08 S5 reads these)

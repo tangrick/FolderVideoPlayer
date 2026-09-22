@@ -83,6 +83,7 @@ struct FolderVideoPlayerApp: App {
                 .environmentObject(suggestions)
                 .environmentObject(faceStore)
                 .environmentObject(journal)
+                .environmentObject(app.rotation)
                 .frame(minWidth: 680, minHeight: 420)
                 .onAppear {
                     app.attach(library: library, media: media)
@@ -231,6 +232,10 @@ final class AppModel: ObservableObject {
     /// @Published: nothing in the UI draws it, and the panel's state above is
     /// what the user is actually watching.
     var transcribing: WhisperKitTranscriber?
+
+    /// Each video's on-screen turn. Held here so the menus, the bar and the
+    /// picture all read the one store.
+    let rotation = VideoRotation()
 
     /// The playlist's AI ▸ Transcribe These. Carries the paths, in list order.
     /// Still never automatic: this is a run the user asked for, like Classify.
@@ -569,6 +574,14 @@ final class AppModel: ObservableObject {
         guard !ready else { return }
         self.library = library
         player = PlaybackController(library: library, media: media)
+        // A converted copy replaces its original the way Delete sends a file
+        // anywhere: the Trash, or the folder asked for on a share with none.
+        player.replaceOriginal = { [weak self] original, copy in
+            FileOps.replace(original, with: copy, library: library) { volume, why in
+                self?.askDiscardFolder(volume, why)
+            }
+        }
+        player.onConversionFinished = { [weak self] line in self?.jobNotice = line }
         duplicates = DuplicateFinder(library: library)
         ready = true
         // What was playing comes back first. The share traffic happens behind

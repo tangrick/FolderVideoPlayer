@@ -40,6 +40,15 @@ cp "$here/test_update_check.swift" "$work/update_check/main.swift"
 swiftc -O -o "$work/update_check/run" "$model/UpdateCheck.swift" "$work/update_check/main.swift"
 "$work/update_check/run"
 
+# The FFmpeg fallback: the remux/transcode decision and the cache, plus — when
+# FFmpeg is installed — a real remux and transcode checked playable by
+# AVFoundation, and a cancelled run that must leave nothing behind.
+mkdir -p "$work/playable_copy"
+cp "$here/test_playable_copy.swift" "$work/playable_copy/main.swift"
+swiftc -O -o "$work/playable_copy/run" "${MODEL_SOURCES[@]}" "${MODEL_FRAMEWORKS[@]}" \
+    "$work/playable_copy/main.swift"
+"$work/playable_copy/run"
+
 # The prompt table, against numpy's own arithmetic on the same file.
 sh "$here/run_prompt_table.sh"
 

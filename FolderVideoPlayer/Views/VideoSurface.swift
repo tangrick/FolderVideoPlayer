@@ -5,9 +5,12 @@ import SwiftUI
 /// with its controls off, because the app draws its own bar underneath.
 struct VideoSurface: NSViewRepresentable {
     let player: AVPlayer
+    /// Quarter turns clockwise, from `VideoRotation`. Display only.
+    var quarterTurns = 0
 
-    func makeNSView(context: Context) -> AVPlayerView {
-        let view = AVPlayerView()
+    func makeNSView(context: Context) -> RotatingPlayerView {
+        let holder = RotatingPlayerView()
+        let view = holder.playerView
         view.player = player
         view.controlsStyle = .none
         view.videoGravity = .resizeAspect
@@ -26,10 +29,43 @@ struct VideoSurface: NSViewRepresentable {
         // text out of a paused frame, no right-click look-up of something on
         // screen. Turned off at the maintainer's request, 2026-09-17.
         view.allowsVideoFrameAnalysis = false
-        return view
+        holder.quarterTurns = quarterTurns
+        return holder
     }
 
-    func updateNSView(_ view: AVPlayerView, context: Context) {
-        if view.player !== player { view.player = player }
+    func updateNSView(_ holder: RotatingPlayerView, context: Context) {
+        if holder.playerView.player !== player { holder.playerView.player = player }
+        holder.quarterTurns = quarterTurns
+    }
+}
+
+/// Holds the player view and turns it. A sideways turn lays the player out
+/// with width and height swapped, then rotates it about its centre, so the
+/// picture is fitted to the space it actually ends up occupying.
+final class RotatingPlayerView: NSView {
+    let playerView = AVPlayerView()
+
+    var quarterTurns = 0 {
+        didSet { if quarterTurns != oldValue { needsLayout = true } }
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        addSubview(playerView)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used from a nib") }
+
+    override func layout() {
+        super.layout()
+        let turns = ((quarterTurns % 4) + 4) % 4
+        let sideways = turns % 2 == 1
+        let size = sideways ? NSSize(width: bounds.height, height: bounds.width) : bounds.size
+        playerView.frameCenterRotation = 0
+        playerView.frame = NSRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2,
+                                  width: size.width, height: size.height)
+        // AppKit's positive angle is anticlockwise; a turn here is clockwise.
+        playerView.frameCenterRotation = -CGFloat(turns * 90)
     }
 }

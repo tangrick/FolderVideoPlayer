@@ -8,6 +8,7 @@ struct TransportBar: View {
     @ObservedObject var head: Playhead
     @EnvironmentObject var library: Library
     @EnvironmentObject var app: AppModel
+    @EnvironmentObject var rotation: VideoRotation
 
     @State private var scrubbing = false
     @State private var scrubPosition: Double = 0
@@ -137,6 +138,27 @@ struct TransportBar: View {
                     .accessibilityValue("\(library.volume) percent")
                 }
                 .help("Volume — \(library.volume)%")
+
+                // A clip filmed sideways: a quarter turn per press, on screen
+                // only — the file is never touched.
+                Button {
+                    if let path = playback.currentPath { rotation.rotate(path, clockwise: true) }
+                } label: {
+                    Label("Rotate", systemImage: "rotate.right")
+                }
+                .disabled(playback.currentPath == nil)
+                .help("Rotate 90° clockwise (⌘]) — ⌘[ turns it back. The file is not changed.")
+                .accessibilityLabel("Rotate the video")
+
+                // In full screen the button at the end is the way out, so this
+                // one only shows on the way in.
+                if !app.fullScreen {
+                    Button { app.toggleFullScreen() } label: {
+                        Label("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right")
+                    }
+                    .help("Full screen (⌘F)")
+                    .accessibilityLabel("Full screen")
+                }
 
                 // The playlist's own switch, at the end of the bar nearest
                 // the panel it opens — as the library's sits nearest that one.

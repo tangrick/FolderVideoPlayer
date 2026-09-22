@@ -50,6 +50,7 @@ struct PlayerScreen: View {
     @EnvironmentObject var app: AppModel
     @EnvironmentObject var engine: AnalysisEngine
     @EnvironmentObject var suggestions: SuggestionStore
+    @EnvironmentObject var rotation: VideoRotation
     @EnvironmentObject var journal: EvidenceJournal
 
     /// The library sidebar is there whenever it is asked for — and always
@@ -590,7 +591,8 @@ struct PlayerScreen: View {
             } else if playback.playlist.isEmpty {
                 EmptyStage(playback: playback)
             } else {
-                VideoSurface(player: playback.engine.player)
+                VideoSurface(player: playback.engine.player,
+                             quarterTurns: playback.currentPath.map { rotation.quarterTurns($0) } ?? 0)
                     .accessibilityLabel("Video")
                     .accessibilityValue(playback.currentPath.map {
                         ($0 as NSString).lastPathComponent
@@ -603,6 +605,18 @@ struct PlayerScreen: View {
                 if library.profileOpen {
                     SubtitleOverlay(path: playback.currentPath, head: playback.head)
                 }
+            }
+            if let offer = playback.conversionOffer, offer.path == playback.currentPath {
+                ConversionOfferNotice(offer: offer,
+                                      convert: { playback.acceptConversion() },
+                                      notNow: { playback.declineConversion() })
+                    .padding(.bottom, 14)
+                    .transition(.opacity)
+            }
+            if let conversion = playback.conversion, conversion.path == playback.currentPath {
+                ConversionNotice(conversion: conversion) { playback.stopConverting() }
+                    .padding(.bottom, 14)
+                    .transition(.opacity)
             }
             if let trouble = playback.trouble {
                 Text(trouble)
@@ -1478,4 +1492,67 @@ func chooseFolder(playback: PlaybackController) {
     panel.message = "Choose a folder of videos"
     guard panel.runModal() == .OK, let url = panel.url else { return }
     playback.openFolder(url.path)
+}
+
+/// The question over the picture when AVFoundation cannot open a video.
+/// Converting replaces files, so it is asked, never assumed.
+private struct ConversionOfferNotice: View {
+    let offer: PlaybackController.ConversionOffer
+    let convert: () -> Void
+    let notNow: () -> Void
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Text("“\((offer.path as NSString).lastPathComponent)” is in a format this Mac can’t play")
+                .font(.callout.weight(.semibold))
+                .lineLimit(1).truncationMode(.middle)
+            Text("Convert it to MP4? The original goes to the Trash, and its tags, rating and "
+                 + "resume point move to the new file. Other videos in this playlist that can’t "
+                 + "play are converted too, one after another.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 440)
+            HStack(spacing: 10) {
+                Button("Not Now", action: notNow)
+                Button("Convert", action: convert).keyboardShortcut(.defaultAction)
+            }
+            .controlSize(.small)
+        }
+        .padding(12)
+        .background(.thinMaterial, in: .rect(cornerRadius: 8))
+        .padding(.horizontal, 24)
+    }
+}
+
+/// Said over the picture while FFmpeg converts the video on screen.
+private struct ConversionNotice: View {
+    let conversion: PlaybackController.Conversion
+    let stop: () -> Void
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Text("Converting “\((conversion.path as NSString).lastPathComponent)”"
+                 + (conversion.fraction.map { " — \(Int($0 * 100))%" } ?? "…"))
+                .font(.callout)
+                .lineLimit(1).truncationMode(.middle)
+            if let fraction = conversion.fraction {
+                ProgressView(value: fraction).frame(width: 260)
+            } else {
+                ProgressView().controlSize(.small)
+            }
+            HStack(spacing: 10) {
+                Text((conversion.remux
+                      ? "Repackaging only — no quality lost, usually seconds."
+                      : "This format has to be re-encoded — it takes a while.")
+                     + (conversion.total > 1 ? " \(conversion.done + 1) of \(conversion.total)." : ""))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Stop", action: stop).controlSize(.small)
+            }
+        }
+        .padding(12)
+        .background(.thinMaterial, in: .rect(cornerRadius: 8))
+        .padding(.horizontal, 24)
+    }
 }

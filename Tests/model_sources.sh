@@ -101,6 +101,9 @@ MODEL_SOURCES=(
     # migration of the legacy files into it. `Paths` builds every per-profile
     # path from this, so the whole suite stops compiling without it.
     "$model/ProfileBundle.swift"
+    # A playable copy made with FFmpeg when AVFoundation cannot open the
+    # original: remux or transcode, and the cache it lives in. Same rule.
+    "$model/PlayableCopy.swift"
 )
 
 MODEL_FRAMEWORKS=(

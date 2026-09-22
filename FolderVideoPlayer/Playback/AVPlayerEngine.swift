@@ -89,8 +89,17 @@ final class AVPlayerEngine: NSObject, PlayerEngine, ObservableObject {
         // issues thousands of metadata calls of its own. At the default
         // priority it queued behind them.
         Task(priority: .userInitiated) { [weak self] in
-            _ = try? await asset.load(.isPlayable, .duration)
+            let playable = try? await asset.load(.isPlayable)
+            _ = try? await asset.load(.duration)
             guard let self, generation == self.loadGeneration else { return }
+            // A definite "no" is said at once: the item's own `.failed` status
+            // can take its time, and the FFmpeg fallback waits on this report.
+            // An inspection that errored (a share not answering) is not a "no"
+            // and still goes the long way below.
+            if playable == false {
+                self.onFailed?("this format is not one AVFoundation reads")
+                return
+            }
             self.attach(AVPlayerItem(asset: asset))
         }
     }

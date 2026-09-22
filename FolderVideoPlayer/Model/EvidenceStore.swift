@@ -687,6 +687,20 @@ final class EvidenceStore: EvidenceRepository {
         return found
     }
 
+    /// Every video this profile holds a transcript for, in one query — so a
+    /// list can ask "which of these are done" without a query per video.
+    func transcribedPaths() throws -> Set<String> {
+        lock.lock(); defer { lock.unlock() }
+        let statement = try prepare("SELECT DISTINCT path FROM transcript WHERE profile = ?")
+        defer { sqlite3_finalize(statement) }
+        bindText(statement, 1, profile)
+        var found = Set<String>()
+        while try step(statement) == SQLITE_ROW {
+            if let text = sqlite3_column_text(statement, 0) { found.insert(String(cString: text)) }
+        }
+        return found
+    }
+
     func transcriptMatches(_ query: String, limit: Int = 50) throws -> [TranscriptLine] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, limit > 0 else { return [] }
