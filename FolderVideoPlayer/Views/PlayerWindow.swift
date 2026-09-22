@@ -72,6 +72,39 @@ struct PlayerScreen: View {
     /// the minute timer so the age stays true while the window sits open.
     @State private var titleNow: Double = Date().timeIntervalSince1970
 
+    /// The height of the whole picture column, and the height the open panels
+    /// would like to be. Both feed `panelHeight`, which is what stops a long
+    /// panel from eating the video.
+    @State private var columnHeight: CGFloat = 0
+    @State private var panelContentHeight: CGFloat = 0
+
+    /// The least picture we will leave, and what the transport bar needs under
+    /// it. Together they are the height the panels may not take.
+    static let videoFloor: CGFloat = 160
+    private static let barReserve: CGFloat = 60
+
+    /// How tall the panel row is allowed to be: a share of the window, never
+    /// so much that the picture drops below its floor.
+    ///
+    /// A cap is needed because two of the panel's sections have none of their
+    /// own. "Your tags" scrolls inside 132pt, but People, Suggested and
+    /// especially "Said not" — which is every tag ever rejected on this video,
+    /// deliberately never scrolled away — grow with the content. Overlaid,
+    /// such a panel climbed the picture and clipped at the window top. Laid
+    /// out in the column, it would instead push the picture to nothing and
+    /// then shove the transport bar off the bottom.
+    private var panelCap: CGFloat {
+        let share = columnHeight * 0.4
+        let spare = columnHeight - Self.videoFloor - Self.barReserve
+        return max(120, min(share, spare))
+    }
+
+    /// What the panel row actually gets: its content height until that passes
+    /// the cap, after which it stays at the cap and scrolls.
+    private var panelHeight: CGFloat {
+        min(panelContentHeight, panelCap)
+    }
+
     /// The whole title: where you are in the playlist, and — the point of the
     /// document model — whether what you are looking at is what the TV sees.
     private var playerTitle: String {
@@ -143,9 +176,26 @@ struct PlayerScreen: View {
                                 .transition(.move(edge: .bottom).combined(with: .opacity))
                         }
                     }
+                    .frame(minHeight: PlayerScreen.videoFloor)
                 } else {
-                    stage
+                    stage.frame(minHeight: PlayerScreen.videoFloor)
+                }
+                // Below the picture, not over it: the panels take their own
+                // row so the video is laid out in what is left and nothing it
+                // is showing gets covered while you tag or read.
+                panels
+                if !app.fullScreen {
                     TransportBar(playback: playback, head: playback.head)
+                }
+            }
+            // How tall the picture column is, so the panels below can take a
+            // share of it rather than a fixed number of points — 280pt is a
+            // third of a laptop window and a tenth of a 5K one.
+            .background {
+                GeometryReader { proxy in
+                    Color.clear.onChange(of: proxy.size.height, initial: true) { _, height in
+                        columnHeight = height
+                    }
                 }
             }
             if showingPlaylist {
@@ -217,7 +267,13 @@ struct PlayerScreen: View {
             guard let path = note.object as? String else { return }
             Task { await transcribe(path) }
         }
+        .onReceive(NotificationCenter.default.publisher(for: AppModel.transcribeBatchNotification)) { note in
+            guard let paths = note.object as? [String] else { return }
+            Task { await transcribeAll(paths) }
+        }
         .onReceive(NotificationCenter.default.publisher(for: AppModel.cancelTranscribeNotification)) { _ in
+            // One Cancel stops a playlist run outright, not just its current video.
+            if app.transcribeBatch != nil { app.transcribeBatchCancelled = true }
             app.transcribing?.cancel()
         }
         // Opening a video asks for tag ideas about it, once. The maintainer
@@ -324,37 +380,101 @@ struct PlayerScreen: View {
     /// The writing is not done here. The pass owns that, and it writes nothing
     /// at all for a run that was cancelled or whose file changed underneath it.
     private func transcribe(_ path: String) async {
-        guard app.transcribingPath == nil else { return }
-        let root = URL(fileURLWithPath: Paths.support).appendingPathComponent("models/speech")
-        guard FileManager.default.fileExists(atPath: root.path) else {
-            app.jobNotice = "The speech model is not installed. Install it in Settings → AI."
-            return
-        }
+        guard app.transcribingPath == nil, app.transcribeBatch == nil,
+              let root = speechModels() else { return }
         let transcriber = WhisperKitTranscriber(modelsRoot: root)
         app.transcribing = transcriber
+        defer { app.transcribing = nil }
+        do {
+            let lines = try await transcribeOne(path, using: transcriber)
+            app.jobNotice = "Transcribed \(lines) lines."
+        } catch {
+            app.jobNotice = Self.transcribeFailure(error)
+        }
+        await transcriber.unload()
+    }
+
+    /// A playlist's worth, one video after another, through ONE loaded model —
+    /// loading 646 MB per video would cost more than many of them take to
+    /// transcribe. Videos that already have a transcript are skipped; a video
+    /// that fails (no audio, silence) is counted and the run moves on; Cancel
+    /// stops the whole run. One notice at the end, not one per video.
+    private func transcribeAll(_ paths: [String]) async {
+        guard app.transcribingPath == nil, app.transcribeBatch == nil else { return }
+        let todo = paths.filter { journal.transcript(for: $0).isEmpty }
+        guard !todo.isEmpty else {
+            app.jobNotice = "Every video here already has a transcript."
+            return
+        }
+        guard let root = speechModels() else { return }
+        let transcriber = WhisperKitTranscriber(modelsRoot: root)
+        app.transcribing = transcriber
+        app.transcribeBatchCancelled = false
+        app.transcribeBatch = .init(done: 0, total: todo.count)
+        defer {
+            app.transcribing = nil
+            app.transcribeBatch = nil
+        }
+        var written = 0, failed = 0
+        for (i, path) in todo.enumerated() {
+            if app.transcribeBatchCancelled { break }
+            do {
+                _ = try await transcribeOne(path, using: transcriber)
+                written += 1
+            } catch {
+                if app.transcribeBatchCancelled || error is CancellationError { break }
+                failed += 1
+            }
+            app.transcribeBatch = .init(done: i + 1, total: todo.count)
+        }
+        await transcriber.unload()
+        let skipped = paths.count - todo.count
+        var notice = app.transcribeBatchCancelled
+            ? "Stopped. Transcribed \(written) of \(todo.count) videos."
+            : "Transcribed \(written) of \(todo.count) videos."
+        if failed > 0 { notice += " \(failed) had no speech or could not be read." }
+        if skipped > 0 { notice += " \(skipped) already had a transcript." }
+        app.jobNotice = notice
+    }
+
+    /// One video through a loaded transcriber, with the panel's progress kept
+    /// current. Throws whatever the pass throws; the caller says what it means.
+    private func transcribeOne(_ path: String,
+                               using transcriber: WhisperKitTranscriber) async throws -> Int {
         app.transcribingPath = path
         app.transcribeProgress = SpeechProgress(stage: "Reading the audio",
                                                 done: 0, total: 0, lines: 0)
         defer {
-            app.transcribing = nil
             app.transcribingPath = nil
             app.transcribeProgress = nil
         }
-        do {
-            let outcome = try await journal.transcribe(path: path, using: transcriber) { progress in
-                Task { @MainActor in app.transcribeProgress = progress }
-            }
-            app.transcriptLines[path] = outcome.lines
-            app.jobNotice = "Transcribed \(outcome.lines) lines."
-        } catch is CancellationError {
-            app.jobNotice = SpeechPassRefusal.cancelled.sentence
-        } catch let refusal as SpeechPassRefusal {
-            app.jobNotice = refusal.sentence
-        } catch {
-            app.jobNotice = "Transcribing stopped: \(error.localizedDescription). "
+        let outcome = try await journal.transcribe(path: path, using: transcriber) { progress in
+            Task { @MainActor in app.transcribeProgress = progress }
+        }
+        app.transcriptLines[path] = outcome.lines
+        return outcome.lines
+    }
+
+    /// Where the speech model lives, or nil after saying it is not installed.
+    private func speechModels() -> URL? {
+        let root = URL(fileURLWithPath: Paths.support).appendingPathComponent("models/speech")
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            app.jobNotice = "The speech model is not installed. Install it in Settings → AI."
+            return nil
+        }
+        return root
+    }
+
+    private static func transcribeFailure(_ error: Error) -> String {
+        switch error {
+        case is CancellationError:
+            return SpeechPassRefusal.cancelled.sentence
+        case let refusal as SpeechPassRefusal:
+            return refusal.sentence
+        default:
+            return "Transcribing stopped: \(error.localizedDescription). "
                 + "If the speech model is missing, install it in Settings → AI."
         }
-        await transcriber.unload()
     }
 
     /// Ask the engine for tag ideas about one video, once.
@@ -480,40 +600,67 @@ struct PlayerScreen: View {
                     // a single one plays and pauses, as before.
                     .onTapGesture(count: 2) { app.toggleFullScreen() }
                     .onTapGesture { playback.togglePlayPause() }
+                if library.profileOpen {
+                    SubtitleOverlay(path: playback.currentPath, head: playback.head)
+                }
             }
             if let trouble = playback.trouble {
                 Text(trouble)
                     .font(.callout)
                     .padding(10)
                     .background(.thinMaterial, in: .rect(cornerRadius: 8))
-                    .padding(.bottom, (app.showTagPanel || app.showTranscriptPanel) ? 150 : 14)
+                    // The panels sit below the picture now, so nothing here
+                    // has to be lifted clear of them.
+                    .padding(.bottom, 14)
                     .transition(.opacity)
             }
+        }
+    }
+
+    /// The tag and transcript panels, in their own row under the picture.
+    ///
+    /// They used to slide up OVER the video, which covered whatever the
+    /// bottom of the frame was showing — the thing you are usually looking at
+    /// while deciding what to tag it. Laid out here instead, the stage gives
+    /// up the height and the video is scaled into what remains.
+    @ViewBuilder
+    private var panels: some View {
+        ScrollView(.vertical) {
+            VStack(spacing: 0) {
             if app.showTagPanel {
+                Divider()
                 // With no profile open the panel shows the reason instead of
                 // an editor for a tag set nobody owns — and ⌘T is disabled in
                 // the Tags menu, so this only shows if it was open at close.
                 if library.profileOpen {
                     TagPanel(playback: playback)
-                        .transition(.move(edge: .bottom))
                 } else {
                     closedProfileNotice
-                        .transition(.move(edge: .bottom))
                 }
             }
             if app.showTranscriptPanel {
+                Divider()
                 // Transcripts live in the profile's store, so with no profile
                 // open there is nothing to read and the panel says so rather
                 // than showing an empty list as if the film were silent.
                 if library.profileOpen {
                     TranscriptPanel(playback: playback)
-                        .transition(.move(edge: .bottom))
                 } else {
                     closedProfileNotice
-                        .transition(.move(edge: .bottom))
+                }
+            }
+            }
+            // Measured with the height the scroll view proposes, which is the
+            // content's own, so this does not chase the frame set below it.
+            .background {
+                GeometryReader { proxy in
+                    Color.clear.onChange(of: proxy.size.height, initial: true) { _, height in
+                        panelContentHeight = height
+                    }
                 }
             }
         }
+        .frame(height: panelHeight)
         .animation(.easeInOut(duration: 0.2), value: app.showTagPanel)
         .animation(.easeInOut(duration: 0.2), value: app.showTranscriptPanel)
     }

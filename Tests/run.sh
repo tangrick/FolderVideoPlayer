@@ -33,6 +33,13 @@ swiftc -O -o "$work/train_labels" "$here/test_train_labels.swift"
 swiftc -O -o "$work/ai_capability" "$here/test_ai_capability.swift"
 "$work/ai_capability"
 
+# Check for Updates: version comparison and GitHub's release reply, no network.
+# Top-level test code must be main.swift once a second file is compiled with it.
+mkdir -p "$work/update_check"
+cp "$here/test_update_check.swift" "$work/update_check/main.swift"
+swiftc -O -o "$work/update_check/run" "$model/UpdateCheck.swift" "$work/update_check/main.swift"
+"$work/update_check/run"
+
 # The prompt table, against numpy's own arithmetic on the same file.
 sh "$here/run_prompt_table.sh"
 

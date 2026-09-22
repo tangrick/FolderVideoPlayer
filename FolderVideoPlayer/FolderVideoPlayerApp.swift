@@ -232,6 +232,18 @@ final class AppModel: ObservableObject {
     /// what the user is actually watching.
     var transcribing: WhisperKitTranscriber?
 
+    /// The playlist's AI ▸ Transcribe These. Carries the paths, in list order.
+    /// Still never automatic: this is a run the user asked for, like Classify.
+    static let transcribeBatchNotification = Notification.Name("FolderVideoPlayer.transcribeBatchRequested")
+    /// Where a playlist run has got to. Nil when none is running.
+    struct TranscribeBatch: Equatable {
+        var done: Int
+        var total: Int
+    }
+    @Published var transcribeBatch: TranscribeBatch?
+    /// Set by Cancel so the run stops instead of moving to the next video.
+    var transcribeBatchCancelled = false
+
     /// The only application entry point for an explicitly requested classify job.
     func classify(paths: [String]) async {
         guard library?.profileOpen == true else {

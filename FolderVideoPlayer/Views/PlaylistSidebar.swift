@@ -306,6 +306,20 @@ struct PlaylistSidebar: View {
                 .help("Opens Settings → AI, where each feature says what it costs to download.")
             }
             Divider()
+            // Explicit, like Classify above: nothing transcribes on its own.
+            if app.transcribeBatch != nil {
+                Button("Stop Transcribing") {
+                    NotificationCenter.default.post(name: AppModel.cancelTranscribeNotification, object: nil)
+                }
+            } else {
+                Button("Transcribe These \(videos.count) Videos") {
+                    NotificationCenter.default.post(name: AppModel.transcribeBatchNotification,
+                                                    object: videos)
+                }
+                .disabled(videos.isEmpty || app.transcribingPath != nil || !app.ai.works(.speech))
+                .help(app.ai.reason(.speech)
+                      ?? "Write down what is said in each video, one after another. Videos that already have a transcript are skipped.")
+            }
             Button("Train Tags from These \(videos.count)") { trainVisible() }
                 .disabled(videos.isEmpty || app.engine.isBusy || !app.ai.works(.tags))
                 .help(app.ai.reason(.tags) ?? "")
@@ -643,6 +657,7 @@ struct PlaylistSidebar: View {
                     .foregroundStyle(Color.accentColor)
                 Spacer()
                 if aiLoading { ProgressView().controlSize(.mini) }
+                if !aiCandidates.isEmpty { acceptAllAIButton }
             }
             .padding(.horizontal, 10)
             .padding(.top, 8)
@@ -652,6 +667,12 @@ struct PlaylistSidebar: View {
                  : "Candidates the AI believes look like “\(playback.tagName ?? "")” from anywhere in your library. Accept the right ones; ✕ the wrong ones to teach it.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 4)
+            aiReadiness
+                .padding(.horizontal, 10)
+                .padding(.bottom, 4)
+            aiProcessing
                 .padding(.horizontal, 10)
                 .padding(.bottom, 4)
             if aiCandidates.isEmpty && !aiLoading {
@@ -690,12 +711,15 @@ struct PlaylistSidebar: View {
                     .foregroundStyle(Color.accentColor)
                 Spacer()
                 if aiLoading { ProgressView().controlSize(.mini) }
+                if !aiCandidates.isEmpty { acceptAllAIButton }
             }
             Text(aiByFace
                  ? "Face matches for “\(playback.tagName ?? "")” from anywhere in your library."
                  : "Look-alikes for “\(playback.tagName ?? "")” from anywhere in your library.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+            aiReadiness
+            aiProcessing
             if aiCandidates.isEmpty && !aiLoading {
                 Text(aiNote ?? "No candidates found above the confidence bar.")
                     .font(.caption2)
@@ -711,6 +735,61 @@ struct PlaylistSidebar: View {
         .padding(.horizontal, 10)
         .padding(.bottom, 12)
         .background(Color.accentColor.opacity(0.04))
+    }
+
+    /// How close this tag is to training, beside the rows that move it: the
+    /// same counts and the same 4-and-4 rule as Tag Profiles ▸ Your Tags, so
+    /// the two places can never disagree.
+    @ViewBuilder
+    private var aiReadiness: some View {
+        if let tag = playback.tagName {
+            let rejections = suggestions.byVideo.values.reduce(0) { sum, entry in
+                sum + entry.verdicts.filter {
+                    $0.value == .rejected && $0.key.caseInsensitiveCompare(tag) == .orderedSame
+                }.count
+            }
+            let h = TagProfilesWindow.TagHealth(positives: library.count(of: tag),
+                                                rejections: rejections)
+            HStack(spacing: 4) {
+                Text("\(h.positives)✓ \(h.rejections)✗")
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                if h.trainable {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                    Text("Enough to train — run Train Tags to use them")
+                        .foregroundStyle(.secondary)
+                } else if let need = h.need {
+                    Text("Needs \(need) to train — Accept is a yes, ✕ is a no")
+                        .foregroundStyle(.orange)
+                }
+            }
+            .font(.caption2)
+            .help("A tag needs 4 yes and 4 no before a head can be fitted")
+        }
+    }
+
+    /// Said plainly while the search is waiting on the engine — classifying
+    /// something else, or analysing this tag's videos first. An empty list
+    /// then means "not yet", and the grey note below it was too quiet to say so.
+    /// `pendingSearchTag` is the signal because every waiting path sets it.
+    @ViewBuilder
+    private var aiProcessing: some View {
+        // Not when classifying is unavailable: the search still parks itself,
+        // but nothing will ever run, and "check back later" would be a promise.
+        if let tag = playback.tagName, pendingSearchTag == tag, app.ai.works(.classify) {
+            HStack(alignment: .top, spacing: 4) {
+                Image(systemName: "info.circle.fill")
+                    .foregroundStyle(Color.accentColor)
+                Text(aiCandidates.isEmpty
+                     ? "AI is still processing videos in the background — suggestions for “\(tag)” will appear here. Check back later."
+                     : "AI is still processing videos in the background — more suggestions for “\(tag)” may appear. Check back later.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .font(.caption2)
+            .help(aiNote ?? "The engine is busy; the search runs again when it is free.")
+        }
     }
 
     /// The picture beside an AI candidate — or the wand mark when pictures are
@@ -1429,6 +1508,38 @@ struct PlaylistSidebar: View {
         aiCandidates.removeAll { $0.key == cand.key }
     }
 
+    /// Every candidate on screen, as if each row's Accept were clicked — with
+    /// one tag write instead of one per video.
+    private var acceptAllAIButton: some View {
+        Button("Accept All \(aiCandidates.count)") { acceptAllAI() }
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+            .font(.caption2)
+            .help("Tag every video in this list with “\(playback.tagName ?? "")” — the same as clicking Accept on each")
+    }
+
+    private func acceptAllAI() {
+        guard let tag = playback.tagName else { return }
+        var missing = 0
+        for cand in aiCandidates {
+            let path = Paths.tagPath(cand.key)
+            // Same guard as `acceptAI`: never tag a path that is gone.
+            guard FileManager.default.fileExists(atPath: path) else { missing += 1; continue }
+            var have = library.tagsFor(path)
+            if !have.contains(where: { $0.caseInsensitiveCompare(tag) == .orderedSame }) {
+                have.append(tag)
+            }
+            library.setTags(have, for: path)
+            suggestions.decide(path, tag: tag, verdict: .accepted)
+        }
+        library.saveTags()
+        playback.refreshMembership()
+        aiCandidates.removeAll()
+        if missing > 0 {
+            aiNote = "\(missing) video\(missing == 1 ? " is" : "s are") no longer on disk — not tagged."
+        }
+    }
+
     /// Dismiss: the video is NOT this tag. A recorded rejection — the
     /// missing training class — and the row leaves the list for good.
     private func dismissAI(_ cand: (key: String, score: Double)) {
@@ -1477,6 +1588,10 @@ struct PlaylistSidebar: View {
                     .padding(.bottom, 8)
                 }
                 .onChange(of: playback.index) { reveal(proxy) }
+                // A new tag restarts at index 0 — often the index it already
+                // had, so the line above never fires and the list kept the
+                // previous tag's scroll.
+                .onChange(of: playback.tagName) { reveal(proxy) }
                 .onChange(of: app.selection) { if !holdStill { reveal(proxy) } }
                 .onAppear { reveal(proxy) }
             }
@@ -1503,6 +1618,7 @@ struct PlaylistSidebar: View {
                 }
             }
             .onChange(of: playback.index) { reveal(proxy) }
+            .onChange(of: playback.tagName) { reveal(proxy) }
             .onChange(of: app.selection) { if !holdStill { reveal(proxy) } }
         }
     }
@@ -1555,6 +1671,28 @@ struct PlaylistSidebar: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(Color.accentColor)
                     .help("Stop \(app.engine.phase.title.lowercased())")
+            }
+            if let batch = app.transcribeBatch {
+                // The playlist run, on the same line and in the same shape as
+                // the engine's job: what, how far, and the way to stop it.
+                Text("·").foregroundStyle(.tertiary)
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.55)
+                    .frame(width: 10, height: 10)
+                Text("Transcribing \(min(batch.done + 1, batch.total)) of \(batch.total)")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .help([app.transcribingPath.map { ($0 as NSString).lastPathComponent },
+                           app.transcribeProgress?.label]
+                            .compactMap { $0 }.joined(separator: " — "))
+                Button("Stop") {
+                    NotificationCenter.default.post(name: AppModel.cancelTranscribeNotification, object: nil)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+                .help("Stop transcribing this playlist. Videos already done keep their transcripts.")
             }
             Spacer(minLength: 6)
             // Mirrors the library panel's, on the corner nearest its own

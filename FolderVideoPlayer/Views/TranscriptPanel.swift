@@ -47,6 +47,28 @@ struct TranscriptPanel: View {
                     .font(.callout).monospacedDigit()
                     .foregroundStyle(.secondary)
             }
+            // Transcribing is never automatic — 646 MB of model and minutes of
+            // compute should not start because a video was double-clicked — so
+            // this is the way in. It lived beside the suggestion chips, which
+            // hid it whenever a video had nothing suggested.
+            if let path {
+                if transcribingThis {
+                    Button("Cancel") {
+                        NotificationCenter.default.post(
+                            name: AppModel.cancelTranscribeNotification, object: nil)
+                    }
+                    .controlSize(.small)
+                    .help("Stop transcribing. Nothing is written for half a transcript.")
+                } else {
+                    Button(lines.isEmpty ? "Transcribe" : "Transcribe Again") {
+                        NotificationCenter.default.post(
+                            name: AppModel.transcribeNotification, object: path)
+                    }
+                    .controlSize(.small)
+                    .disabled(app.transcribingPath != nil || app.transcribeBatch != nil)
+                    .help("Write down what is said in this video, with the times. The model runs on this Mac; nothing is uploaded.")
+                }
+            }
             Spacer(minLength: 12)
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
             TextField("Search what was said", text: $typed)
@@ -132,5 +154,50 @@ struct TranscriptPanel: View {
         let h = total / 3600, m = (total % 3600) / 60, s = total % 60
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, s)
                      : String(format: "%d:%02d", m, s)
+    }
+}
+
+/// The transcript line being spoken, drawn over the picture like a subtitle.
+///
+/// Observes the playhead itself rather than the controller, for the reason
+/// `Playhead` exists: only views that need four ticks a second should get
+/// them. Lines are read from the profile's store when the video changes and
+/// again when a transcription run writes more, the same as `TranscriptPanel`.
+struct SubtitleOverlay: View {
+    @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var journal: EvidenceJournal
+    let path: String?
+    @ObservedObject var head: Playhead
+
+    @State private var lines: [TranscriptLine] = []
+
+    private var speaking: TranscriptLine? {
+        let now = head.position
+        return lines.last { $0.start <= now && now < $0.end }
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            Color.clear
+            if let line = speaking {
+                Text(line.text)
+                    .font(.title3.weight(.medium))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
+                    .padding(.horizontal, 40)
+                    .padding(.bottom, 24)
+            }
+        }
+        // Never in the way of the click-to-pause on the picture beneath.
+        .allowsHitTesting(false)
+        .task(id: path) { reload() }
+        .onChange(of: app.transcriptLines) { _, _ in reload() }
+    }
+
+    private func reload() {
+        lines = path.map { journal.transcript(for: $0) } ?? []
     }
 }

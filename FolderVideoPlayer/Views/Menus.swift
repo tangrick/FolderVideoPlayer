@@ -19,6 +19,50 @@ struct MainMenu: Commands {
         return []
     }
 
+    // MARK: - updates
+
+    /// App ▸ Check for Updates…: this build's version against the newest
+    /// release on the public repo. Only ever on request — nothing checks on
+    /// its own. "Download" hands the DMG link to the browser; installing is
+    /// the usual drag to Applications, because replacing a running signed app
+    /// in place is its own project.
+    private func checkForUpdates() {
+        Task { @MainActor in
+            let current = UpdateCheck.running
+            let alert = NSAlert()
+            do {
+                let release = try await UpdateCheck.latest()
+                if UpdateCheck.isNewer(release.version, than: current) {
+                    alert.messageText = "FolderVideoPlayer \(release.version) is available"
+                    alert.informativeText = "You have \(current). Download the new version, "
+                        + "quit this one, and drag the new app into Applications to replace it. "
+                        + "Your tags and settings are kept."
+                    alert.addButton(withTitle: "Download")
+                    alert.addButton(withTitle: "Release Notes")
+                    alert.addButton(withTitle: "Later")
+                    let notes = URL(string: release.html_url)
+                    switch alert.runModal() {
+                    case .alertFirstButtonReturn:
+                        if let url = release.dmg ?? notes { NSWorkspace.shared.open(url) }
+                    case .alertSecondButtonReturn:
+                        if let notes { NSWorkspace.shared.open(notes) }
+                    default: break
+                    }
+                } else {
+                    alert.messageText = "You're up to date"
+                    alert.informativeText = "FolderVideoPlayer \(current) is the newest version."
+                    alert.runModal()
+                }
+            } catch {
+                alert.alertStyle = .warning
+                alert.messageText = "Couldn't check for updates"
+                alert.informativeText = "GitHub could not be reached (\(error.localizedDescription)). "
+                    + "You have version \(current)."
+                alert.runModal()
+            }
+        }
+    }
+
     // MARK: - the profile document
 
     /// File ▸ New Profile…: a new person, with their own folder on the shares.
@@ -448,6 +492,10 @@ struct MainMenu: Commands {
                             : "Took in \(adopted) entries from your other devices.")
                 }
             }
+        }
+
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") { checkForUpdates() }
         }
 
         CommandGroup(replacing: .help) {

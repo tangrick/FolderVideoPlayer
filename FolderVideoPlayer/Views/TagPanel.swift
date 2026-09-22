@@ -207,34 +207,6 @@ struct TagPanel: View {
                     .disabled(app.suggestingPath != nil)
                     .help("Ask the engine about this video again. This is the pass that also records when each tag was seen, so it fills in the times beside the chips.")
 
-                    // Transcribing is never automatic — 646 MB of model and
-                    // minutes of compute should not start because a video was
-                    // double-clicked — so this row is the only way in. It sits
-                    // against the video it acts on, like Look Again beside it.
-                    if app.transcribingPath == path {
-                        Text(app.transcribeProgress?.label ?? "Transcribing…")
-                            .font(.caption)
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                        Button("Cancel") {
-                            NotificationCenter.default.post(
-                                name: AppModel.cancelTranscribeNotification, object: nil)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .font(.caption)
-                        .help("Stop transcribing. Nothing is written for half a transcript.")
-                    } else {
-                        Button(app.transcriptLines[path].map { "Transcribed · \($0.formatted()) lines" } ?? "Transcribe") {
-                            NotificationCenter.default.post(
-                                name: AppModel.transcribeNotification, object: path)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .font(.caption)
-                        .disabled(app.transcribingPath != nil)
-                        .help("Write down what is said in this video, with the times. The model runs on this Mac; nothing is uploaded.")
-                    }
                 }
 
                 ChipFlow(spacing: 6) {
