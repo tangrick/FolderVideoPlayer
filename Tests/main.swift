@@ -381,6 +381,17 @@ check("a colon is replaced too", FileOps.safeFolderName("Holiday: Bali") == "Hol
 check("an ordinary tag is unchanged", FileOps.safeFolderName("Holiday") == "Holiday")
 check("a blank tag still names a folder", FileOps.safeFolderName("   ") == "Tag")
 
+// The AI look-alike scope: only folders the user has tagged in may be offered from.
+let tagged = LookAlikes.taggedFolders(["/v/Holiday/a.mp4", "/v/Holiday/b.mp4", "/v/Work/c.mp4"])
+check("a folder with a tagged video is offerable", tagged.contains("/v/Holiday"))
+check("two tagged videos in one folder are one folder", tagged.count == 2)
+check("an untagged neighbour in a tagged folder may be offered",
+      LookAlikes.mayOffer("/v/Holiday/new.mp4", taggedFolders: tagged))
+check("a video in a folder nothing is tagged in is never offered",
+      !LookAlikes.mayOffer("/v/Never/new.mp4", taggedFolders: tagged))
+check("a subfolder of a tagged folder is not itself tagged in",
+      !LookAlikes.mayOffer("/v/Holiday/2024/new.mp4", taggedFolders: tagged))
+
 // Moving carries the tags, the rating and the resume position with it.
 Paths.support = NSTemporaryDirectory() + "fvp-ops-lib-\(UUID().uuidString)"
 let opsLibrary = await Library()

@@ -155,6 +155,29 @@ struct LookAlikes {
         return out
     }
 
+    // MARK: - which videos may be offered at all
+
+    /// The folders that hold at least one video the user has tagged.
+    ///
+    /// The scope of the whole look-alike section (2026-09-23, at the
+    /// maintainer's request): a video sitting in a folder he has never tagged
+    /// anything in is not something he asked this app to go through, whatever
+    /// the engine happens to have analysed. Tagging one video in a folder
+    /// opens that folder up.
+    static func taggedFolders(_ taggedPaths: [String]) -> Set<String> {
+        Set(taggedPaths.map { ($0 as NSString).deletingLastPathComponent })
+    }
+
+    /// Whether a video may be offered at all: only from a folder the user has
+    /// tagged in. The section lives in a TAG playlist, which is not a folder,
+    /// so there is no folder scope to apply here — measured 2026-09-23, adding
+    /// the last-opened folder as a second condition left nothing offerable at
+    /// all (12,008 analysed videos, 334 tagged in 4 folders; 3,510 offerable
+    /// under this rule, 0 with the folder as well).
+    static func mayOffer(_ path: String, taggedFolders: Set<String>) -> Bool {
+        taggedFolders.contains((path as NSString).deletingLastPathComponent)
+    }
+
     /// How many videos one search pass will analyse to widen itself.
     ///
     /// Bounded per pass, not per press: the search re-runs when the analysis

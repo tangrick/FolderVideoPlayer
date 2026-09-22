@@ -686,9 +686,9 @@ struct PlaylistSidebar: View {
             .padding(.horizontal, 10)
             .padding(.top, 8)
             .padding(.bottom, 2)
-            Text(aiByFace
-                 ? "Videos whose faces match “\(playback.tagName ?? "")”, from anywhere in your library. Nothing else about the picture was used. Accept the right ones; ✕ the wrong ones to teach it."
-                 : "Candidates the AI believes look like “\(playback.tagName ?? "")” from anywhere in your library. Accept the right ones; ✕ the wrong ones to teach it.")
+            Text((aiByFace
+                  ? "Videos whose faces match “\(playback.tagName ?? "")”, \(scopeWords). Nothing else about the picture was used. Accept the right ones; ✕ the wrong ones to teach it."
+                  : "Candidates the AI believes look like “\(playback.tagName ?? "")”, \(scopeWords). Accept the right ones; ✕ the wrong ones to teach it."))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 10)
@@ -738,8 +738,8 @@ struct PlaylistSidebar: View {
                 if !aiCandidates.isEmpty { acceptAllAIButton }
             }
             Text(aiByFace
-                 ? "Face matches for “\(playback.tagName ?? "")” from anywhere in your library."
-                 : "Look-alikes for “\(playback.tagName ?? "")” from anywhere in your library.")
+                 ? "Face matches for “\(playback.tagName ?? "")”, \(scopeWords)."
+                 : "Look-alikes for “\(playback.tagName ?? "")”, \(scopeWords).")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             aiReadiness
@@ -877,6 +877,11 @@ struct PlaylistSidebar: View {
                 .font(.caption2.weight(previewing ? .semibold : .regular))
                 .lineLimit(1)
                 .truncationMode(.middle)
+            Text("in \(Self.folderName(path))")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
             HStack(spacing: 6) {
                 Button("Accept") { acceptAI(cand) }
                     .buttonStyle(.borderedProminent)
@@ -890,6 +895,8 @@ struct PlaylistSidebar: View {
         }
         .contentShape(.rect)
         .onTapGesture { playback.preview(path) }
+        .help(Self.candidateHelp(path))
+        .contextMenu { candidateMenu(path) }
         .help("AI look-alike — click to preview it without leaving this playlist")
     }
 
@@ -906,10 +913,15 @@ struct PlaylistSidebar: View {
                     .font(.caption.weight(previewing ? .semibold : .regular))
                     .lineLimit(1)
                     .truncationMode(.middle)
+                // Where it came from, not just what it is called: this
+                // section searches the WHOLE library, so a row is often from
+                // a folder the user did not open, and a name alone leaves
+                // them wondering where it came from.
                 Text(previewing
-                     ? String(format: "Previewing — %.0f%% match", cand.score * 100)
-                     : String(format: "%@ — %.0f%% match",
-                              aiByFace ? "Face match" : "AI look-alike", cand.score * 100))
+                     ? String(format: "Previewing — %.0f%% match · in %@", cand.score * 100, Self.folderName(path))
+                     : String(format: "%@ — %.0f%% match · in %@",
+                              aiByFace ? "Face match" : "AI look-alike", cand.score * 100,
+                              Self.folderName(path)))
                     .font(.caption2)
                     .foregroundStyle(previewing ? Color.accentColor : Color.secondary.opacity(0.7))
             }
@@ -938,7 +950,52 @@ struct PlaylistSidebar: View {
         .contentShape(.rect)
         .onTapGesture { playback.preview(path) }
         .animation(.easeOut(duration: 0.12), value: previewing)
-        .help("Click the row to preview it here — the playlist stays put")
+        .help(Self.candidateHelp(path))
+        .contextMenu { candidateMenu(path) }
+    }
+
+    /// How the section names its own scope, so nobody has to wonder why a
+    /// video they know about is not offered.
+    var scopeWords: String { "from the folders you have tagged in" }
+
+    /// The folders holding at least one tagged video — rebuilt per search,
+    /// which is where the tag library is walked anyway.
+    func taggedFolders() -> Set<String> {
+        LookAlikes.taggedFolders(library.tags.keys.map { Paths.tagPath($0) })
+    }
+
+    func inScope(_ path: String, taggedIn folders: Set<String>) -> Bool {
+        LookAlikes.mayOffer(path, taggedFolders: folders)
+    }
+
+    /// The folder a candidate lives in — its own folder's name, which is what
+    /// tells the user whether it came from the one they opened.
+    static func folderName(_ path: String) -> String {
+        let folder = (path as NSString).deletingLastPathComponent
+        let name = (folder as NSString).lastPathComponent
+        return name.isEmpty ? folder : name
+    }
+
+    static func candidateHelp(_ path: String) -> String {
+        "Click to preview it here — the playlist stays put.\nThis video is not in the folder you "
+            + "opened unless the path says so:\n" + path
+    }
+
+    /// What a candidate row offers on a right-click: where it is, and nothing
+    /// that acts on the playlist's selection — it is not in the playlist.
+    @ViewBuilder
+    private func candidateMenu(_ path: String) -> some View {
+        Button("Get Info") {
+            app.selection = [path]
+            openWindow(id: "info")
+        }
+        Button("Reveal in Finder") {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+        }
+        Button("Copy Path") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(path, forType: .string)
+        }
     }
 
     /// Fetch the look-alike candidates for the current tag: the WHOLE
@@ -1017,12 +1074,16 @@ struct PlaylistSidebar: View {
             // because `library` and `suggestions` live here — and reduced to
             // what is worth OFFERING, so the ranking below never scores a video
             // the user has already settled.
+            let offerableFolders = taggedFolders()
             var offered: [String: [String]] = [:]
             for (hash, paths) in app.faceStore?.faceVideos ?? [:] {
                 var keep: [String] = []
                 for path in paths {
                     let key = Paths.tagKey(path)
                     if library.hidden.contains(key) { continue }
+                    // Same rule as the scene search: only a folder in force
+                    // that the user has tagged in may be offered back.
+                    if !inScope(Paths.tagPath(key), taggedIn: offerableFolders) { continue }
                     if (library.tags[key] ?? []).contains(where: {
                         $0.caseInsensitiveCompare(person) == .orderedSame
                     }) { continue }
@@ -1166,6 +1227,8 @@ struct PlaylistSidebar: View {
             // the search exists to find. library.tags only holds tagged
             // videos, so iterating it as the pool would search nothing.
             var pool: [String: [String]] = [:]
+            // Only folders the user has tagged in may be offered from.
+            let offerableFolders = taggedFolders()
 
             // Staleness is the one question in the loop below that touches the
             // disk: it stats every file to compare size and mtime against the
@@ -1244,8 +1307,16 @@ struct PlaylistSidebar: View {
                 // so the cheap test is worth reusing (measured: the whole pass
                 // is ~0.3 s over 4,136 records).
                 if carriesTag {
+                    // The prototype — what the tag LOOKS like — is learned from
+                    // every video carrying it, wherever it lives: narrowing that
+                    // would only make the search worse at recognising the tag.
                     tagged[key] = Array(hashes)
-                } else if suggestions.entry(key)?.verdicts[tag] != .rejected {
+                } else if suggestions.entry(key)?.verdicts[tag] != .rejected,
+                          inScope(Paths.tagPath(key), taggedIn: offerableFolders) {
+                    // What may be OFFERED is another matter: a suggestion from a
+                    // folder the user did not open reads as the app rooting
+                    // through the whole disk. Only the opened folder's videos
+                    // are offered.
                     pool[key] = Array(hashes)
                 }
             }
