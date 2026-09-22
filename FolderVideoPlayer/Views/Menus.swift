@@ -23,43 +23,84 @@ struct MainMenu: Commands {
 
     /// App ▸ Check for Updates…: this build's version against the newest
     /// release on the public repo. Only ever on request — nothing checks on
-    /// its own. "Download" hands the DMG link to the browser; installing is
-    /// the usual drag to Applications, because replacing a running signed app
-    /// in place is its own project.
+    /// its own. With a newer one, Install and Relaunch downloads the DMG,
+    /// checks the app inside (same signing team, Gatekeeper, the version
+    /// offered), swaps it in once this one has quit, and reopens it. A copy
+    /// that cannot replace itself (an Xcode build, a read-only folder) gets
+    /// the download in the browser instead.
     private func checkForUpdates() {
         Task { @MainActor in
             let current = UpdateCheck.running
             let alert = NSAlert()
+            let release: UpdateCheck.Release
             do {
-                let release = try await UpdateCheck.latest()
-                if UpdateCheck.isNewer(release.version, than: current) {
-                    alert.messageText = "FolderVideoPlayer \(release.version) is available"
-                    alert.informativeText = "You have \(current). Download the new version, "
-                        + "quit this one, and drag the new app into Applications to replace it. "
-                        + "Your tags and settings are kept."
-                    alert.addButton(withTitle: "Download")
-                    alert.addButton(withTitle: "Release Notes")
-                    alert.addButton(withTitle: "Later")
-                    let notes = URL(string: release.html_url)
-                    switch alert.runModal() {
-                    case .alertFirstButtonReturn:
-                        if let url = release.dmg ?? notes { NSWorkspace.shared.open(url) }
-                    case .alertSecondButtonReturn:
-                        if let notes { NSWorkspace.shared.open(notes) }
-                    default: break
-                    }
-                } else {
-                    alert.messageText = "You're up to date"
-                    alert.informativeText = "FolderVideoPlayer \(current) is the newest version."
-                    alert.runModal()
-                }
+                release = try await UpdateCheck.latest()
             } catch {
                 alert.alertStyle = .warning
                 alert.messageText = "Couldn't check for updates"
                 alert.informativeText = "GitHub could not be reached (\(error.localizedDescription)). "
                     + "You have version \(current)."
                 alert.runModal()
+                return
             }
+            guard UpdateCheck.isNewer(release.version, than: current) else {
+                alert.messageText = "You're up to date"
+                alert.informativeText = "FolderVideoPlayer \(current) is the newest version."
+                alert.runModal()
+                return
+            }
+            let notes = URL(string: release.html_url)
+            let installed = Bundle.main.bundlePath
+            let blocked = release.dmg == nil ? "that release has no disk image"
+                : UpdateCheck.cannotInstallInPlace(bundlePath: installed)
+            alert.messageText = "FolderVideoPlayer \(release.version) is available"
+            if let blocked {
+                alert.informativeText = "You have \(current). It can't update itself here — \(blocked) — "
+                    + "so Download opens the disk image in your browser; drag the new app into "
+                    + "Applications to replace this one. Your tags and settings are kept."
+                alert.addButton(withTitle: "Download")
+            } else {
+                alert.informativeText = "You have \(current). FolderVideoPlayer will download the new "
+                    + "version, check it is signed by the same developer, then quit, update itself "
+                    + "and reopen. Your tags and settings are kept."
+                alert.addButton(withTitle: "Install and Relaunch")
+            }
+            alert.addButton(withTitle: "Release Notes")
+            alert.addButton(withTitle: "Later")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                if blocked != nil {
+                    if let url = release.dmg ?? notes { NSWorkspace.shared.open(url) }
+                } else {
+                    await install(release, over: installed, notes: notes)
+                }
+            case .alertSecondButtonReturn:
+                if let notes { NSWorkspace.shared.open(notes) }
+            default: break
+            }
+        }
+    }
+
+    /// Download, check, stage, hand the swap to the script, quit.
+    private func install(_ release: UpdateCheck.Release, over installed: String, notes: URL?) async {
+        app.say("Downloading FolderVideoPlayer \(release.version)…",
+                "The app will quit and reopen by itself once the new version is checked. "
+                + "You can keep using it until then.")
+        do {
+            let staged = try await UpdateCheck.prepare(release, installedAt: installed)
+            try UpdateCheck.launchSwap(installed: installed, staged: staged)
+            // The normal quit: the analysis store's flush and every other
+            // willTerminate duty run before the script swaps the app.
+            NSApp.terminate(nil)
+        } catch {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "The update was not installed"
+            alert.informativeText = "\(error.localizedDescription.prefix(1).uppercased() + error.localizedDescription.dropFirst()). "
+                + "This version is unchanged. You can download \(release.version) from the release page instead."
+            alert.addButton(withTitle: "Open Release Page")
+            alert.addButton(withTitle: "OK")
+            if alert.runModal() == .alertFirstButtonReturn, let notes { NSWorkspace.shared.open(notes) }
         }
     }
 

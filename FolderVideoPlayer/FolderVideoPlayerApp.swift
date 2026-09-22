@@ -581,7 +581,8 @@ final class AppModel: ObservableObject {
                 self?.askDiscardFolder(volume, why)
             }
         }
-        player.onConversionFinished = { [weak self] line in self?.jobNotice = line }
+        // An alert, not `jobNotice`: nothing in the player window draws that.
+        player.onConversionFinished = { [weak self] line in self?.say("Converting finished", line) }
         duplicates = DuplicateFinder(library: library)
         ready = true
         // What was playing comes back first. The share traffic happens behind

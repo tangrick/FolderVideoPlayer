@@ -404,7 +404,7 @@ struct PlayerScreen: View {
         guard app.transcribingPath == nil, app.transcribeBatch == nil else { return }
         let todo = paths.filter { journal.transcript(for: $0).isEmpty }
         guard !todo.isEmpty else {
-            app.jobNotice = "Every video here already has a transcript."
+            app.say("Nothing to transcribe", "Every video here already has a transcript.")
             return
         }
         guard let root = speechModels() else { return }
@@ -435,7 +435,7 @@ struct PlayerScreen: View {
             : "Transcribed \(written) of \(todo.count) videos."
         if failed > 0 { notice += " \(failed) had no speech or could not be read." }
         if skipped > 0 { notice += " \(skipped) already had a transcript." }
-        app.jobNotice = notice
+        app.say(app.transcribeBatchCancelled ? "Transcribing stopped" : "Transcribing finished", notice)
     }
 
     /// One video through a loaded transcriber, with the panel's progress kept
