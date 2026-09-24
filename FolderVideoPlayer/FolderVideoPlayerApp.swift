@@ -389,6 +389,7 @@ final class AppModel: ObservableObject {
     /// Held for the life of the app: the observer that moves the per-profile
     /// AI state when the profile in force changes.
     private var profileObserver: NSObjectProtocol?
+    private var sharedExtrasObserver: NSObjectProtocol?
 
     /// Move the per-profile AI state onto the profile now in force.
     ///
@@ -420,6 +421,14 @@ final class AppModel: ObservableObject {
                 journal?.reload(profile: slug)
                 engine.resetForProfile()
                 self?.attachJobs(profile: slug)
+            }
+        }
+        sharedExtrasObserver = NotificationCenter.default.addObserver(
+            forName: .fvpSharedExtrasArrived, object: nil, queue: .main) { note in
+            guard let slug = note.object as? String, slug == Paths.activeProfile else { return }
+            Task { @MainActor in
+                faceStore.reloadPeople()
+                journal?.transcriptsArrived()
             }
         }
     }

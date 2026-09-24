@@ -100,6 +100,12 @@ final class FaceStore: ObservableObject {
         clusters = []
     }
 
+    /// Re-read the people after a share sync brought names in from another
+    /// Mac. Only the list: clusters being named here are left alone.
+    func reloadPeople() {
+        people = Self.peopleFromDisk(profile: profile)
+    }
+
     /// The face engine for this run, or nil when the child process is the one
     /// doing the work. Cheap: constructing it loads no model, and the two
     /// commands that need one say so themselves.

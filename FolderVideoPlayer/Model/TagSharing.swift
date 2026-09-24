@@ -97,6 +97,7 @@ extension Library {
                 return (([], []), 0)
             }
             let (outcome, fromOthers) = applySync(inputs: inputs, outputs: outputs, sent: snapshot)
+            await syncSharedExtras(context: context)
             guard !outcome.written.isEmpty else { return (outcome, fromOthers) }
             let clean = sharedTagsInLine() && outcome.skipped.isEmpty
             ProfileBundle.markPublished(profile: profile, at: when, clean: clean, root: root)
@@ -106,6 +107,32 @@ extension Library {
         }
         publishQueue = Task { _ = await work.value }
         return await work.value
+    }
+
+    /// The named people and the transcripts, to and from the same shares, right
+    /// after the tags — so every way a tag sync starts (adopting a profile on a
+    /// new Mac included) carries them too. See `SharedExtras`.
+    private func syncSharedExtras(context: UUID) async {
+        let profile = slug(person)
+        let root = Paths.support
+        var folders: [String: String] = [:]
+        for share in Set(shareTags().keys).union(Paths.networkShares()) {
+            folders[share] = ((Paths.volumes + share) as NSString).appendingPathComponent(myTagFolder)
+        }
+        let stateFile = SharedExtras.stateFile(profile, root: root)
+        let input = SharedExtras.Input(
+            root: root, profile: profile, device: slug(device), volumes: Paths.volumes,
+            folders: folders,
+            state: JSONStore.load(stateFile, fallback: SharedExtras.State()))
+        let output = await Task.detached(priority: .utility) {
+            SharedExtras.sync(input, lockBudget: 10)
+        }.value
+        // Written for the profile that synced, even if another is open now:
+        // the state describes that profile's files, wherever they went.
+        if output.state != input.state { _ = JSONStore.save(stateFile, output.state) }
+        guard profileContext == context,
+              output.facesChanged || output.transcriptsImported > 0 else { return }
+        NotificationCenter.default.post(name: .fvpSharedExtrasArrived, object: profile)
     }
 
     /// The last push on the way out. Synchronous, with a short wait for the
@@ -482,14 +509,41 @@ extension Library {
         }.value
     }
 
+    /// The same list, or nil when the shares have not answered in `seconds`.
+    ///
+    /// For File ▸ Open Profile, which has a person waiting on it: a NAS with
+    /// its disks spun down keeps SMB waiting 10–30 s, and a menu item that
+    /// shows nothing for that long looks broken. The scan is not cancelled —
+    /// a blocked read cannot be — so it finishes in the background and warms
+    /// the directory cache for the next time.
+    func sharePeople(within seconds: Double) async -> [SharePerson]? {
+        let mine = Set(shareTags().keys)
+        return await withCheckedContinuation { continuation in
+            let once = ResumeOnce()
+            Task.detached(priority: .userInitiated) {
+                let people = Library.peopleOnShares(extra: mine)
+                if once.claim() { continuation.resume(returning: people) }
+            }
+            Task.detached {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                if once.claim() { continuation.resume(returning: nil) }
+            }
+        }
+    }
+
     nonisolated static func peopleOnShares(extra: Set<String> = []) -> [SharePerson] {
         var found: [String: SharePerson] = [:]
         let fm = FileManager.default
+        let posterFolder = (Paths.posterDir as NSString).lastPathComponent
         for share in Set(Paths.networkShares()).union(extra).sorted() {
             let root = ((Paths.volumes + share) as NSString)
                 .appendingPathComponent(Paths.shareDir)
             guard let names = try? fm.contentsOfDirectory(atPath: root) else { continue }
-            for name in names.sorted() where !name.hasPrefix(".") {
+            // "thumbs" is skipped by name before it is listed: it holds a
+            // poster frame per video — 9,352 files on one share, ~5 s to list
+            // over SMB when the directory cache is cold — only to be refused
+            // by the check below.
+            for name in names.sorted() where !name.hasPrefix(".") && name != posterFolder {
                 let folder = (root as NSString).appendingPathComponent(name)
                 var isDir: ObjCBool = false
                 guard fm.fileExists(atPath: folder, isDirectory: &isDir), isDir.boolValue
@@ -537,4 +591,17 @@ extension Library {
     }
 
     func isMyName(_ name: String) -> Bool { slug(name) == slug(person) }
+}
+
+/// Lets exactly one of two racing tasks resume a continuation.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+
+    func claim() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if done { return false }
+        done = true
+        return true
+    }
 }

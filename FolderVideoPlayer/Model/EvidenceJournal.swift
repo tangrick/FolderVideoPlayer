@@ -90,6 +90,13 @@ final class EvidenceJournal: ObservableObject {
         changeCount += 1
     }
 
+    /// Transcripts arrived from another Mac through the shares: the same store,
+    /// new rows, so the list of transcribed videos is read again.
+    func transcriptsArrived() {
+        refreshTranscribed()
+        changeCount += 1
+    }
+
     // MARK: - writing
 
     /// Transcribe one video through the store that belongs to the OPEN profile.

@@ -14,6 +14,9 @@ MODEL_SOURCES=(
     # The one shared tag file per person that replaced a file per device
     # (added Sep'26). TagSharing does not compile without it.
     "$model/SharedTagFile.swift"
+    # ...and the named people and transcripts that follow a profile beside it
+    # (added Sep'26). TagSharing calls it, so it lands here too.
+    "$model/SharedExtras.swift"
     # Where a tag came from (added Sep'26). A new Model/ file lands HERE or the
     # whole suite stops compiling with `cannot find 'TagProvenance' in scope`.
     "$model/TagProvenance.swift"

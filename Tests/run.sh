@@ -179,3 +179,8 @@ sh "$here/run_model_store.sh"
 # nothing else, a reopen reads the bundle back, publish state is stamped only
 # by real writes, and the device name is editable.
 sh "$here/run_profile_document.sh"
+
+# Named people and transcripts following a profile to another Mac beside its
+# tags: a new Mac takes all of it, a rename or a forget carries as one, and a
+# newer file on the share is left alone.
+sh "$here/run_shared_extras.sh"

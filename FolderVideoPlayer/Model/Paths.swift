@@ -362,6 +362,10 @@ extension Notification.Name {
     /// suggestions, marks, people — listen and reload from its folder, so the
     /// app never shows one person's judgement under another's name.
     static let fvpProfileChanged = Notification.Name("FolderVideoPlayer.profileChanged")
+
+    /// Posted when a share sync brought named people or transcripts in from
+    /// another Mac, carrying the profile's slug. See `SharedExtras`.
+    static let fvpSharedExtrasArrived = Notification.Name("FolderVideoPlayer.sharedExtrasArrived")
 }
 
 /// What the app will list and try to play. VLCKit played everything here;

@@ -205,7 +205,10 @@ struct MainMenu: Commands {
     /// published when it is adopted.
     private func openProfile() {
         Task {
-            let onShares = await library.sharePeople()
+            // Bounded: a sleeping NAS kept this dialog away for 30 s. Past the
+            // limit the profiles on this Mac are offered on their own.
+            let answered = await library.sharePeople(within: 1.5)
+            let onShares = answered ?? []
             let mine = Set(library.profiles.map { slug($0) })
             var names = library.profiles
             for person in onShares
@@ -215,8 +218,11 @@ struct MainMenu: Commands {
             }
             guard !names.isEmpty else {
                 app.say("No profiles yet",
-                        "File ▸ New Profile makes one. It is kept on this Mac and published "
-                        + "to your shares for the other devices.")
+                        answered == nil
+                            ? "Your shares did not answer in time, so profiles kept only on "
+                              + "them are not listed. Try again in a moment."
+                            : "File ▸ New Profile makes one. It is kept on this Mac and published "
+                              + "to your shares for the other devices.")
                 return
             }
             let labels = names.map { name in
@@ -227,7 +233,11 @@ struct MainMenu: Commands {
             guard let picked = chooseProfile(
                 "Open Profile",
                 "Opening a profile keeps the profile you are in where it is — its tags stay "
-                + "in its own folder and come back when you choose it again.",
+                + "in its own folder and come back when you choose it again."
+                + (answered == nil
+                    ? "\n\nYour shares did not answer in time, so profiles kept only on them "
+                      + "are not listed. Try again in a moment."
+                    : ""),
                 labels), names.indices.contains(picked) else { return }
             switchToProfile(names[picked])
         }
