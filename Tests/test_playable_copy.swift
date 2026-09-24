@@ -7,6 +7,7 @@
 // bookkeeping main.swift covers; its Trash half is not run here, because it
 // would put test files in the real Trash.)
 
+@testable import FVPModel
 import AVFoundation
 import Foundation
 

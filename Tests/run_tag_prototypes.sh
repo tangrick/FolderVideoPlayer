@@ -12,14 +12,12 @@
 #   FVP_PARITY_PY   python with numpy (default /opt/anaconda3/bin/python3)
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
+. "$here/harness.sh"
 py="${FVP_PARITY_PY:-/opt/anaconda3/bin/python3}"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 "$py" "$here/../docs/coreml-spike/prototype_parity.py" "$work/prototype_fixture.json" >/dev/null
 
-swiftc -O -o "$work/tag_prototypes" \
-    "$here/../FolderVideoPlayer/Model/LookAlikes.swift" \
-    "$here/../FolderVideoPlayer/Model/TagPrototypes.swift" \
-    "$here/test_tag_prototypes.swift"
+fvp_test "$here/test_tag_prototypes.swift" "$work/tag_prototypes"
 "$work/tag_prototypes" "$work/prototype_fixture.json"

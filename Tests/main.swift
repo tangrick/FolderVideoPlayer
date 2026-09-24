@@ -1,3 +1,4 @@
+@testable import FVPModel
 import Foundation
 import CoreML
 

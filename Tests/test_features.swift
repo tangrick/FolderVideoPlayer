@@ -22,6 +22,7 @@
 // `@main` rather than top-level code, because this file compiles alongside the
 // app's model layer and only main.swift may carry top-level statements.
 
+@testable import FVPModel
 import Foundation
 
 @main

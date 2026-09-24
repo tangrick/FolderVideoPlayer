@@ -17,6 +17,7 @@
 //
 // Run: Tests/run_sampling_plan.sh
 
+@testable import FVPModel
 import Foundation
 import CoreGraphics
 

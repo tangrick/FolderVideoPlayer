@@ -30,6 +30,7 @@
 //
 // Run: Tests/run_evidence_store.sh
 
+@testable import FVPModel
 import Foundation
 import SQLite3
 

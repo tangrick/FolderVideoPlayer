@@ -9,12 +9,10 @@
 # Usage: Tests/run_profile_bundle.sh
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
+. "$here/harness.sh"
 model="$here/../FolderVideoPlayer/Model"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-swiftc -O -o "$work/profile_bundle" \
-    "$model/Formatting.swift" "$model/JSONStore.swift" \
-    "$model/ProfileBundle.swift" "$model/Paths.swift" \
-    "$here/test_profile_bundle.swift"
+fvp_test "$here/test_profile_bundle.swift" "$work/profile_bundle"
 "$work/profile_bundle"

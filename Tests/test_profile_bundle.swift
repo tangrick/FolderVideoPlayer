@@ -15,6 +15,7 @@
 //
 // Run: Tests/run_profile_bundle.sh
 
+@testable import FVPModel
 import Foundation
 
 @main

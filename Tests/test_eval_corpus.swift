@@ -14,6 +14,7 @@
 //
 // Run: Tests/run_eval_corpus.sh
 
+@testable import FVPModel
 import Foundation
 import CryptoKit
 

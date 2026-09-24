@@ -10,14 +10,10 @@
 # Usage: Tests/run_neighbour_prior.sh
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
+. "$here/harness.sh"
 model="$here/../FolderVideoPlayer/Model"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-swiftc -O -o "$work/neighbour_prior" \
-    "$model/Formatting.swift" "$model/Paths.swift" \
-    "$model/ProfileBundle.swift" \
-    "$model/JSONStore.swift" \
-    "$model/NeighbourPrior.swift" \
-    "$here/test_neighbour_prior.swift"
+fvp_test "$here/test_neighbour_prior.swift" "$work/neighbour_prior"
 "$work/neighbour_prior"

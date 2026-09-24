@@ -10,12 +10,9 @@
 # Usage: Tests/run_model_selection.sh
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
-model="$here/../FolderVideoPlayer/Model"
-. "$here/model_sources.sh"
+. "$here/harness.sh"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-swiftc -O -o "$work/model_selection" \
-    "${MODEL_SOURCES[@]}" "${MODEL_FRAMEWORKS[@]}" \
-    "$here/test_model_selection.swift"
+fvp_test "$here/test_model_selection.swift" "$work/model_selection"
 "$work/model_selection"

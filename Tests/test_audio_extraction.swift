@@ -34,6 +34,7 @@
 //
 //     sh Tests/run_audio_extraction.sh
 
+@testable import FVPModel
 import AVFoundation
 import Foundation
 

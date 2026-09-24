@@ -8,6 +8,7 @@
 //
 // Pure: no FileManager, no models, no app.
 
+@testable import FVPModel
 import Foundation
 
 @main

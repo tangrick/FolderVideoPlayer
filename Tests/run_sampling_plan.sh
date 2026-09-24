@@ -7,12 +7,9 @@
 # Usage: Tests/run_sampling_plan.sh
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
-model="$here/../FolderVideoPlayer/Model"
-. "$here/model_sources.sh"
+. "$here/harness.sh"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-swiftc -O -o "$work/sampling_plan" \
-    "${MODEL_SOURCES[@]}" "${MODEL_FRAMEWORKS[@]}" \
-    "$here/test_sampling_plan.swift"
+fvp_test "$here/test_sampling_plan.swift" "$work/sampling_plan"
 "$work/sampling_plan"

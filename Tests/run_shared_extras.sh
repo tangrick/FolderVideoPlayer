@@ -5,12 +5,9 @@
 # Usage: Tests/run_shared_extras.sh
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
-model="$here/../FolderVideoPlayer/Model"
-. "$here/model_sources.sh"
+. "$here/harness.sh"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-swiftc -O -o "$work/shared_extras" \
-    "${MODEL_SOURCES[@]}" "${MODEL_FRAMEWORKS[@]}" \
-    "$here/test_shared_extras.swift"
+fvp_test "$here/test_shared_extras.swift" "$work/shared_extras"
 "$work/shared_extras"

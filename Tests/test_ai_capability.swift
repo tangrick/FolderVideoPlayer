@@ -5,6 +5,7 @@
 // So the probe's logic is exercised against a scratch support dir with no
 // models in it, and against candidate lists that are deliberately wrong.
 
+@testable import FVPModel
 import Foundation
 
 // Mirrors AICapability's shape closely enough to test the decision logic

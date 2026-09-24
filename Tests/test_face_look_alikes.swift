@@ -17,6 +17,7 @@
 //
 // Run: Tests/run_face_look_alikes.sh
 
+@testable import FVPModel
 import Foundation
 
 @main

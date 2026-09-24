@@ -8,12 +8,9 @@
 # Usage: Tests/run_job_ledger.sh
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
-model="$here/../FolderVideoPlayer/Model"
-. "$here/model_sources.sh"
+. "$here/harness.sh"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-swiftc -O -o "$work/job_ledger" \
-    "${MODEL_SOURCES[@]}" "${MODEL_FRAMEWORKS[@]}" \
-    "$here/test_job_ledger.swift"
+fvp_test "$here/test_job_ledger.swift" "$work/job_ledger"
 "$work/job_ledger"

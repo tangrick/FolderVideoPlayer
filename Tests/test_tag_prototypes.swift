@@ -18,6 +18,7 @@
 //
 // Run: Tests/run_tag_prototypes.sh
 
+@testable import FVPModel
 import Foundation
 
 @main

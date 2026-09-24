@@ -36,6 +36,7 @@
 //
 // Run: Tests/run_model_downloader.sh
 
+@testable import FVPModel
 import Foundation
 
 /// A progress log the download callback can append to from any thread.

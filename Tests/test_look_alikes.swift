@@ -16,6 +16,7 @@
 //
 // Run: Tests/run_look_alikes.sh
 
+@testable import FVPModel
 import Foundation
 
 @main

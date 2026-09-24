@@ -25,6 +25,7 @@
 //
 //     sh Tests/run_evidence_proposal.sh
 
+@testable import FVPModel
 import Foundation
 
 @main

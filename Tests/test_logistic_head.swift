@@ -21,6 +21,7 @@
 //
 // Run: Tests/run_logistic_head.sh
 
+@testable import FVPModel
 import Foundation
 
 @main

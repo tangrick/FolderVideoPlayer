@@ -18,6 +18,7 @@
 //
 //   FVP_BUNDLES=/path/to/dist/ai-bundles.json sh Tests/run_catalogue_check.sh
 
+@testable import FVPModel
 import Foundation
 
 @main

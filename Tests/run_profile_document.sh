@@ -8,12 +8,9 @@
 # Usage: Tests/run_profile_document.sh
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
-model="$here/../FolderVideoPlayer/Model"
-. "$here/model_sources.sh"
+. "$here/harness.sh"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-swiftc -O -o "$work/profile_document" \
-    "${MODEL_SOURCES[@]}" "${MODEL_FRAMEWORKS[@]}" \
-    "$here/test_profile_document.swift"
+fvp_test "$here/test_profile_document.swift" "$work/profile_document"
 "$work/profile_document"

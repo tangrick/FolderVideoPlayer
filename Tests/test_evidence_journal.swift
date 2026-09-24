@@ -27,6 +27,7 @@
 //
 //     sh Tests/run_evidence_journal.sh
 
+@testable import FVPModel
 import Foundation
 
 @main

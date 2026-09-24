@@ -4,8 +4,7 @@
 # library. Usage: Tests/run.sh
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
-model="$here/../FolderVideoPlayer/Model"
-. "$here/model_sources.sh"
+. "$here/harness.sh"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -19,34 +18,28 @@ head -c 170000 /dev/urandom > "$work/media/clip10.mp4"
 echo hello > "$work/media/notes.txt"
 head -c 1000 /dev/urandom > "$work/media/.hidden/secret.mp4"
 
-swiftc -O -o "$work/tests" \
-    "${MODEL_SOURCES[@]}" "${MODEL_FRAMEWORKS[@]}" \
-    "$here/main.swift"
+fvp_test "$here/main.swift" "$work/tests"
 "$work/tests" "$work/media"
 
 # Phase D gate: label grouping and the both-classes training gate, standalone.
-swiftc -O -o "$work/train_labels" "$here/test_train_labels.swift"
+fvp_test "$here/test_train_labels.swift" "$work/train_labels"
 "$work/train_labels"
 
 # The AI capability probe: what the app reports on a machine with nothing
 # installed. Standalone, because the point is the bare-Mac case this one is not.
-swiftc -O -o "$work/ai_capability" "$here/test_ai_capability.swift"
+fvp_test "$here/test_ai_capability.swift" "$work/ai_capability"
 "$work/ai_capability"
 
 # Check for Updates: version comparison and GitHub's release reply, no network.
-# Top-level test code must be main.swift once a second file is compiled with it.
 mkdir -p "$work/update_check"
-cp "$here/test_update_check.swift" "$work/update_check/main.swift"
-swiftc -O -o "$work/update_check/run" "$model/UpdateCheck.swift" "$work/update_check/main.swift"
+fvp_test "$here/test_update_check.swift" "$work/update_check/run"
 "$work/update_check/run"
 
 # The FFmpeg fallback: the remux/transcode decision and the cache, plus — when
 # FFmpeg is installed — a real remux and transcode checked playable by
 # AVFoundation, and a cancelled run that must leave nothing behind.
 mkdir -p "$work/playable_copy"
-cp "$here/test_playable_copy.swift" "$work/playable_copy/main.swift"
-swiftc -O -o "$work/playable_copy/run" "${MODEL_SOURCES[@]}" "${MODEL_FRAMEWORKS[@]}" \
-    "$work/playable_copy/main.swift"
+fvp_test "$here/test_playable_copy.swift" "$work/playable_copy/run"
 "$work/playable_copy/run"
 
 # The prompt table, against numpy's own arithmetic on the same file.
@@ -153,6 +146,10 @@ sh "$here/run_face_engine.sh"
 # the matcher, the similar-face ranking and the prominence clustering, against
 # engine.py's own face commands on a cache tree the fixture writes.
 sh "$here/run_face_registry.sh"
+
+# The face models' output reader follows the array's strides: a padded Core ML
+# output read as one block hid every face on one Mac (2026-09-25).
+sh "$here/run_face_output_layout.sh"
 
 # The Sep '26 feature batch: bulk tag-a-folder, star ratings, and renaming a
 # person in the face registry — each one the user's judgement, so each has to

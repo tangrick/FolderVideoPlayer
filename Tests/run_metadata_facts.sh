@@ -15,16 +15,11 @@
 # Usage: Tests/run_metadata_facts.sh [path/to/tags.json]
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
+. "$here/harness.sh"
 model="$here/../FolderVideoPlayer/Model"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-swiftc -O -o "$work/metadata_facts" \
-    "$model/Formatting.swift" "$model/Paths.swift" \
-    "$model/ProfileBundle.swift" \
-    "$model/JSONStore.swift" \
-    "$model/TagKinds.swift" "$model/AutoTagCore.swift" \
-    "$model/TagProvenance.swift" "$model/MetadataFacts.swift" \
-    "$here/test_metadata_facts.swift"
+fvp_test "$here/test_metadata_facts.swift" "$work/metadata_facts"
 if [ -n "${1:-}" ]; then export FVP_REAL_TAGS="$1"; fi
 "$work/metadata_facts"

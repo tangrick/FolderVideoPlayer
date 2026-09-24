@@ -13,6 +13,7 @@
 //
 // Pure: no FileManager beyond one temp file, no models, no app.
 
+@testable import FVPModel
 import Foundation
 
 @main

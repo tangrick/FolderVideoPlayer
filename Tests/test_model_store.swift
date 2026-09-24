@@ -27,6 +27,7 @@
 //
 // Run: Tests/run_model_store.sh
 
+@testable import FVPModel
 import Foundation
 
 @main

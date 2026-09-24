@@ -1,6 +1,7 @@
 import CoreGraphics
 import CoreML
 import Foundation
+import os
 
 /// One face, in the exact shape `cv2.FaceDetectorYN` hands the Python engine:
 /// a top-left box in image pixels, five landmarks in the model's own order, and
@@ -64,6 +65,24 @@ actor FaceDetector {
 
     private let model: MLModel
     private let inputName: String
+    /// Whether this load's output layout has been logged yet — once per load.
+    private var described = false
+
+    /// Face recognition's own log. Read it on the Mac in question with
+    /// `log show --last 10m --predicate 'subsystem == "com.tangrick.foldervideoplayer" && category == "faces"'`.
+    static let log = Logger(subsystem: "com.tangrick.foldervideoplayer", category: "faces")
+
+    /// Where both face models run. `.all` unless the Mac says otherwise:
+    /// `defaults write com.tangrick.foldervideoplayer FaceComputeUnits cpuOnly`
+    /// (or `cpuAndGPU`), then relaunch; `defaults delete … FaceComputeUnits` undoes
+    /// it. The escape hatch for a Mac whose Neural Engine answers wrongly.
+    nonisolated static func computeUnits() -> MLComputeUnits {
+        switch UserDefaults.standard.string(forKey: "FaceComputeUnits") {
+        case "cpuOnly": return .cpuOnly
+        case "cpuAndGPU": return .cpuAndGPU
+        default: return .all
+        }
+    }
 
     static func modelURL(root: String) -> URL {
         URL(fileURLWithPath: (root as NSString).appendingPathComponent("tags/yunet.mlmodelc"))
@@ -81,7 +100,7 @@ actor FaceDetector {
         let url = Self.modelURL(root: root)
         guard Self.isInstalled(root: root) else { throw DetectorError.notInstalled(url.path) }
         let config = MLModelConfiguration()
-        config.computeUnits = .all
+        config.computeUnits = Self.computeUnits()
         self.model = try MLModel(contentsOf: url, configuration: config)
         guard let input = model.modelDescription.inputDescriptionsByName.keys.first else {
             throw DetectorError.noInput(url.path)
@@ -118,9 +137,40 @@ actor FaceDetector {
         let provider = try MLDictionaryFeatureProvider(
             dictionary: [inputName: MLFeatureValue(pixelBuffer: buffer)])
         let result = try model.prediction(from: provider, options: MLPredictionOptions())
+        if !described {
+            described = true
+            Self.describe(result, frame: "\(width)×\(height)")
+        }
 
         return Self.decode(result: result, paddedWidth: paddedWidth,
                            paddedHeight: paddedHeight)
+    }
+
+    /// What the model handed back on this Mac, once per load: each score
+    /// output's storage and layout, and the best score in the first frame. A
+    /// Mac that finds no faces where another finds them differs HERE.
+    nonisolated static func describe(_ result: MLFeatureProvider, frame: String) {
+        var best: Float = 0
+        var layouts: [String] = []
+        for stride in strides {
+            for prefix in ["cls", "obj"] {
+                guard let a = result.featureValue(for: "\(prefix)_\(stride)")?.multiArrayValue
+                else { continue }
+                layouts.append("\(prefix)_\(stride) type=\(a.dataType.rawValue) shape=\(a.shape) strides=\(a.strides) packed=\(isPacked(a))")
+            }
+            if let cls = result.featureValue(for: "cls_\(stride)")?.multiArrayValue,
+               let obj = result.featureValue(for: "obj_\(stride)")?.multiArrayValue {
+                let c = floats(cls), o = floats(obj)
+                for i in 0..<min(c.count, o.count) {
+                    best = max(best, (min(max(c[i], 0), 1) * min(max(o[i], 0), 1)).squareRoot())
+                }
+            }
+        }
+        log.notice("""
+            detector first frame \(frame, privacy: .public): best score \(best, privacy: .public) \
+            (threshold \(scoreThreshold, privacy: .public)), units \(computeUnits().rawValue, privacy: .public); \
+            \(layouts.joined(separator: "; "), privacy: .public)
+            """)
     }
 
     /// Round up to the next multiple of 32 — OpenCV's `padW`/`padH`.
@@ -261,13 +311,32 @@ actor FaceDetector {
     /// would otherwise be reinterpreted two bytes at a time — the same trap
     /// `NSFWClassifier.probabilities` documents, and the same reason it reads
     /// through `NSNumber`.
+    /// Every value in logical order, whatever the storage.
+    ///
+    /// The raw pointer is only read when the array is float32 AND packed. Core ML
+    /// may hand back rows padded for alignment — a `[1, N, 1]` score output with
+    /// strides `[64, 16, 1]` — and reading that as one block returns one real
+    /// score followed by padding, so every face falls under the threshold and
+    /// the chooser shows none, silently (2026-09-25: one M1 Mac on macOS 27
+    /// found no faces in videos two Macs on 26.6 found them in). The accessor
+    /// follows the strides; `VisionEmbedder.l2` already relied on it.
     nonisolated static func floats(_ array: MLMultiArray) -> [Float] {
         let count = array.count
-        if array.dataType == .float32 {
+        if array.dataType == .float32, isPacked(array) {
             let pointer = array.dataPointer.bindMemory(to: Float.self, capacity: count)
             return Array(UnsafeBufferPointer(start: pointer, count: count))
         }
         return (0..<count).map { array[$0].floatValue }
+    }
+
+    /// Row-major with no gaps. A dimension of size 1 may carry any stride.
+    nonisolated static func isPacked(_ array: MLMultiArray) -> Bool {
+        var expected = 1
+        for (dim, stride) in zip(array.shape, array.strides).reversed() {
+            if dim.intValue > 1 && stride.intValue != expected { return false }
+            expected *= dim.intValue
+        }
+        return true
     }
 
     enum DetectorError: Error, LocalizedError, CustomStringConvertible {

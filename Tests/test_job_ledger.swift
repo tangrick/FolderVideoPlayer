@@ -18,6 +18,7 @@
 //
 // Run: Tests/run_job_ledger.sh
 
+@testable import FVPModel
 import Foundation
 
 @main

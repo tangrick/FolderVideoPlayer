@@ -13,6 +13,7 @@
 // Tests/fixtures/audio). Nothing here touches the network and nothing here
 // loads a model.
 
+@testable import FVPModel
 import Foundation
 
 /// A transcriber that answers instantly, so the pass can be measured without a

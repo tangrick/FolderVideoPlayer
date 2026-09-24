@@ -18,6 +18,7 @@
 //
 // Run: Tests/run_prompt_table.sh
 
+@testable import FVPModel
 import Foundation
 
 @main

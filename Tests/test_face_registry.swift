@@ -24,6 +24,7 @@
 //
 // Run: Tests/run_face_registry.sh
 
+@testable import FVPModel
 import Foundation
 
 @main

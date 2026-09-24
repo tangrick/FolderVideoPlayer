@@ -15,6 +15,7 @@
 //
 // Run: Tests/run_trained_heads.sh
 
+@testable import FVPModel
 import Foundation
 
 @main

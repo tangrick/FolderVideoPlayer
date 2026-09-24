@@ -1,3 +1,4 @@
+@testable import FVPModel
 import Foundation
 
 // Phase D gate tests: the labelled-example shape the train command receives,

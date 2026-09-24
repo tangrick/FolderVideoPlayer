@@ -110,6 +110,9 @@ MODEL_SOURCES=(
     # A playable copy made with FFmpeg when AVFoundation cannot open the
     # original: remux or transcode, and the cache it lives in. Same rule.
     "$model/PlayableCopy.swift"
+    # Check for Updates: version comparison and GitHub's release reply. It used
+    # to be compiled alone by run.sh; the module holds it now like the rest.
+    "$model/UpdateCheck.swift"
 )
 
 MODEL_FRAMEWORKS=(

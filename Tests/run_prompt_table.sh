@@ -13,6 +13,7 @@
 #   FVP_PARITY_PY    python with numpy (default /opt/anaconda3/bin/python3)
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
+. "$here/harness.sh"
 
 # Two candidate locations, because this workspace nests its scratch dirs under a
 # second `fvp/`: the models live in `~/fvp/fvp-coreml-models`, while this script
@@ -41,8 +42,5 @@ fi
 "$py" "$here/../docs/coreml-spike/table_parity.py" "$table" "$work/parity.json" \
     siglip2_base_prompts
 
-swiftc -O -o "$work/prompt_table" \
-    "$here/../FolderVideoPlayer/Model/ModelSpace.swift" \
-    "$here/../FolderVideoPlayer/Model/PromptTable.swift" \
-    "$here/test_prompt_table.swift"
+fvp_test "$here/test_prompt_table.swift" "$work/prompt_table"
 "$work/prompt_table" "$table" "$work/parity.json"

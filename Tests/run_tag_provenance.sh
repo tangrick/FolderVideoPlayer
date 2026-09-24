@@ -9,14 +9,10 @@
 # Usage: Tests/run_tag_provenance.sh
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
+. "$here/harness.sh"
 model="$here/../FolderVideoPlayer/Model"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-swiftc -O -o "$work/tag_provenance" \
-    "$model/Formatting.swift" "$model/Paths.swift" \
-    "$model/ProfileBundle.swift" \
-    "$model/JSONStore.swift" \
-    "$model/TagProvenance.swift" \
-    "$here/test_tag_provenance.swift"
+fvp_test "$here/test_tag_provenance.swift" "$work/tag_provenance"
 "$work/tag_provenance"

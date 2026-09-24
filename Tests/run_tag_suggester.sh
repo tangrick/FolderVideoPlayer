@@ -13,24 +13,12 @@
 #   FVP_PARITY_PY   python with numpy+torch (default /opt/anaconda3/bin/python3)
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
+. "$here/harness.sh"
 py="${FVP_PARITY_PY:-/opt/anaconda3/bin/python3}"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 "$py" "$here/../docs/coreml-spike/suggest_parity.py" "$work" >/dev/null
 
-swiftc -O -o "$work/tag_suggester" \
-    "$here/../FolderVideoPlayer/Model/LookAlikes.swift" \
-    "$here/../FolderVideoPlayer/Model/TagPrototypes.swift" \
-    "$here/../FolderVideoPlayer/Model/ModelSpace.swift" \
-    "$here/../FolderVideoPlayer/Model/PromptTable.swift" \
-    "$here/../FolderVideoPlayer/Model/LogisticHead.swift" \
-    "$here/../FolderVideoPlayer/Model/Paths.swift" \
-    "$here/../FolderVideoPlayer/Model/ProfileBundle.swift" \
-    "$here/../FolderVideoPlayer/Model/JSONStore.swift" \
-    "$here/../FolderVideoPlayer/Model/Formatting.swift" \
-    "$here/../FolderVideoPlayer/Model/TagSuggester.swift" \
-    "$here/../FolderVideoPlayer/Model/TagPriors.swift" \
-    "$here/../FolderVideoPlayer/Model/NeighbourPrior.swift" \
-    "$here/test_tag_suggester.swift"
+fvp_test "$here/test_tag_suggester.swift" "$work/tag_suggester"
 "$work/tag_suggester" "$work/tag_suggester_fixture.json"

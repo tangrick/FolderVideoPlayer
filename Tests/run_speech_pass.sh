@@ -12,14 +12,11 @@
 #   FVP_AUDIO_FIXTURES  where the fixtures are (default Tests/fixtures/audio)
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
-model="$here/../FolderVideoPlayer/Model"
-. "$here/model_sources.sh"
+. "$here/harness.sh"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 fixtures="${FVP_AUDIO_FIXTURES:-$here/fixtures/audio}"
 
-swiftc -O -o "$work/speech_pass" \
-    "${MODEL_SOURCES[@]}" "${MODEL_FRAMEWORKS[@]}" \
-    "$here/test_speech_pass.swift"
+fvp_test "$here/test_speech_pass.swift" "$work/speech_pass"
 "$work/speech_pass" "$fixtures"

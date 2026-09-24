@@ -15,8 +15,7 @@
 #   FVP_REGISTRY_FIXTURE  where to write the fixture (default a temp file)
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
-model="$here/../FolderVideoPlayer/Model"
-. "$here/model_sources.sh"
+. "$here/harness.sh"
 py="${FVP_PARITY_PY:-/opt/anaconda3/bin/python3}"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -24,7 +23,5 @@ trap 'rm -rf "$work"' EXIT
 fixture="${FVP_REGISTRY_FIXTURE:-$work/face_registry_fixture.json}"
 "$py" "$here/../docs/coreml-spike/face_registry_parity.py" "$fixture" >/dev/null
 
-swiftc -O -o "$work/face_registry" \
-    "${MODEL_SOURCES[@]}" "${MODEL_FRAMEWORKS[@]}" \
-    "$here/test_face_registry.swift"
+fvp_test "$here/test_face_registry.swift" "$work/face_registry"
 "$work/face_registry" "$fixture"

@@ -13,7 +13,7 @@ model="$here/../FolderVideoPlayer/Model"
 # source files and stopped compiling the moment Phase 3 and 4 landed — a
 # `swiftc` error that reads as a broken test rather than as a stale list, which
 # is the trap `model_sources.sh` exists to close.
-. "$here/model_sources.sh"
+. "$here/harness.sh"
 
 img="${FVP_PHASE2_MODEL:-$HOME/fvp-coreml-models/siglip2_base_image.mlpackage}"
 prompts="${FVP_PROMPT_DIR:-$HOME/fvp-coreml-models}"
@@ -44,7 +44,5 @@ if [ ! -e "$nsfw" ]; then
     exit 0
 fi
 
-swiftc -O -o "$work/phase2" \
-    "${MODEL_SOURCES[@]}" "${MODEL_FRAMEWORKS[@]}" \
-    "$here/test_phase2.swift"
+fvp_test "$here/test_phase2.swift" "$work/phase2"
 "$work/phase2" "$img" "$video" "$work/support" "$prompts" "$nsfw"

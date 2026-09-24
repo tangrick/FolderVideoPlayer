@@ -20,6 +20,7 @@
 //
 // Run: Tests/run_coreml.sh
 
+@testable import FVPModel
 import Foundation
 import Darwin
 import AVFoundation

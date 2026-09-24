@@ -15,6 +15,7 @@
 //
 // Run: Tests/run_shared_extras.sh
 
+@testable import FVPModel
 import Foundation
 
 @main

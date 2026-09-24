@@ -11,12 +11,9 @@
 # Usage: Tests/run_evidence_store.sh
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
-model="$here/../FolderVideoPlayer/Model"
-. "$here/model_sources.sh"
+. "$here/harness.sh"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-swiftc -O -o "$work/evidence_store" \
-    "${MODEL_SOURCES[@]}" "${MODEL_FRAMEWORKS[@]}" \
-    "$here/test_evidence_store.swift"
+fvp_test "$here/test_evidence_store.swift" "$work/evidence_store"
 "$work/evidence_store"

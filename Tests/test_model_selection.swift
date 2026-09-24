@@ -25,6 +25,7 @@
 //
 // Run: Tests/run_model_selection.sh
 
+@testable import FVPModel
 import Foundation
 
 @main

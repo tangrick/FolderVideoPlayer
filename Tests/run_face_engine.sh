@@ -21,8 +21,7 @@
 #                     because dist/ is build output and a clone has none)
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
-model="$here/../FolderVideoPlayer/Model"
-. "$here/model_sources.sh"
+. "$here/harness.sh"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -42,7 +41,5 @@ if [ -z "${FVP_BUNDLES:-}" ] && [ -f "$here/../dist/ai-bundles.json" ]; then
 fi
 export FVP_BUNDLES
 
-swiftc -O -o "$work/face_engine" \
-    "${MODEL_SOURCES[@]}" "${MODEL_FRAMEWORKS[@]}" \
-    "$here/test_face_engine.swift"
+fvp_test "$here/test_face_engine.swift" "$work/face_engine"
 "$work/face_engine" "$fixture" "${FVP_FACE_MODELS:-$fixtures}"

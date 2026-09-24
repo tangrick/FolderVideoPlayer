@@ -52,7 +52,7 @@ actor SFaceEmbedder {
         let url = Self.modelURL(root: root)
         guard Self.isInstalled(root: root) else { throw SFaceError.notInstalled(url.path) }
         let config = MLModelConfiguration()
-        config.computeUnits = .all
+        config.computeUnits = FaceDetector.computeUnits()
         self.model = try MLModel(contentsOf: url, configuration: config)
         guard let input = model.modelDescription.inputDescriptionsByName.keys.first else {
             throw SFaceError.noInput(url.path)

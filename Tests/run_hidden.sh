@@ -10,12 +10,9 @@
 # Usage: Tests/run_hidden.sh
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
-model="$here/../FolderVideoPlayer/Model"
-. "$here/model_sources.sh"
+. "$here/harness.sh"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-swiftc -O -o "$work/hidden" \
-    "${MODEL_SOURCES[@]}" "${MODEL_FRAMEWORKS[@]}" \
-    "$here/test_hidden.swift"
+fvp_test "$here/test_hidden.swift" "$work/hidden"
 "$work/hidden"

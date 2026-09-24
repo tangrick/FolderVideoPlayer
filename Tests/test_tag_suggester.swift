@@ -20,6 +20,7 @@
 //
 // Run: Tests/run_tag_suggester.sh
 
+@testable import FVPModel
 import Foundation
 
 @main

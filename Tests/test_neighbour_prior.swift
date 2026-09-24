@@ -16,6 +16,7 @@
 //
 // Run: Tests/run_neighbour_prior.sh
 
+@testable import FVPModel
 import Foundation
 
 @main

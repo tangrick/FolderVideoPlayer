@@ -6,12 +6,9 @@
 # Usage: Tests/run_eval_corpus.sh
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
-model="$here/../FolderVideoPlayer/Model"
-. "$here/model_sources.sh"
+. "$here/harness.sh"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-swiftc -O -o "$work/eval_corpus" \
-    "${MODEL_SOURCES[@]}" "${MODEL_FRAMEWORKS[@]}" \
-    "$here/test_eval_corpus.swift"
+fvp_test "$here/test_eval_corpus.swift" "$work/eval_corpus"
 "$work/eval_corpus"

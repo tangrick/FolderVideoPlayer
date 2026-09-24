@@ -27,6 +27,7 @@
 //
 // Run: Tests/run_face_engine.sh
 
+@testable import FVPModel
 import Foundation
 
 import CoreGraphics

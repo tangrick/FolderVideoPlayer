@@ -12,19 +12,12 @@
 #   FVP_PARITY_PY   python with numpy (default /opt/anaconda3/bin/python3)
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
+. "$here/harness.sh"
 py="${FVP_PARITY_PY:-/opt/anaconda3/bin/python3}"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 "$py" "$here/../docs/coreml-spike/head_parity.py" "$work/head_fixture.json" >/dev/null
 
-swiftc -O -o "$work/logistic_head" \
-    "$here/../FolderVideoPlayer/Model/Formatting.swift" \
-    "$here/../FolderVideoPlayer/Model/Paths.swift" \
-    "$here/../FolderVideoPlayer/Model/ProfileBundle.swift" \
-    "$here/../FolderVideoPlayer/Model/JSONStore.swift" \
-    "$here/../FolderVideoPlayer/Model/ModelSpace.swift" \
-    "$here/../FolderVideoPlayer/Model/LogisticHead.swift" \
-    "$here/test_logistic_head.swift" \
-    -framework Accelerate
+fvp_test "$here/test_logistic_head.swift" "$work/logistic_head"
 "$work/logistic_head" "$work/head_fixture.json"

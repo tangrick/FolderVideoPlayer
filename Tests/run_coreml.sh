@@ -16,8 +16,7 @@
 #   FVP_NSFW_MODEL   the Safe / NSFW package (default <models>/falconsai.mlpackage)
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
-model="$here/../FolderVideoPlayer/Model"
-. "$here/model_sources.sh"
+. "$here/harness.sh"
 
 # Two candidate locations, for the same reason as run_prompt_table.sh: looking in
 # only one of them turned this whole stage into a silent SKIP, and a stage that
@@ -95,7 +94,5 @@ if [ -d "$img" ]; then
     img="$work/$(basename "$img")"
 fi
 
-swiftc -O -o "$work/coreml_run" \
-    "${MODEL_SOURCES[@]}" "${MODEL_FRAMEWORKS[@]}" \
-    "$here/test_coreml_run.swift"
+fvp_test "$here/test_coreml_run.swift" "$work/coreml_run"
 "$work/coreml_run" "$img" "$prompts" "$video" "$nsfw"

@@ -69,7 +69,9 @@ actor FaceRegistry {
     /// The profile whose `faces.json` this registry reads, fixed at
     /// construction. Readable so a cached registry can be checked against the
     /// profile that is active NOW — see `CoreMLClassifier.faceEngine`.
-    let profile: String
+    /// Nonisolated because it never changes, so a caller outside the actor
+    /// (the test harness is another module) can read it without a hop.
+    nonisolated let profile: String
 
     private var detector: FaceDetector?
     private var embedder: SFaceEmbedder?
@@ -531,6 +533,10 @@ actor FaceRegistry {
                 ingest(try await faces(in: frames[index].image))
                 if seen.count >= Self.maxFaces { break }
             }
+            FaceDetector.log.notice("""
+                detectFaces: \(frames.count, privacy: .public) frames, \
+                \(seen.count, privacy: .public) distinct faces
+                """)
         }
         return Self.choose(seen: seen)
     }

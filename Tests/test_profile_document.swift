@@ -13,6 +13,7 @@
 //
 // Run: Tests/run_profile_document.sh
 
+@testable import FVPModel
 import Foundation
 
 @main

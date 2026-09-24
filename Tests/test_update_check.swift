@@ -1,6 +1,7 @@
 // Verifies UpdateCheck's version comparison and release decoding. No network:
 // the reply is a fixture shaped like GitHub's releases/latest.
 
+@testable import FVPModel
 import Foundation
 
 func check(_ name: String, _ cond: Bool) {

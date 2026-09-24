@@ -13,6 +13,7 @@
 //
 // Run: Tests/run_phase2.sh <video>   (FVP_PHASE2_MODEL / FVP_NSFW_MODEL override)
 
+@testable import FVPModel
 import Foundation
 
 var failures = 0
