@@ -195,7 +195,20 @@ extension Library {
             Library.readShared(shares: shares, folder: folder, mine: mine, since: since)
         }.value
         guard profileOpen, profileContext == context, !harvest.entries.isEmpty else { return 0 }
-        for (key, names) in harvest.entries {
+        // Another device publishes ALL its tags, including paths this Mac has
+        // since moved or renamed the file away from — it was never told. Taking
+        // those in brought the old path back beside the new one: the same
+        // video twice, once as a missing file. So a path this Mac has no entry
+        // for is only taken in if its file is there. Stat'ed off the main
+        // thread; only such new paths are asked about, not every entry.
+        let known = Set(tags.keys)
+        let fresh = harvest.entries.map(\.0).filter { !known.contains($0) }
+        let present = await Task.detached(priority: .utility) {
+            Set(fresh.filter { FileManager.default.fileExists(atPath: Paths.tagPath($0)) })
+        }.value
+        guard profileOpen, profileContext == context else { return 0 }
+        let taken = Self.mergeable(harvest.entries, known: known, present: present)
+        for (key, names) in taken {
             // An empty list is a real statement — "that device says no tags" —
             // so it removes rather than being ignored.
             setTags(names, for: Paths.tagPath(key))
@@ -203,7 +216,20 @@ extension Library {
         lastMerge = max(lastMerge, harvest.newest)
         saveTags()
         save()
-        return harvest.entries.count
+        return taken.count
+    }
+
+    /// Which of another device's entries to take in.
+    ///
+    /// A path this Mac already files tags under is always taken — that is an
+    /// ordinary edit from elsewhere. A path it does not know is taken only if
+    /// the file exists: a path whose file is gone is one this Mac moved or
+    /// removed, and the other device is replaying its old copy. Nothing is
+    /// lost by skipping it — the file is not there to carry tags.
+    nonisolated static func mergeable(_ entries: [(String, [String])],
+                                      known: Set<String>,
+                                      present: Set<String>) -> [(String, [String])] {
+        entries.filter { key, _ in known.contains(key) || present.contains(key) }
     }
 
     nonisolated static func readShared(shares: [String], folder: String, mine: String,

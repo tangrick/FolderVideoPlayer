@@ -245,13 +245,17 @@ private struct ShortcutsPage: View {
         Row(keys: ["↓", "↑"], what: "Next or previous video", where_: "Playback menu"),
         Row(keys: ["⌘←", "⌘→"], what: "Next or previous video", where_: "Playback menu"),
         Row(keys: ["⌘."], what: "Stop", where_: "Playback menu"),
+        Row(keys: ["⌘[", "⌘]"], what: "Rotate left or right — the file is not changed", where_: "Playback menu"),
+        Row(keys: ["⌘⇧F"], what: "Play every 5-star video", where_: "Playback menu"),
         Row(keys: ["double-click"], what: "Full screen, on and off", where_: "On the picture"),
         Row(keys: ["⌘F", "⌃⌘F", "Esc"], what: "Full screen, green button, and the way out", where_: "View menu"),
     ]
 
     private let windows: [Row] = [
-        Row(keys: ["⌘O"], what: "Open a folder", where_: "File menu"),
-        Row(keys: ["⌘N"], what: "Show or hide the library", where_: "File menu"),
+        Row(keys: ["⌘N", "⌘O"], what: "New profile, or open one", where_: "File menu"),
+        Row(keys: ["⌘⇧O"], what: "Open a folder", where_: "File menu"),
+        Row(keys: ["⌘⇧L"], what: "Show or hide the library", where_: "File menu"),
+        Row(keys: ["⌘⇧P"], what: "Publish this profile's tags to the shares", where_: "File menu"),
         Row(keys: ["⌘L"], what: "Show or hide the playlist", where_: "View menu"),
         Row(keys: ["⌘1"], what: "Poster frames", where_: "View menu"),
         Row(keys: ["⌘2"], what: "The list", where_: "View menu"),
@@ -260,13 +264,13 @@ private struct ShortcutsPage: View {
     private let tagging: [Row] = [
         Row(keys: ["⌘T"], what: "Tag what is playing", where_: "Tags menu"),
         Row(keys: ["⌘⇧D"], what: "Rate the playing video 5 stars", where_: "Tags menu"),
-        Row(keys: ["⌘⇧P"], what: "Tag Profiles", where_: "Tags menu"),
         Row(keys: ["Esc"], what: "Close the tag panel", where_: "Tag panel"),
         Row(keys: ["⌘-click", "⇧-click"], what: "Add one video to the selection, or take a run", where_: "Playlist"),
         Row(keys: ["⌘A", "⌘⇧A"], what: "Select all the videos showing, or none of them", where_: "Edit menu"),
         Row(keys: ["⌘I"], what: "Everything known about one video", where_: "Edit menu"),
         Row(keys: ["⌘R"], what: "Reveal what is picked in Finder", where_: "Edit menu"),
         Row(keys: ["⌘⌫"], what: "Move what is picked to the Trash", where_: "Edit menu"),
+        Row(keys: ["⌃⌘H"], what: "Hide what is picked — the file is untouched", where_: "Edit menu"),
         Row(keys: ["Space"], what: "Preview a duplicate copy, Quick Look style", where_: "Find Duplicates"),
     ]
 

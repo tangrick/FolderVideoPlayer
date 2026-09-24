@@ -41,7 +41,7 @@ struct TransportBar: View {
                     Button { app.showLibrary.toggle() } label: {
                         Label("Library", systemImage: "sidebar.leading")
                     }
-                    .help("Show or hide the library (⌘N)")
+                    .help("Show or hide the library (⌘⇧L)")
                     .accessibilityLabel(app.showLibrary ? "Hide library" : "Show library")
                 }
 

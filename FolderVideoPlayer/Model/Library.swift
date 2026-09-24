@@ -201,7 +201,7 @@ final class Library: ObservableObject {
     /// unless switched off: it is a burst of model time per video, never per
     /// second of playback, and nothing leaves the Mac.
     ///
-    /// This is the switch Settings ▸ AI & Privacy shows. It gates BOTH passes
+    /// This is the switch Settings ▸ AI shows. It gates BOTH passes
     /// (`PlayerWindow.autoClassify` and `.autoSuggest`); the right-click
     /// Classify and the tag panel's own controls are unaffected by it. Named
     /// for classification only because that is what it was when it was written

@@ -120,6 +120,14 @@ struct FolderVideoPlayerApp: App {
         }
         .defaultSize(width: 900, height: 660)
 
+        Window("Find Missing Files", id: "moved") {
+            MissingFilesWindow()
+                .environmentObject(library)
+                .environmentObject(app)
+                .frame(minWidth: 560, minHeight: 420)
+        }
+        .defaultSize(width: 680, height: 560)
+
         Window("Tag Profiles", id: "profiles") {
             TagProfilesWindow()
                 .environmentObject(library)
@@ -469,14 +477,6 @@ final class AppModel: ObservableObject {
         return false
     }
 
-    @Published var movedExpanded = false
-    /// The findings panel is open and waiting, with no scan run yet.
-    ///
-    /// Files ▾ → Find Moved or Missing Files… sets this instead of starting a
-    /// scan. A sweep with nowhere to aim walks every share, which is minutes
-    /// on a NAS and cannot be narrowed once it is moving — so the panel comes
-    /// up first, the folder gets picked, and Scan is a deliberate press.
-    @Published var movedArmed = false
     @Published var showAutoTag = false
     var autoTagRoot: String?
 
@@ -503,6 +503,8 @@ final class AppModel: ObservableObject {
     /// alone, because nothing in the window is a responder that answers the
     /// standard selectAll(_:) selector.
     var selectAllWatcher: Any?
+    /// Bare arrows → the text being typed, not the Playback menu.
+    var textArrowWatcher: Any?
     private var foregroundWatchers: [NSObjectProtocol] = []
     @Published var showTagPanel = false
     /// The transcript strip. Shares the bottom slot with the tag panel, so the
@@ -682,60 +684,44 @@ final class AppModel: ObservableObject {
     /// the whole-playlist scan asks the same question of hundreds of files
     /// when the user is looking at one.
     ///
-    /// Aims but does NOT run, the same as Files ▾. Starting here immediately
-    /// meant the one control that decides how long the hunt takes — which
-    /// folder to search — appeared only after the search was already under
-    /// way, walking every share. Both doors now open the panel with the scope
-    /// set; Scan is the press that commits.
+    /// Every way in — this, a folder's right-click, Files ▾ — only AIMS, and
+    /// the caller opens the Find Missing Files window. A sweep with nowhere to
+    /// aim walks every share, minutes on a NAS, and cannot be narrowed once it
+    /// is moving — so the window comes up first with the scope showing, the
+    /// search folder gets picked, and Search is the press that commits. The
+    /// folder right-click used to start at once, walking every share.
     func findMoved(_ paths: [String]) {
         guard !paths.isEmpty else { return }
+        movedScan.reset()     // a new scope; the old findings answer a different question
         movedScan.scopeRoot = nil
         movedScan.scopePaths = paths
         movedScan.scopeLabel = paths.count == 1
             ? (paths[0] as NSString).lastPathComponent
             : "\(paths.count) videos"
-        movedArmed = true
-        movedExpanded = true
     }
 
-    /// Aim at the view on screen, then run — the whole-playlist sweep.
+    /// Aim at one folder (folder context menus), and wait.
+    func findMoved(inFolder root: String) {
+        movedScan.reset()     // a new scope; the old findings answer a different question
+        startMovedScan(root: root)
+    }
+
+    /// Aim at the view on screen (Files ▾), and wait — so the window names
+    /// the playlist it will check before anything runs. Files ▾ used to clear
+    /// the scope instead, and the window read "every tagged video" while
+    /// Search went on to check only the playlist.
+    func findMovedHere() {
+        movedScan.reset()     // a new scope; the old findings answer a different question
+        startMovedScanHere()
+    }
+
+    /// Run what the window is already aimed at.
     ///
-    /// Nothing calls this at present: the sweep was removed from Files ▾ and
-    /// from the panel in favour of right-click → Find Missing File… on the row
-    /// that is actually in trouble. Kept whole so a sweep can be offered again
-    /// without rebuilding it. Re-aiming every run is the point: a scan always
-    /// answers about the view in front of the user, never a leftover scope
-    /// from an earlier tag.
-    /// Run what the panel is already aimed at.
-    ///
-    /// The Scan button must NOT re-aim: right-click → Find Missing File… sets
-    /// the scope to that one red row, and re-aiming here would silently widen
-    /// it back to the whole playlist between the user pointing and pressing.
-    /// Only when nothing has aimed it does this fall back to the current view.
+    /// Must NOT re-aim: right-click → Find Missing File… sets the scope to
+    /// that one red row, and re-aiming here would silently widen it back to the
+    /// whole playlist between the user pointing and pressing.
     func runMovedScan() {
         guard let library else { return }
-        movedArmed = false
-        if movedScan.scopePaths == nil && movedScan.scopeRoot == nil {
-            startMovedScanHere()
-        }
-        movedExpanded = true
-        movedScan.run(library: library)
-    }
-
-    func scanMovedHere() {
-        movedArmed = false
-        startMovedScanHere()
-        guard let library else { return }
-        movedScan.run(library: library)
-    }
-
-    /// Aim at one folder and run (folder context menus).
-    func scanMoved(root: String) {
-        startMovedScan(root: root)
-        guard let library else { return }
-        // The findings panel is only on screen while a scan has something to
-        // say, so open it here or the scan would run out of sight.
-        movedExpanded = true
         movedScan.run(library: library)
     }
 

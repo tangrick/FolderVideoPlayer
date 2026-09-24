@@ -11,6 +11,34 @@ struct MovedCandidate: Identifiable, Equatable {
     let newPath: String         // a file that exists with the same name
     let newFolder: String
     let tagNames: [String]      // what would move, shown on the row
+    /// The match's size and date, so the rows can be told apart by more
+    /// than their folder. Nil when the stat failed.
+    var size: Int64? = nil
+    var modified: Date? = nil
+    /// Does the match's size equal the size fingerprinted for the missing
+    /// file? Nil when no size was ever recorded for it.
+    var sizeMatches: Bool? = nil
+}
+
+/// A tagged video re-pointed at its new place — by the scan on its own, or
+/// by the user's pick. Kept so the window can list what moved, not only
+/// count it.
+struct MovedRepair: Identifiable, Equatable {
+    var id: String { oldKey }
+    let oldKey: String
+    let oldName: String
+    let oldFolder: String
+    let newPath: String
+    let tagNames: [String]
+    var sizeMatches: Bool? = nil
+}
+
+/// A missing tagged video, as the scan saw it: where it was and what it held.
+struct MovedOrphan: Equatable, Sendable {
+    let key: String
+    let name: String
+    let folder: String
+    let tags: [String]
 }
 
 /// A tagged video whose file could not be found anywhere it was asked. The
@@ -26,9 +54,12 @@ struct MissingRef: Identifiable, Equatable {
 ///
 /// Tags are keyed to a video's path; reorganising folders on the NAS strands
 /// every tag under the old key. Where the file's name answers exactly once on
-/// the shares, the reference is repaired automatically (one undoable edit).
-/// Ambiguous names (several matches) are offered as rows to tick, and files
-/// found nowhere are reported missing with an explicit "remove reference".
+/// the shares — and its size agrees with the size fingerprinted for the
+/// missing file, when one was — the reference is repaired automatically (one
+/// undoable edit). A lone match of a DIFFERENT size is a different video that
+/// happens to share a name (`IMG_0001.mov`), so it goes to review instead.
+/// Ambiguous names (several matches) are offered for a pick, and files found
+/// nowhere are reported missing with an explicit "remove reference".
 ///
 /// Both heavy passes run off the main thread and report progress, so a share
 /// with thousands of files never locks the window.
@@ -51,9 +82,14 @@ final class MovedScan: ObservableObject {
     @Published private(set) var phase: Phase = .idle
     /// Names that matched in several places — needs a human to pick.
     @Published private(set) var candidates: [MovedCandidate] = []
-    /// Names with exactly one live match, repaired automatically at the end
-    /// of the scan.
-    @Published private(set) var autoFixes: [(key: String, newPath: String, tags: [String])] = []
+    /// Every video this scan re-pointed — the automatic repairs and the
+    /// user's picks — so the window can list them, not only count them.
+    @Published private(set) var repairs: [MovedRepair] = []
+    /// The repairs the tags snapshot taken by this scan would put back.
+    /// Undo is offered only while that snapshot is still the latest one; any
+    /// other edit replaces it, and undoing then would revert that edit too.
+    private var undoCovers: [MovedRepair] = []
+    static let undoLabel = "reattaching moved videos"
     /// Orphans with no same-named file anywhere — offered for removal.
     @Published private(set) var unmatched: [MissingRef] = []
 
@@ -97,7 +133,8 @@ final class MovedScan: ObservableObject {
         removed = nil
         chosen = []
         candidates = []
-        autoFixes = []
+        repairs = []
+        undoCovers = []
         unmatched = []
         work = Task { [weak self] in
             guard let self else { return }
@@ -164,43 +201,34 @@ final class MovedScan: ObservableObject {
             }
 
             // Split the news: single match = auto-repair, several = ask,
-            // none = report missing.
-            var ambiguous: [MovedCandidate] = []
-            var fixes: [(key: String, newPath: String, tags: [String])] = []
-            var gone: [MissingRef] = []
-            for orphan in orphans {
-                if Task.isCancelled { return }
-                let spots = places[orphan.name.lowercased()] ?? []
-                if spots.isEmpty {
-                    gone.append(MissingRef(key: orphan.key,
-                                           name: orphan.name,
-                                           folder: orphan.folder))
-                } else if spots.count == 1 {
-                    fixes.append((orphan.key, spots[0], orphan.tags))
-                } else {
-                    for place in spots {
-                        ambiguous.append(MovedCandidate(oldKey: orphan.key,
-                                                        oldName: orphan.name,
-                                                        oldFolder: orphan.folder,
-                                                        newPath: place,
-                                                        newFolder: (place as NSString).deletingLastPathComponent,
-                                                        tagNames: orphan.tags))
-                    }
-                }
-            }
+            // none = report missing. Off the main thread: each match is
+            // stat'ed for its size and date, and on a NAS that is a network
+            // round trip per file.
+            let recorded = Dictionary(uniqueKeysWithValues: orphans.compactMap { orphan in
+                library.prints[orphan.key].map { (orphan.key, $0.size) }
+            })
+            let found = places
+            let split = await Task.detached(priority: .userInitiated) {
+                Self.split(orphans, places: found, recordedSize: recorded,
+                           stat: Self.statFile)
+            }.value
+            if Task.isCancelled { return }
             // Repairs land as one undoable edit the moment the scan ends —
             // the user asked the scan to fix what it can.
-            if !fixes.isEmpty {
-                library.rememberForUndo("reattaching moved videos")
-                for fix in fixes {
-                    _ = library.moveTags(from: fix.key, to: fix.newPath)
+            if !split.fixes.isEmpty {
+                library.rememberForUndo(Self.undoLabel)
+                for fix in split.fixes {
+                    _ = library.moveTags(from: fix.oldKey, to: fix.newPath)
                 }
                 library.saveTags()
             }
-            self.autoFixes = fixes
-            self.candidates = ambiguous
-            self.unmatched = gone
-            self.repaired = fixes.isEmpty ? nil : fixes.count
+            self.repairs = split.fixes
+            self.undoCovers = split.fixes
+            self.candidates = split.ambiguous
+            self.unmatched = split.gone
+            self.repaired = split.fixes.isEmpty ? nil : split.fixes.count
+            // Pre-pick the one match whose size agrees, where exactly one does.
+            self.chosen = Set(Self.sizeMatchPerKey(split.ambiguous))
             self.phase = .done
         }
     }
@@ -211,13 +239,14 @@ final class MovedScan: ObservableObject {
         phase = .idle
     }
 
-    /// Back to a fresh strip (Scan button), e.g. after Done.
+    /// Back to a fresh start, e.g. after Done.
     func reset() {
         work?.cancel()
         work = nil
         phase = .idle
         candidates = []
-        autoFixes = []
+        repairs = []
+        undoCovers = []
         unmatched = []
         chosen = []
         repaired = nil
@@ -225,28 +254,79 @@ final class MovedScan: ObservableObject {
         totalTagged = 0
     }
 
-    func toggle(_ id: String) {
-        if chosen.contains(id) { chosen.remove(id) } else { chosen.insert(id) }
+    /// The match picked for one missing video, if any.
+    func choice(for oldKey: String) -> String? {
+        candidates.first { $0.oldKey == oldKey && chosen.contains($0.id) }?.id
     }
 
-    /// Tick one row per moved video — the first place its name was found.
-    /// Extra matches for the same name stay manual, since re-tagging twice
-    /// would split the tags.
+    /// Pick one place for a missing video — or none. One per video: re-tagging
+    /// two places would split its tags.
+    func choose(_ id: String?, for oldKey: String) {
+        for item in candidates where item.oldKey == oldKey { chosen.remove(item.id) }
+        if let id { chosen.insert(id) }
+    }
+
+    /// Pick for every video still undecided: the one match whose size agrees
+    /// when there is one, else the first place its name was found.
     func selectAll() {
-        chosen = Set(Self.firstPerKey(candidates))
+        let sized = Set(Self.sizeMatchPerKey(candidates))
+        let sizedKeys = Set(candidates.filter { sized.contains($0.id) }.map(\.oldKey))
+        let first = Self.firstPerKey(candidates).filter { id in
+            !sizedKeys.contains(candidates.first { $0.id == id }?.oldKey ?? "")
+        }
+        chosen = sized.union(first)
     }
 
-    /// Carry the ticked ambiguous rows over too, as one edit.
+    /// Carry the picked matches over, as one edit.
+    ///
+    /// Joins the scan's own undo snapshot when that is still the latest, so
+    /// one Undo puts back everything this scan moved; otherwise it takes a
+    /// fresh one covering just these.
     func apply(_ picked: [MovedCandidate], library: Library) {
         guard !picked.isEmpty else { return }
-        library.rememberForUndo("reattaching moved videos")
+        if !canUndo(library) {
+            library.rememberForUndo(Self.undoLabel)
+            undoCovers = []
+        }
+        var done: [MovedRepair] = []
         for item in picked {
             _ = library.moveTags(from: item.oldKey, to: item.newPath)
+            done.append(MovedRepair(oldKey: item.oldKey, oldName: item.oldName,
+                                    oldFolder: item.oldFolder, newPath: item.newPath,
+                                    tagNames: item.tagNames, sizeMatches: item.sizeMatches))
         }
         library.saveTags()
-        candidates.removeAll { item in picked.contains(item) }
+        let keys = Set(picked.map(\.oldKey))
+        candidates.removeAll { keys.contains($0.oldKey) }
         chosen = []
+        repairs += done
+        undoCovers += done
         repaired = (repaired ?? 0) + movedVideoCount(of: picked)
+    }
+
+    /// Whether Undo would put back exactly this scan's repairs.
+    func canUndo(_ library: Library) -> Bool {
+        !undoCovers.isEmpty && library.undoable?.label == Self.undoLabel
+    }
+
+    /// Put this scan's repairs back, and offer each one again for review.
+    ///
+    /// It used to undo and then re-run the scan — which re-applied the very
+    /// same automatic repairs, so Undo changed nothing the user could see.
+    /// Now the undone videos come back as picks, left unpicked.
+    func undoRepairs(library: Library) {
+        guard canUndo(library), library.undoTagChange() else { return }
+        let undone = Set(undoCovers.map(\.oldKey))
+        let back = undoCovers.map { fix in
+            MovedCandidate(oldKey: fix.oldKey, oldName: fix.oldName, oldFolder: fix.oldFolder,
+                           newPath: fix.newPath,
+                           newFolder: (fix.newPath as NSString).deletingLastPathComponent,
+                           tagNames: fix.tagNames, sizeMatches: fix.sizeMatches)
+        }
+        repairs.removeAll { undone.contains($0.oldKey) }
+        candidates = back + candidates
+        undoCovers = []
+        repaired = repairs.isEmpty ? nil : repairs.count
     }
 
     /// Drop references whose file is gone for good — explicit, undoable.
@@ -269,6 +349,65 @@ final class MovedScan: ObservableObject {
 
     // MARK: - Pure helpers (unit-tested)
 
+    /// Sort each missing video into repair, review or gone.
+    ///
+    /// One match repairs itself — unless a size was recorded for the missing
+    /// file and the match's differs, which makes it a different video with
+    /// the same name. With no recorded size there is nothing to check against,
+    /// and the lone match is taken, as before.
+    nonisolated static func split(
+        _ orphans: [MovedOrphan],
+        places: [String: [String]],
+        recordedSize: [String: Int64],
+        stat: (String) -> (size: Int64?, modified: Date?)
+    ) -> (fixes: [MovedRepair], ambiguous: [MovedCandidate], gone: [MissingRef]) {
+        var fixes: [MovedRepair] = []
+        var ambiguous: [MovedCandidate] = []
+        var gone: [MissingRef] = []
+        for orphan in orphans {
+            let spots = places[orphan.name.lowercased()] ?? []
+            if spots.isEmpty {
+                gone.append(MissingRef(key: orphan.key, name: orphan.name, folder: orphan.folder))
+                continue
+            }
+            let want = recordedSize[orphan.key]
+            let options = spots.map { place -> MovedCandidate in
+                let facts = stat(place)
+                let agrees: Bool? = want.flatMap { w in facts.size.map { $0 == w } }
+                return MovedCandidate(oldKey: orphan.key, oldName: orphan.name,
+                                      oldFolder: orphan.folder, newPath: place,
+                                      newFolder: (place as NSString).deletingLastPathComponent,
+                                      tagNames: orphan.tags, size: facts.size,
+                                      modified: facts.modified, sizeMatches: agrees)
+            }
+            if options.count == 1, options[0].sizeMatches != false {
+                fixes.append(MovedRepair(oldKey: orphan.key, oldName: orphan.name,
+                                         oldFolder: orphan.folder, newPath: spots[0],
+                                         tagNames: orphan.tags,
+                                         sizeMatches: options[0].sizeMatches))
+            } else {
+                ambiguous += options
+            }
+        }
+        return (fixes, ambiguous, gone)
+    }
+
+    /// Per missing video, the one match whose size agrees — only where
+    /// exactly one does. Two same-size matches are copies, and a pick
+    /// between copies is the user's.
+    nonisolated static func sizeMatchPerKey(_ items: [MovedCandidate]) -> [String] {
+        var byKey: [String: [MovedCandidate]] = [:]
+        for item in items where item.sizeMatches == true { byKey[item.oldKey, default: []].append(item) }
+        return items.compactMap { item in
+            byKey[item.oldKey]?.count == 1 && item.sizeMatches == true ? item.id : nil
+        }
+    }
+
+    nonisolated static func statFile(_ path: String) -> (size: Int64?, modified: Date?) {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+        return ((attrs?[.size] as? NSNumber)?.int64Value, attrs?[.modificationDate] as? Date)
+    }
+
     /// The first candidate id per old location, in finding order.
     nonisolated static func firstPerKey(_ items: [MovedCandidate]) -> [String] {
         var seen = Set<String>()
@@ -286,17 +425,17 @@ final class MovedScan: ObservableObject {
     nonisolated static func collectOrphans(
         _ entries: [String: [String]],
         progress: @escaping @Sendable (Int) -> Void
-    ) async -> [(key: String, name: String, folder: String, tags: [String])] {
-        var orphans: [(key: String, name: String, folder: String, tags: [String])] = []
+    ) async -> [MovedOrphan] {
+        var orphans: [MovedOrphan] = []
         var done = 0
         for (key, tags) in entries {
             if Task.isCancelled { break }
             let full = Paths.tagPath(key)
             if FileManager.default.fileExists(atPath: full) == false {
-                orphans.append((key,
-                                (full as NSString).lastPathComponent,
-                                (full as NSString).deletingLastPathComponent,
-                                tags))
+                orphans.append(MovedOrphan(key: key,
+                                           name: (full as NSString).lastPathComponent,
+                                           folder: (full as NSString).deletingLastPathComponent,
+                                           tags: tags))
             }
             done += 1
             if done.isMultiple(of: 25) {

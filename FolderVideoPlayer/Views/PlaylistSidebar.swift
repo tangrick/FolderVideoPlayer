@@ -71,14 +71,6 @@ struct PlaylistSidebar: View {
                 HiddenBanner()
                 Divider()
             }
-            // Only on screen when it has something to say. It used to sit
-            // there permanently offering a Scan button, which is the
-            // whole-playlist sweep the per-row "Find Missing File…" replaced;
-            // idle, it was a bar of nothing above every playlist.
-            if app.movedArmed || app.movedScan.phase != .idle || app.movedScan.hasFindings {
-                MovedScanPanel(scan: app.movedScan, expanded: $app.movedExpanded)
-                Divider()
-            }
             // The action row sits DIRECTLY on the list, not up in the toolbar.
             // Select, AI and Files all act on the videos below them, and a
             // control that acts on a list belongs against that list — with the
@@ -372,25 +364,18 @@ struct PlaylistSidebar: View {
 
     /// Everything that touches files on disk, under one heading.
     ///
-    /// The playlist-wide "Find Moved or Missing Files Here" is deliberately
-    /// not here any more: it asked the question of every video in the list
-    /// when the question is nearly always about one red row. Right-click that
-    /// row instead. The whole-playlist scan is still built and still runs —
-    /// the panel's own Scan button reaches it — so widening it again later is
-    /// a one-line change.
+    /// "Find Moved or Missing Files…" aims the Find Missing Files window at
+    /// this playlist; right-clicking one red row aims it at just that row.
     private var filesMenu: some View {
         Menu {
             // The whole-playlist sweep, back where a person looks for it. The
             // per-row "Find Missing File…" is still the quick path for one red
             // row; this answers "what else have I lost?", which no row can.
             Button("Find Moved or Missing Files…") {
-                // Clear any scope a previous right-click left behind, or this
-                // would quietly scan one row while claiming the playlist.
-                app.movedScan.scopePaths = nil
-                app.movedScan.scopeRoot = nil
-                app.movedScan.scopeLabel = nil
-                app.movedArmed = true
-                app.movedExpanded = true
+                // Aimed at this playlist, replacing any scope a previous
+                // right-click left behind — the window names it before Search.
+                app.findMovedHere()
+                openWindow(id: "moved")
             }
                 .help("Check every video in the playlist for files that have moved or gone")
             Button("Find Duplicates…") { openWindow(id: "duplicates") }
@@ -2298,6 +2283,7 @@ struct RowMenu: View {
                ? "Find \(targets.count) Missing Files…"
                : "Find Missing File…") {
             app.findMoved(targets)
+            openWindow(id: "moved")
         }
         Divider()
         // Classify the ticked rows. The playlist-wide action in the AI menu

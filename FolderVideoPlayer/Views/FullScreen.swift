@@ -91,6 +91,38 @@ extension AppModel {
             }
             return swallowed ? nil : event
         }
+
+        // Typing wins over the arrow keys too. Skip and Next/Previous are
+        // Playback-menu items on the bare arrows, and the menu is asked about
+        // a key before the focused field sees it — so without this, ← and →
+        // skip the video instead of moving the caret in the name filter, the
+        // tag field or the transcript search. While any window has an editable
+        // text view focused, the arrow goes straight to it and the menu never
+        // hears of it. Shift stays allowed: ⇧← extends a text selection and
+        // matches no menu item anyway.
+        //
+        // ⌘← and ⌘→ are Previous and Next outside a text field. They live here
+        // rather than as menu items so the Playback menu shows one Next and one
+        // Previous; inside a field they stay start and end of line.
+        textArrowWatcher = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // 123–126 are ← → ↓ ↑.
+            let mods = event.modifierFlags.intersection([.command, .option, .control])
+            guard (123...126).contains(event.keyCode), mods.isEmpty || mods == .command
+            else { return event }
+            let key = event.keyCode
+            nonisolated(unsafe) let event = event
+            var swallowed = false
+            MainActor.assumeIsolated {
+                if let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isEditable {
+                    editor.keyDown(with: event)
+                    swallowed = true
+                } else if mods == .command, key == 123 || key == 124, let pb = self.playback {
+                    if key == 124 { pb.next() } else { pb.previous() }
+                    swallowed = true
+                }
+            }
+            return swallowed ? nil : event
+        }
     }
 
     /// In and out of full screen. The window does the work; the layout follows

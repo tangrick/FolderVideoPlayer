@@ -4,8 +4,12 @@ import SwiftUI
 /// The Settings window — ⌘, — the things a person is entitled to be able to
 /// change without being told where.
 ///
-/// Five tabs, macOS's own layout: General, Appearance, AI & Privacy, Library,
-/// Advanced. Every control here writes to something that already existed
+/// Six tabs, macOS's own layout: General, Appearance, AI, Privacy, Library,
+/// Advanced — each a grouped form with named sections, the look of System
+/// Settings. A switch lives on the tab its subject is named after: the AI
+/// switches on AI, the duplicate finder's on Library. Privacy used to hold
+/// both, so "Face Recognition…" landed on AI with no face switch on it.
+/// Every control here writes to something that already existed
 /// (`library`, `Paths`, the engine) — this window introduces no second way to
 /// store a preference.
 ///
@@ -90,30 +94,22 @@ private struct SettingRow<Control: View>: View {
                 .controlSize(.regular)
                 .fixedSize()
         }
-        .padding(.vertical, 7)
     }
 }
 
-/// One tab's worth of rows, with macOS's roomy padding, in a scroll view.
+/// One tab: a grouped form, whose `Section`s are the rounded boxes of System
+/// Settings.
 ///
-/// This said "no scrolling — the window is sized so nothing here is off the
-/// bottom", and that held until the AI pane grew a fourth capability. A
-/// Settings window cannot grow past its content, so the last rows were simply
-/// unreachable: no scroll bar, no resize, nothing to drag. Scrolling is the
-/// honest fix — the window keeps its size and the pane keeps its rows.
+/// It must scroll: a Settings window cannot grow past its content, and when
+/// the AI pane grew a fourth capability its last rows were simply unreachable.
+/// A grouped `Form` scrolls on its own. Anything placed in it becomes a row, so
+/// a tab never puts a `Spacer` in here.
 private struct SettingsPage<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 0) {
-                content()
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        Form { content() }
+            .formStyle(.grouped)
     }
 }
 
@@ -127,7 +123,6 @@ private struct StatusLine: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 6)
         }
     }
 }
@@ -139,46 +134,42 @@ private struct GeneralSettings: View {
 
     var body: some View {
         SettingsPage {
-            SettingRow(title: "Skip step",
-                       detail: "How far the ← and → keys jump") {
-                Picker("", selection: $library.skipSeconds) {
-                    ForEach(Library.skipChoices, id: \.self) { seconds in
-                        Text("\(seconds)s").tag(seconds)
+            Section("Playback") {
+                SettingRow(title: "Skip step",
+                           detail: "How far the ← and → keys jump") {
+                    Picker("", selection: $library.skipSeconds) {
+                        ForEach(Library.skipChoices, id: \.self) { seconds in
+                            Text("\(seconds)s").tag(seconds)
+                        }
                     }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 210)
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 210)
-            }
-            SettingRow(title: "Default speed",
-                       detail: "What a video starts at; the transport bar can change it while playing") {
-                Picker("", selection: $library.speed) {
-                    ForEach(Tuning.speeds, id: \.self) { speed in
-                        Text(speed == 1 ? "Normal" : "\(speed.formatted())×").tag(speed)
+                SettingRow(title: "Default speed",
+                           detail: "What a video starts at; the transport bar can change it while playing") {
+                    Picker("", selection: $library.speed) {
+                        ForEach(Tuning.speeds, id: \.self) { speed in
+                            Text(speed == 1 ? "Normal" : "\(speed.formatted())×").tag(speed)
+                        }
                     }
-                }
-                .labelsHidden()
-                .frame(width: 120)
-            }
-            SettingRow(title: "Play a folder in",
-                       detail: "Folder order keeps the order the files came in") {
-                Picker("", selection: $library.order) {
-                    ForEach(PlayOrder.allCases) { Text($0.title).tag($0) }
-                }
-                .labelsHidden()
-                .frame(width: 150)
-            }
-            SettingRow(title: "Resume where I left off",
-                       detail: "Skips the first 30 seconds and the last 30 — at either end, starting over is the right thing") {
-                Toggle("", isOn: $library.resumeEnabled)
                     .labelsHidden()
-                    .toggleStyle(.switch)
-            }
-            SettingRow(title: "Ask which profile at startup",
-                       detail: "Only matters on a Mac holding more than one profile. You can always switch in Tag Profiles.") {
-                Toggle("", isOn: $library.askProfileAtStartup)
+                    .frame(width: 120)
+                }
+                SettingRow(title: "Play a folder in",
+                           detail: "Folder order keeps the order the files came in") {
+                    Picker("", selection: $library.order) {
+                        ForEach(PlayOrder.allCases) { Text($0.title).tag($0) }
+                    }
                     .labelsHidden()
-                    .toggleStyle(.switch)
+                    .frame(width: 150)
+                }
+                SettingRow(title: "Resume where I left off",
+                           detail: "Skips the first 30 seconds and the last 30 — at either end, starting over is the right thing") {
+                    Toggle("", isOn: $library.resumeEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
             }
         }
     }
@@ -191,35 +182,39 @@ private struct AppearanceSettings: View {
 
     var body: some View {
         SettingsPage {
-            SettingRow(title: "Default view",
-                       detail: "⌘1 and ⌘2 switch it while you work; this is what a new session opens with") {
-                Picker("", selection: $library.playlistStyle) {
-                    Text("List").tag(PlaylistStyle.list)
-                    Text("Poster frames").tag(PlaylistStyle.icons)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 200)
-            }
-            SettingRow(title: "Poster frames in the list",
-                       detail: "A thumbnail on every row. Turning this off makes rows shorter and a big list faster to scan.") {
-                Toggle("", isOn: $library.showThumbnails)
+            Section("Playlist") {
+                SettingRow(title: "Default view",
+                           detail: "⌘1 and ⌘2 switch it while you work; this is what a new session opens with") {
+                    Picker("", selection: $library.playlistStyle) {
+                        Text("List").tag(PlaylistStyle.list)
+                        Text("Poster frames").tag(PlaylistStyle.icons)
+                    }
+                    .pickerStyle(.segmented)
                     .labelsHidden()
-                    .toggleStyle(.switch)
+                    .frame(width: 200)
+                }
+                SettingRow(title: "Poster frames in the list",
+                           detail: "A thumbnail on every row. Turning this off makes rows shorter and a big list faster to scan.") {
+                    Toggle("", isOn: $library.showThumbnails)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
             }
-            SettingRow(title: "Panel widths",
-                       detail: "Library \(Int(library.librarySidebarWidth ?? 250)) pt · Playlist \(Int(library.playlistWidth)) pt — drag either edge to change them") {
-                Button("Reset") {
-                    library.librarySidebarWidth = nil
-                    library.playlistWidth = 320
-                    library.save()
+            Section("Window") {
+                SettingRow(title: "Panel widths",
+                           detail: "Library \(Int(library.librarySidebarWidth ?? 250)) pt · Playlist \(Int(library.playlistWidth)) pt — drag either edge to change them") {
+                    Button("Reset") {
+                        library.librarySidebarWidth = nil
+                        library.playlistWidth = 320
+                        library.save()
+                    }
                 }
             }
         }
     }
 }
 
-// MARK: - AI & Privacy
+// MARK: - Privacy
 
 private struct PrivacySettings: View {
     @ObservedObject var library: Library
@@ -242,67 +237,31 @@ private struct PrivacySettings: View {
 
     var body: some View {
         SettingsPage {
-            Text("Everything the app works out — tags, faces, duplicates — is computed on this Mac. Nothing is uploaded, and no model leaves the computer it was downloaded to.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.bottom, 6)
-
-            SettingRow(title: "Face Recognition",
-                       detail: "Find faces, and offer the people you have named. Off means no face is detected, embedded or stored anywhere in the app — and your named people stay, as ordinary tags.") {
-                Toggle("", isOn: $library.facesEnabled)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-            }
-            SettingRow(title: "Work on the video while it plays",
-                       detail: "Classifies it and offers tag ideas once, a few seconds of model time per video. Off means nothing starts on its own — right-click Classify and the tag panel still work.") {
-                Toggle("", isOn: $library.autoWorkWhilePlaying)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-            }
-            Text("A video that has been worked on keeps its verdict and its chips. Playing one starts a Safe/NSFW classification and a few tag ideas, which appear in the tag panel with the moments they were seen at. Right-click videos in the playlist to classify a batch.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            SettingRow(title: "Fingerprint while playing",
-                       detail: "Remembers a file's identity so a copy that moved can be found again. Costs a disk read per video played.") {
-                Toggle("", isOn: $library.watchDupes)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-            }
-            SettingRow(title: "Read duplicates end to end",
-                       detail: "In the duplicate finder: compares the survivors in full instead of two samples, so a match is certain — and slower to get.") {
-                Toggle("", isOn: $library.verifyDupes)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-            }
-            SettingRow(title: "Hidden videos",
-                       detail: hiddenDetail) {
-                HStack(spacing: 8) {
-                    if library.hidden.isEmpty {
-                        Button("Set Password…") { hiddenSheet = .create }
-                            .disabled(library.lock.hasPassword)
-                    } else {
-                        Button("Show…") { app.showHiddenVideos() }
-                            .disabled(library.lock.isUnlocked)
-                        if library.lock.hasPassword {
-                            Button("Change Password…") { hiddenSheet = .change }
-                            Button("Remove") { removeHiddenPassword() }
-                        } else {
+            Section {
+                SettingRow(title: "Hidden videos",
+                           detail: hiddenDetail) {
+                    HStack(spacing: 8) {
+                        if library.hidden.isEmpty {
                             Button("Set Password…") { hiddenSheet = .create }
+                                .disabled(library.lock.hasPassword)
+                        } else {
+                            Button("Show…") { app.showHiddenVideos() }
+                                .disabled(library.lock.isUnlocked)
+                            if library.lock.hasPassword {
+                                Button("Change Password…") { hiddenSheet = .change }
+                                Button("Remove") { removeHiddenPassword() }
+                            } else {
+                                Button("Set Password…") { hiddenSheet = .create }
+                            }
                         }
                     }
                 }
+                StatusLine(text: status)
+            } header: {
+                Text("Hidden Videos")
+            } footer: {
+                Text("Everything the app works out — tags, faces, duplicates — is computed on this Mac. Nothing is uploaded, and no model leaves the computer it was downloaded to.")
             }
-            HStack(spacing: 10) {
-                Button("Open Tags Folder") {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: Paths.support))
-                }
-                Button("Open Models Folder") {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: AnalysisEngine.modelsDir))
-                }
-            }
-            .padding(.top, 8)
-            StatusLine(text: status)
         }
         .sheet(item: $hiddenSheet) { kind in
             HiddenPasswordSheet(kind: kind) { hiddenSheetDone(kind) }
@@ -352,16 +311,24 @@ private struct LibrarySettings: View {
 
     var body: some View {
         SettingsPage {
-            SettingRow(title: "This profile",
-                       detail: "Whose tags are in force. Other profiles keep their own and are not merged with yours.") {
-                HStack(spacing: 8) {
-                    Text(library.person).fontWeight(.medium)
-                    Button("Profiles…", action: openProfiles)
+            Section("Profile") {
+                SettingRow(title: "This profile",
+                           detail: "Whose tags are in force. Other profiles keep their own and are not merged with yours.") {
+                    HStack(spacing: 8) {
+                        Text(library.person).fontWeight(.medium)
+                        Button("Profiles…", action: openProfiles)
+                    }
+                }
+                SettingRow(title: "Ask which profile at startup",
+                           detail: "Only matters on a Mac holding more than one profile. You can always switch in Tag Profiles.") {
+                    Toggle("", isOn: $library.askProfileAtStartup)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
                 }
             }
-            SettingRow(title: "Recent folders to keep",
-                       detail: "Pinned folders are not counted — they stay until you unpin them") {
-                HStack(spacing: 8) {
+            Section("Recent Folders") {
+                SettingRow(title: "Folders to keep",
+                           detail: "Pinned folders are not counted — they stay until you unpin them") {
                     Stepper(value: $library.recentLimit, in: 3...20) {
                         Text("\(library.recentLimit)")
                             .monospacedDigit()
@@ -369,29 +336,44 @@ private struct LibrarySettings: View {
                     }
                     .fixedSize()
                 }
-            }
-            SettingRow(title: "Recent list",
-                       detail: library.recent.isEmpty
-                           ? "Nothing yet — open a folder and it will appear here"
-                           : "\(library.recent.count) folder\(library.recent.count == 1 ? "" : "s") remembered") {
-                Button("Forget Recent") {
-                    library.recent = []
-                    library.save()
-                    status = "Recent folders cleared."
+                SettingRow(title: "Recent list",
+                           detail: library.recent.isEmpty
+                               ? "Nothing yet — open a folder and it will appear here"
+                               : "\(library.recent.count) folder\(library.recent.count == 1 ? "" : "s") remembered") {
+                    Button("Forget Recent") {
+                        library.recent = []
+                        library.save()
+                        status = "Recent folders cleared."
+                    }
+                    .disabled(library.recent.isEmpty)
                 }
-                .disabled(library.recent.isEmpty)
             }
-            SettingRow(title: "Tags",
-                       detail: "\(library.knownTags().count) tags across \(library.tags.count) videos") {
-                // A one-file copy stopped being a backup the moment a profile
-                // became a bundle — the readings, people and heads would all
-                // be left behind. Export Profile… (File menu) copies the whole
-                // document; this row keeps a plain tags file for hand-off.
-                Button("Save a Copy…") { saveTagsCopy() }
-                    .disabled(library.knownTags().isEmpty)
+            Section("Tags") {
+                SettingRow(title: "Tags",
+                           detail: "\(library.knownTags().count) tags across \(library.tags.count) videos") {
+                    // A one-file copy stopped being a backup the moment a profile
+                    // became a bundle — the readings, people and heads would all
+                    // be left behind. Export Profile… (File menu) copies the whole
+                    // document; this row keeps a plain tags file for hand-off.
+                    Button("Save a Copy…") { saveTagsCopy() }
+                        .disabled(library.knownTags().isEmpty)
+                }
+                StatusLine(text: status)
             }
-            StatusLine(text: status)
-            Spacer(minLength: 0)
+            Section("Duplicates") {
+                SettingRow(title: "Fingerprint while playing",
+                           detail: "Remembers a file's identity so a copy that moved can be found again. Costs a disk read per video played.") {
+                    Toggle("", isOn: $library.watchDupes)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+                SettingRow(title: "Read duplicates end to end",
+                           detail: "In the duplicate finder: compares the survivors in full instead of two samples, so a match is certain — and slower to get.") {
+                    Toggle("", isOn: $library.verifyDupes)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+            }
         }
     }
 
@@ -426,55 +408,80 @@ private struct AISettings: View {
     @ObservedObject var downloads: ModelDownloader
     @State private var footprint: Int64 = 0
     @State private var note: String?
+    /// Which rows have their model details open. Closed by default: the
+    /// model, pack and kept-version lines are for choosing and bug reports,
+    /// and stacked open under every feature they buried the Install buttons.
+    @State private var expanded: Set<AICapability.Feature> = []
 
     var body: some View {
         SettingsPage {
-            Text(app.ai.anythingWorks
-                 ? "These run entirely on this Mac. Nothing is uploaded and no account is needed."
-                 : "The player, tags, stars and the duplicate finder all work without these. "
-                   + "Add only what you want.")
+            // The switches that decide WHEN the models run, on the same tab as
+            // the models. They lived on Privacy, so "Face Recognition…" in the
+            // menu opened this tab and found no face switch on it.
+            Section {
+                SettingRow(title: "Work on the video while it plays",
+                           detail: "Classifies it and offers tag ideas once, a few seconds of model time per video. Off means nothing starts on its own — right-click Classify and the tag panel still work.") {
+                    Toggle("", isOn: $library.autoWorkWhilePlaying)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+                SettingRow(title: "Face Recognition",
+                           detail: "Find faces, and offer the people you have named. Off means no face is detected, embedded or stored anywhere in the app — and your named people stay, as ordinary tags.") {
+                    Toggle("", isOn: $library.facesEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+            } header: {
+                Text("Automatic")
+            }
+
+            Section {
+                // First, because it explains every row at once — and the
+                // "Needs the download list" help text points at "the line above".
+                catalogueLine
+                ForEach(AICapability.Feature.allCases) { feature in
+                    featureRow(feature)
+                }
+            } header: {
+                Text("Models")
+            } footer: {
+                Text(app.ai.anythingWorks
+                     ? "These run entirely on this Mac. Nothing is uploaded and no account is needed."
+                     : "The player, tags, stars and the duplicate finder all work without these. "
+                       + "Add only what you want.")
+            }
+
+            Section {
+                // Storage, the engine in force, and the re-probe, on one line.
+                // `coreml` is what a downloaded DMG runs; `python` means a dev
+                // override is in force, and that is worth seeing here rather
+                // than deducing from behaviour.
+                HStack(spacing: 8) {
+                    Label(footprint > 0
+                          ? "Models use \(humanSize(footprint))"
+                          : "No models downloaded",
+                          systemImage: "internaldrive")
+                    Text("·")
+                    Text("Engine: \(CoreMLClassifier.mode.rawValue)")
+                        .textSelection(.enabled)
+                    Spacer()
+                    Button("Check Again") {
+                        app.refreshAICapability()
+                        Task { footprint = await measure() }
+                        note = nil
+                    }
+                    .controlSize(.small)
+                }
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.bottom, 8)
-
-            ForEach(AICapability.Feature.allCases) { feature in
-                featureRow(feature)
-                Divider()
+                StatusLine(text: note)
             }
-
-            catalogueLine
 
             if let ledger = app.jobs {
-                AnalysisJobHistory(ledger: ledger, app: app)
-            }
-
-            HStack {
-                Text(footprint > 0
-                     ? "Models are using \(humanSize(footprint))."
-                     : "No models downloaded.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Check Again") {
-                    app.refreshAICapability()
-                    Task { footprint = await measure() }
-                    note = nil
+                Section {
+                    AnalysisJobHistory(ledger: ledger, app: app)
                 }
             }
-            .padding(.top, 8)
-
-            // Which engine is actually running. `coreml` is what a downloaded
-            // DMG runs; `python` means a dev override is in force, and that is
-            // worth seeing here rather than deducing from behaviour.
-            HStack(spacing: 4) {
-                Text("Engine:")
-                Text(CoreMLClassifier.mode.rawValue).monospaced()
-            }
-            .font(.caption2)
-            .foregroundStyle(.tertiary)
-            .textSelection(.enabled)
-            StatusLine(text: note)
         }
         .task {
             footprint = await measure()
@@ -498,15 +505,14 @@ private struct AISettings: View {
     @ViewBuilder
     private var catalogueLine: some View {
         if case .unavailable(let why) = downloads.state {
-            HStack(alignment: .top, spacing: 8) {
-                Text(why)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Label(why, systemImage: "exclamationmark.triangle")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
                 Button("Try Again") { Task { await downloads.refreshCatalogue() } }
             }
-            .padding(.top, 4)
         } else if downloads.manifest == nil {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
@@ -514,110 +520,143 @@ private struct AISettings: View {
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
             }
-            .padding(.top, 4)
         }
     }
 
-    @ViewBuilder
     private func featureRow(_ feature: AICapability.Feature) -> some View {
         let working = app.ai.works(feature)
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: feature.symbol)
-                .font(.system(size: 15))
-                .foregroundStyle(working ? Color.accentColor : .secondary)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(feature.title).fontWeight(.medium)
-                    if working {
-                        Text("Ready")
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Color.green.opacity(0.18), in: .rect(cornerRadius: 4))
+        let models = feature.installedModelNames()
+        let chosen = downloads.chosenPack(for: feature)
+        let offered = downloads.bundles(for: feature)
+        let kept = downloads.keptVersions(for: feature)
+        let hasDetails = !models.isEmpty || chosen != nil || !offered.isEmpty || !kept.isEmpty
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: feature.symbol)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(working ? Color.accentColor : .secondary)
+                    .frame(width: 30, height: 30)
+                    .background((working ? Color.accentColor : Color.secondary).opacity(0.12),
+                                in: .rect(cornerRadius: 7))
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(feature.title).fontWeight(.medium)
+                        if working {
+                            Text("Ready")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.green)
+                                .padding(.horizontal, 6).padding(.vertical, 1)
+                                .background(Color.green.opacity(0.15), in: .capsule)
+                        }
                     }
-                }
-                Text(feature.what)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                // Every blocker is named. A feature that cannot run must say
-                // which thing is missing, not merely that it is unavailable.
-                ForEach(app.ai.blockers[feature] ?? [], id: \.reason) { blocker in
-                    Text("• " + blocker.reason)
+                    Text(feature.what)
                         .font(.caption)
-                        .foregroundStyle(blocker.fixableInApp ? .secondary : .tertiary)
+                        .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                // The model files this feature is actually running on.
-                //
-                // Read from the support directory rather than a constant, so
-                // the line cannot outlive the model it names — the vision
-                // tower has been swapped once already (MobileCLIP S2 →
-                // SigLIP 2) and a hardcoded label would have gone on claiming
-                // the old one. Selectable, because the point is to be able to
-                // copy it into a bug report.
-                let models = feature.installedModelNames()
-                if !models.isEmpty {
-                    HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text("Model:")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                        Text(models.joined(separator: ", "))
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                installControl(feature)
+            }
+
+            // Every blocker is named. A feature that cannot run must say which
+            // thing is missing, not merely that it is unavailable. These and
+            // the download note stay outside the disclosure: they are why the
+            // row cannot do its job, not detail.
+            let blockers = app.ai.blockers[feature] ?? []
+            let why = downloads.note(for: feature)
+            if !blockers.isEmpty || why != nil {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(blockers, id: \.reason) { blocker in
+                        Label(blocker.reason, systemImage: "exclamationmark.circle")
+                            .foregroundStyle(blocker.fixableInApp ? .secondary : .tertiary)
+                    }
+                    if let why {
+                        Label(why, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
                     }
                 }
-                // Which pack this feature is SET TO USE, and which of the
-                // catalogue's packs it could use instead.
-                //
-                // The "Using:" line is read from the choice record rather than
-                // from the catalogue, so it still names the pack after the
-                // catalogue has moved on and stopped offering it.
-                //
-                // The pop-up is shown whenever the catalogue offers anything for
-                // this feature, even a single pack: it names the pack, its
-                // revision and its licence in one place, which is what the line
-                // it replaced did — and the moment a second pack is published it
-                // is already the control that chooses between them. Showing it
-                // only when there were two meant a user who was told a picker
-                // exists could not see one.
-                let offered = downloads.bundles(for: feature)
-                if let chosen = downloads.chosenPack(for: feature) {
-                    Text("Using: " + chosen.summary)
-                        .font(.caption2)
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 42)
+            }
+
+            if hasDetails {
+                DisclosureGroup(isExpanded: Binding(
+                    get: { expanded.contains(feature) },
+                    set: { if $0 { expanded.insert(feature) } else { expanded.remove(feature) } }
+                )) {
+                    modelDetails(feature, models: models, chosen: chosen,
+                                 offered: offered, kept: kept)
+                        .padding(.top, 4)
+                } label: {
+                    Text("Model details")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.leading, 42)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// The model files, the pack in force, the pack picker and the kept
+    /// versions — one labelled grid, so the four lines line up instead of
+    /// each carrying its own ragged "Label:" prefix.
+    ///
+    /// Model is read from the support directory rather than a constant, so it
+    /// cannot outlive the model it names (the vision tower has been swapped
+    /// once already, MobileCLIP S2 → SigLIP 2); selectable, for bug reports.
+    /// Using is read from the choice record rather than the catalogue, so it
+    /// still names the pack after the catalogue stops offering it. The pack
+    /// picker shows even for a single pack: it names the pack, its revision and
+    /// licence, and is already the chooser the moment a second is published.
+    /// Kept versions can be switched back to without a download — the half of
+    /// a model choice an install used to destroy.
+    private func modelDetails(_ feature: AICapability.Feature, models: [String],
+                              chosen: ModelSelection?, offered: [AIBundle],
+                              kept: [StoredVersion]) -> some View {
+        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 6) {
+            if !models.isEmpty {
+                GridRow {
+                    detailLabel("Model")
+                    Text(models.joined(separator: ", "))
+                        .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if !offered.isEmpty {
-                    packPicker(feature, offered: offered)
-                }
-                // Which versions of this feature's pack are kept on this Mac,
-                // ready to switch back to without a download.
-                //
-                // This is the half of a model choice that an install used to
-                // destroy: installing revision 2 overwrote revision 1, so
-                // "try the new one" was a one-way door. Selecting a copy here
-                // re-installs it from the store — the same transaction, no
-                // network — and the bin beside it reclaims that copy's disk
-                // without touching the version in use.
-                let kept = downloads.keptVersions(for: feature)
-                if !kept.isEmpty {
-                    keptRow(kept)
-                }
-                if let why = downloads.note(for: feature) {
-                    Text("• " + why)
+            }
+            if let chosen {
+                GridRow {
+                    detailLabel("Using")
+                    Text(chosen.summary)
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            Spacer(minLength: 0)
-            installControl(feature)
+            if !offered.isEmpty {
+                GridRow {
+                    detailLabel("Pack")
+                    packPicker(feature, offered: offered)
+                }
+            }
+            if !kept.isEmpty {
+                GridRow {
+                    detailLabel("Kept")
+                    keptRow(kept)
+                }
+            }
         }
-        .padding(.vertical, 7)
+    }
+
+    private func detailLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+            .gridColumnAlignment(.trailing)
     }
 
     /// Pick which of the catalogue's packs a capability uses.
@@ -630,9 +669,6 @@ private struct AISettings: View {
     private func packPicker(_ feature: AICapability.Feature, offered: [AIBundle]) -> some View {
         let current = downloads.bundle(for: feature)?.id ?? ""
         return HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text("Pack:")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
             Picker("", selection: Binding(
                 get: { current },
                 set: { id in
@@ -646,7 +682,7 @@ private struct AISettings: View {
             }
             .labelsHidden()
             .pickerStyle(.menu)
-            .font(.caption2)
+            .controlSize(.small)
             .fixedSize()
         }
     }
@@ -660,9 +696,6 @@ private struct AISettings: View {
     private func keptRow(_ kept: [StoredVersion]) -> some View {
         let shown = kept.first { downloads.isLive($0) } ?? kept[0]
         return HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text("Kept:")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
             Picker("", selection: Binding(
                 get: { shown.token },
                 set: { token in
@@ -679,7 +712,7 @@ private struct AISettings: View {
             }
             .labelsHidden()
             .pickerStyle(.menu)
-            .font(.caption2)
+            .controlSize(.small)
             .fixedSize()
             Button {
                 Task { await downloads.discard(shown) }
@@ -687,7 +720,7 @@ private struct AISettings: View {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
-            .font(.caption2)
+            .font(.caption)
             .help(downloads.isLive(shown)
                   ? "Forget this copy — the version in use stays installed"
                   : "Forget this copy")
@@ -800,35 +833,41 @@ private struct AdvancedSettings: View {
 
     var body: some View {
         SettingsPage {
-            Text("The engine")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            SettingRow(title: engine.phase.title,
-                       detail: engine.longStatus) {
-                Button(checking ? "Checking…" : "Check") { check() }
-                    .disabled(checking)
+            Section {
+                // Titled "Engine", not by its phase: the phase is what the row
+                // reports, and a row called "Idle" read as a setting named Idle.
+                SettingRow(title: "Engine",
+                           detail: engine.phase.title + " — " + engine.longStatus) {
+                    Button(checking ? "Checking…" : "Check") { check() }
+                        .disabled(checking)
+                }
+                SettingRow(title: "Engine log",
+                           detail: engineLogSummary) {
+                    Button("Open Log") {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: AnalysisEngine.logPath))
+                    }
+                    .disabled(!FileManager.default.fileExists(atPath: AnalysisEngine.logPath))
+                }
+                StatusLine(text: result)
+            } header: {
+                Text("Engine")
             }
-            SettingRow(title: "Where things live",
-                       detail: Paths.support) {
-                Button("Reveal") {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: Paths.support))
+            // The one place these folders are opened from. Privacy had its own
+            // pair of buttons for the same two folders.
+            Section("Files") {
+                SettingRow(title: "Tags and settings",
+                           detail: Paths.support) {
+                    Button("Reveal") {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: Paths.support))
+                    }
+                }
+                SettingRow(title: "Model files",
+                           detail: "Downloaded once, kept beside the tags") {
+                    Button("Reveal") {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: AnalysisEngine.modelsDir))
+                    }
                 }
             }
-            SettingRow(title: "Engine log",
-                       detail: engineLogSummary) {
-                Button("Open Log") {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: AnalysisEngine.logPath))
-                }
-                .disabled(!FileManager.default.fileExists(atPath: AnalysisEngine.logPath))
-            }
-            SettingRow(title: "Model files",
-                       detail: "Downloaded once, kept beside the tags") {
-                Button("Show") {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: AnalysisEngine.modelsDir))
-                }
-            }
-            StatusLine(text: result)
-            Spacer(minLength: 0)
         }
     }
 
@@ -920,6 +959,5 @@ private struct AnalysisJobHistory: View {
                 .padding(.vertical, 3)
             }
         }
-        .padding(.vertical, 8)
     }
 }

@@ -183,7 +183,7 @@ Profile, so two people never overwrite each other. Device, because one person
 with two machines is still two writers, and two writers on one file is how tags
 get quietly lost.
 
-**Tag Profiles** (⌘⇧P) is the one window for all of this: the profiles down the
+**Tag Profiles** (File ▸ Tag Profiles…) is the one window for all of this: the profiles down the
 left, the tags inside the selected one down the right. You can look at anybody's
 profile; you can only change your own — the tags in another profile are that
 person's work, published from their devices, and the window says so rather than
@@ -241,7 +241,7 @@ opinion.
 
 ## Hidden videos
 
-Hide a video from its right-click menu (or File → Hide, ⌥⌘H) and it disappears
+Hide a video from its right-click menu (or Edit → Hide Video, ⌃⌘H) and it disappears
 from the playlist, folder and tag counts, favourites, duplicates, the
 moved-file scan and everything the AI is asked to do — and stays put where it
 was. **Hide is not delete**: the tags, the favourite mark and the resume

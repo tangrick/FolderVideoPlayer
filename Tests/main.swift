@@ -332,6 +332,72 @@ let pick = [
 check("select-all ticks one row per moved video, not per match",
       MovedScan.firstPerKey(pick) == [pick[0].id, pick[2].id])
 
+// A lone name match repairs itself only when its size does not contradict
+// the size fingerprinted for the missing file.
+do {
+    let orphans = [
+        MovedOrphan(key: "a/same.mp4", name: "same.mp4", folder: "/V/a", tags: ["t"]),
+        MovedOrphan(key: "a/other.mp4", name: "other.mp4", folder: "/V/a", tags: ["t"]),
+        MovedOrphan(key: "a/unknown.mp4", name: "unknown.mp4", folder: "/V/a", tags: ["t"]),
+        MovedOrphan(key: "a/two.mp4", name: "two.mp4", folder: "/V/a", tags: ["t"]),
+        MovedOrphan(key: "a/gone.mp4", name: "gone.mp4", folder: "/V/a", tags: ["t"]),
+    ]
+    let places = [
+        "same.mp4": ["/V/b/same.mp4"],
+        "other.mp4": ["/V/b/other.mp4"],
+        "unknown.mp4": ["/V/b/unknown.mp4"],
+        "two.mp4": ["/V/b/two.mp4", "/V/c/two.mp4"],
+    ]
+    let recorded: [String: Int64] = ["a/same.mp4": 100, "a/other.mp4": 100, "a/two.mp4": 100]
+    let sizes: [String: Int64] = ["/V/b/same.mp4": 100, "/V/b/other.mp4": 999,
+                                  "/V/b/unknown.mp4": 5, "/V/b/two.mp4": 7, "/V/c/two.mp4": 100]
+    let out = MovedScan.split(orphans, places: places, recordedSize: recorded) { path in
+        (sizes[path], nil)
+    }
+    check("same-size lone match is repaired",
+          out.fixes.contains { $0.oldKey == "a/same.mp4" && $0.sizeMatches == true })
+    check("different-size lone match goes to review, not repaired",
+          !out.fixes.contains { $0.oldKey == "a/other.mp4" }
+          && out.ambiguous.contains { $0.oldKey == "a/other.mp4" && $0.sizeMatches == false })
+    check("lone match with no recorded size is still repaired, marked name-only",
+          out.fixes.contains { $0.oldKey == "a/unknown.mp4" && $0.sizeMatches == nil })
+    check("several matches go to review with sizes compared",
+          out.ambiguous.filter { $0.oldKey == "a/two.mp4" }.map(\.sizeMatches) == [false, true])
+    check("no match is reported missing", out.gone.map(\.key) == ["a/gone.mp4"])
+    check("the one same-size match is pre-picked",
+          MovedScan.sizeMatchPerKey(out.ambiguous)
+              == out.ambiguous.filter { $0.newPath == "/V/c/two.mp4" }.map(\.id))
+}
+
+// Two same-size matches are copies: neither is pre-picked.
+do {
+    let copies = [
+        MovedCandidate(oldKey: "k", oldName: "A.mp4", oldFolder: "a", newPath: "b/A.mp4",
+                       newFolder: "b", tagNames: [], sizeMatches: true),
+        MovedCandidate(oldKey: "k", oldName: "A.mp4", oldFolder: "a", newPath: "c/A.mp4",
+                       newFolder: "c", tagNames: [], sizeMatches: true),
+    ]
+    check("two same-size copies are left for the user", MovedScan.sizeMatchPerKey(copies).isEmpty)
+}
+
+// -- merging another device's tags must not bring back a moved path --------
+
+do {
+    let incoming: [(String, [String])] = [
+        ("S/kept.mp4", ["Trip"]),        // already filed here: an ordinary edit
+        ("S/old/moved.mp4", ["Trip"]),   // moved away on this Mac; file gone
+        ("S/new.mp4", ["Cruise"]),       // new to this Mac, file present
+        ("S/gone.mp4", []),              // an empty list for a path this Mac lacks
+    ]
+    let taken = Library.mergeable(incoming,
+                                  known: ["S/kept.mp4", "S/new/moved.mp4"],
+                                  present: ["S/new.mp4"]).map(\.0)
+    check("merge keeps edits to paths already filed here", taken.contains("S/kept.mp4"))
+    check("merge takes in a new path whose file exists", taken.contains("S/new.mp4"))
+    check("merge does not resurrect a path whose file is gone",
+          !taken.contains("S/old/moved.mp4") && !taken.contains("S/gone.mp4"))
+}
+
 // -- name index (cached lookups vs hunt) ------------------------------------
 
 let idx: [String: [String]] = ["beach.mp4": ["old/Beach.mp4", "new/Beach.mp4"],

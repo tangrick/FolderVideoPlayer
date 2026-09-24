@@ -268,6 +268,15 @@ struct MainMenu: Commands {
         return picked >= 0 ? picked : nil
     }
 
+    /// The playing video's stars, 0 when unrated or nothing plays.
+    private var currentRating: Int {
+        playback.flatMap { library.rating($0.currentPath ?? "") } ?? 0
+    }
+
+    private func rate(_ stars: Int) {
+        if let path = playback?.currentPath { library.setRating(stars, for: path) }
+    }
+
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             // File leads with the profile, because that is what a profile is
@@ -314,9 +323,25 @@ struct MainMenu: Commands {
             }
             .disabled(library.recent.isEmpty)
 
+            // Duplicates act on the folders above; two items did not earn a
+            // top-level menu of their own. The count goes before the ellipsis.
+            Button(library.groupCount == 0
+                   ? "Find Duplicates…"
+                   : "Find Duplicates (\(library.groupCount))…") {
+                openWindow(id: "duplicates")
+            }
+            Button(library.sparedDupes.isEmpty
+                   ? "Put Removed Copies Back"
+                   : "Put Removed Copies Back (\(library.sparedDupes.count))") {
+                app.duplicates?.restoreRemoved()
+            }
+            .disabled(library.sparedDupes.isEmpty)
+
             Divider()
 
-            Button("Profile Settings…") { openWindow(id: "profiles") }
+            // The one entry for this window. It used to be here as "Profile
+            // Settings…" and in Tags as "Tag Profiles…" — one window, two names.
+            Button("Tag Profiles…") { openWindow(id: "profiles") }
 
             Button(app.showLibrary ? "Hide Library" : "Show Library") {
                 app.showLibrary.toggle()
@@ -327,20 +352,24 @@ struct MainMenu: Commands {
 
             Divider()
 
-            // 5 stars IS the Favorite tag, so this is an ordinary tag
-            // playlist — the same one an Apple TV's favourites land in.
-            Button("Play 5-Star Videos") { playback?.playTag(favoriteTag) }
-                .keyboardShortcut("f", modifiers: [.command, .shift])
-                .disabled(library.countRated(5) == 0 || !library.profileOpen)
-
-            Divider()
-
             // The document verbs sit after the folder verbs: New/Open/Recent
             // above are about profiles, this block is about the one in hand.
             Button("Publish") { publishNow() }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
                 .disabled(!library.profileOpen)
                 .help("Write this profile's share-keyed tags to every mounted share")
+
+            // Publish's other half: Publish pushes this device's tags out,
+            // this pulls the other devices' in. Next to each other so the
+            // sync verbs are in one place.
+            Button("Check Other Devices Now") {
+                Task {
+                    let adopted = await library.mergeShared()
+                    app.say("Merge finished", adopted == 0
+                            ? "Nothing new since the last merge."
+                            : "Took in \(adopted) entries from your other devices.")
+                }
+            }
 
             Button("Export Profile…") { exportProfile() }
                 .disabled(!library.profileOpen)
@@ -358,14 +387,13 @@ struct MainMenu: Commands {
             Button(playback?.playing == true ? "Pause" : "Play") {
                 playback?.togglePlayPause()
             }
+            // One row each. ⌘→ / ⌘← do the same and are handled by the key
+            // monitor in FullScreen.swift — a second visible "Next" row was
+            // the only way SwiftUI menus could carry a second key.
             Button("Next") { playback?.next() }
                 .keyboardShortcut(.downArrow, modifiers: [])
             Button("Previous") { playback?.previous() }
                 .keyboardShortcut(.upArrow, modifiers: [])
-            Button("Next") { playback?.next() }
-                .keyboardShortcut(.rightArrow, modifiers: .command)
-            Button("Previous") { playback?.previous() }
-                .keyboardShortcut(.leftArrow, modifiers: .command)
             Button("Skip Forward \(library.skipSeconds)s") {
                 playback?.skip(Double(library.skipSeconds))
             }
@@ -374,6 +402,12 @@ struct MainMenu: Commands {
                 playback?.skip(-Double(library.skipSeconds))
             }
                 .keyboardShortcut(.leftArrow, modifiers: [])
+            Divider()
+            // 5 stars IS the Favorite tag, so this is an ordinary tag
+            // playlist — the same one an Apple TV's favourites land in.
+            Button("Play 5-Star Videos") { playback?.playTag(favoriteTag) }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+                .disabled(library.countRated(5) == 0 || !library.profileOpen)
             Divider()
             Picker("Order", selection: Binding(
                 get: { library.order },
@@ -495,7 +529,9 @@ struct MainMenu: Commands {
                                              : "Hide \(app.selection.count) Videos") {
                     app.hideVideos(fileTargets)
                 }
-                .keyboardShortcut("h", modifiers: [.command, .option])
+                // Not ⌥⌘H: that is the app menu's Hide Others, which comes
+                // first in the menu bar and wins.
+                .keyboardShortcut("h", modifiers: [.command, .control])
                 .disabled(fileTargets.isEmpty)
                 .help("Keep this out of the app's sight. The file itself is untouched.")
             }
@@ -506,44 +542,45 @@ struct MainMenu: Commands {
                 .keyboardShortcut("t")
                 .disabled(!library.profileOpen)
             // Stars on what is playing, straight from the menu. The tick
-            // tracks the current rating; picking the ticked star clears it.
-            // Star tags are tags, so a closed profile refuses them like every
-            // other tagging surface.
-            StarRatingMenuItems(current: playback.flatMap { library.rating($0.currentPath ?? "") } ?? 0) { stars in
-                if let path = playback?.currentPath { library.setRating(stars, for: path) }
+            // tracks the current rating. Star tags are tags, so a closed
+            // profile refuses them like every other tagging surface.
+            //
+            // Built here rather than with StarRatingMenuItems so the five-star
+            // row can carry ⌘⇧D — a Picker's rows cannot hold a shortcut, and
+            // a separate "Rate 5 Stars" row said the same thing twice.
+            // Choosing a star always sets it (⌘⇧D on a 5-star video stays 5);
+            // No Rating takes it away.
+            Menu("Stars") {
+                if currentRating > 0 {
+                    Button("No Rating") { rate(0) }
+                    Divider()
+                }
+                ForEach(1...4, id: \.self) { star in
+                    Toggle(String(repeating: "★", count: star), isOn: Binding(
+                        get: { currentRating == star }, set: { _ in rate(star) }))
+                }
+                Toggle("★★★★★", isOn: Binding(
+                    get: { currentRating == 5 }, set: { _ in rate(5) }))
+                    .keyboardShortcut("d", modifiers: [.command, .shift])
             }
-            .disabled(!library.profileOpen)
-            Button("Rate 5 Stars") {
-                if let path = playback?.currentPath { library.setRating(5, for: path) }
-            }
-            .keyboardShortcut("d", modifiers: [.command, .shift])
             .disabled(!library.profileOpen)
             Divider()
-            Button("Tag Profiles…") { openWindow(id: "profiles") }
             Button("People…") { openWindow(id: "people") }
                 .disabled(!library.facesEnabled || !library.profileOpen)
                 .help(!library.facesEnabled
-                      ? "Face Recognition is off — turn it on in Settings"
+                      ? "Face Recognition is off — turn it on in Settings → AI"
                       : library.profileOpen
                       ? "Name the people in your videos"
                       : "Open a profile to see its people")
-            // The switch itself lives in Settings → AI & Privacy. One setting,
+            // The switch itself lives in Settings → AI. One setting,
             // one control: two toggles on one flag is how they drift apart.
             Button("Face Recognition…") {
                 app.settingsTab = .ai
                 openSettings()
             }
                 .help(library.facesEnabled
-                      ? "On. Change it in Settings → AI & Privacy."
-                      : "Off. Turn it on in Settings → AI & Privacy.")
-            Button("Check Other Devices Now") {
-                Task {
-                    let adopted = await library.mergeShared()
-                    app.say("Merge finished", adopted == 0
-                            ? "Nothing new since the last merge."
-                            : "Took in \(adopted) entries from your other devices.")
-                }
-            }
+                      ? "On. Change it in Settings → AI."
+                      : "Off. Turn it on in Settings → AI.")
         }
 
         CommandGroup(after: .appInfo) {
@@ -563,20 +600,6 @@ struct MainMenu: Commands {
                 app.helpPage = .data
                 openWindow(id: "help")
             }
-        }
-
-        CommandMenu("Duplicates") {
-            Button(library.groupCount == 0
-                   ? "Find Duplicates…"
-                   : "Find Duplicates… (\(library.groupCount) found)") {
-                openWindow(id: "duplicates")
-            }
-            Button(library.sparedDupes.isEmpty
-                   ? "Put Removed Copies Back"
-                   : "Put Removed Copies Back (\(library.sparedDupes.count))") {
-                app.duplicates?.restoreRemoved()
-            }
-            .disabled(library.sparedDupes.isEmpty)
         }
     }
 }

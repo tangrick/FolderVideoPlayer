@@ -873,7 +873,7 @@ struct LibrarySidebar: View {
                         .font(.caption)
                 }
                 .buttonStyle(.borderless)
-                .help("Hide the library (⌘N)")
+                .help("Hide the library (⌘⇧L)")
                 .accessibilityLabel("Hide the library")
                 .disabled(playback.playlist.isEmpty)
                 Spacer()
@@ -1054,7 +1054,10 @@ struct LibrarySidebar: View {
                     Button("Train Tags in This Folder…") { app.trainFolder(root) }
                     Button("Tag from Metadata…") { app.startAutoTag(root) }
                     Button("Tag All Videos…") { app.tagAllVideos(in: root) }
-                    Button("Find Missing Files in This Folder…") { app.scanMoved(root: root) }
+                    Button("Find Missing Files in This Folder…") {
+                        app.findMoved(inFolder: root)
+                        openWindow(id: "moved")
+                    }
                     Button("Unpin") { library.unpin(folder: root) }
                 }
                 .onDrag {
@@ -1108,7 +1111,10 @@ struct LibrarySidebar: View {
                     Button("Train Tags in This Folder…") { app.trainFolder(root) }
                     Button("Tag from Metadata…") { app.startAutoTag(root) }
                     Button("Tag All Videos…") { app.tagAllVideos(in: root) }
-                    Button("Find Missing Files in This Folder…") { app.scanMoved(root: root) }
+                    Button("Find Missing Files in This Folder…") {
+                        app.findMoved(inFolder: root)
+                        openWindow(id: "moved")
+                    }
                     if !library.isPinned(root) {
                         Button("Pin") { library.pin(folder: root) }
                     }
