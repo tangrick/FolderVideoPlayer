@@ -202,6 +202,9 @@ final class PlaybackController: ObservableObject {
     func playTag(_ tag: String, resume: String? = nil) {
         tagName = tag
         start(library.pathsCarrying(tag), mode: .tag, root: nil, resume: resume)
+        // Plays what this Mac holds now; a change another device made shows
+        // in the tags as soon as the check below has read it.
+        Task { [library] in await library.catchUpWithOtherDevices() }
     }
 
     /// Play the hidden videos. Callers must have asked for the password first;

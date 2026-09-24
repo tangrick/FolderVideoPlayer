@@ -11,6 +11,9 @@ MODEL_SOURCES=(
     "$model/Paths.swift" "$model/Formatting.swift" "$model/JSONStore.swift"
     "$model/Scanner.swift" "$model/Fingerprints.swift" "$model/AppState.swift"
     "$model/Library.swift" "$model/TagKinds.swift" "$model/TagSharing.swift"
+    # The one shared tag file per person that replaced a file per device
+    # (added Sep'26). TagSharing does not compile without it.
+    "$model/SharedTagFile.swift"
     # Where a tag came from (added Sep'26). A new Model/ file lands HERE or the
     # whole suite stops compiling with `cannot find 'TagProvenance' in scope`.
     "$model/TagProvenance.swift"

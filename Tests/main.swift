@@ -99,40 +99,335 @@ check("tags collapse case and whitespace",
 check("a name becomes one slug however it is spelled",
       slug("Anne Marie") == slug("anne-marie"))
 
-// -- publishing never empties what it cannot replace ------------------------
+// -- the shared tag file: one per person, edited in place -------------------
 //
-// The guard that matters most: a device holding no tags for a share must not
-// overwrite that share's copy with nothing. This is the path that runs at every
-// launch. (ProfileLock is not exercised here — it writes to the login keychain,
-// which a test has no business touching.)
+// Everything a sync decides, first as plain functions, then against a folder
+// standing in for a mounted share. See docs/shared-tags-design.md.
 
 let shareRoot = NSTemporaryDirectory() + "fvp-share-\(UUID().uuidString)"
 let volumes = shareRoot + "/Volumes/"
 try! FileManager.default.createDirectory(atPath: volumes + "nas",
                                          withIntermediateDirectories: true)
 Paths.volumes = volumes
-let myFile = ".FolderVideoPlayer/quincy/tags-mac.json"
-let published = volumes + "nas/" + myFile
 
-// A real publish writes.
-var outcome = Library.write(["nas": ["clips/a.mp4": ["Beach"]]], as: myFile)
-check("publishing writes the share's copy", outcome.written.first?.1 == 1, "\(outcome)")
-check("...and it is readable back",
-      JSONStore.load(published, fallback: [String: [String]]())["clips/a.mp4"] == ["Beach"])
+do {
+    // The three edits.
+    var file = SharedTagFile(videos: ["a.mp4": ["Beach"], "b.mp4": ["Sun"]])
+    file.apply(.move("a.mp4", "b.mp4"), at: 10)
+    check("a move unions into the destination, its own tags first",
+          file.videos["b.mp4"] == ["Sun", "Beach"], "\(file.videos)")
+    check("...empties the old path", file.videos["a.mp4"] == nil)
+    check("...and remembers where it went", file.gone["a.mp4"]?.to == "b.mp4")
+    file.apply(.move("a.mp4", "c.mp4"), at: 11)
+    check("moving a path that has already gone does nothing",
+          file.videos["c.mp4"] == nil && file.gone["a.mp4"]?.to == "b.mp4")
+    file.apply(.set("a.mp4", []), at: 12)
+    check("an empty set on a moved path keeps the record", file.gone["a.mp4"] != nil)
+    file.apply(.set("a.mp4", ["Back"]), at: 13)
+    check("tags on a moved path bring it back",
+          file.videos["a.mp4"] == ["Back"] && file.gone["a.mp4"] == nil)
+    file.apply(.remove("b.mp4"), at: 14)
+    check("a removal empties the path and records it, with nowhere to go",
+          file.videos["b.mp4"] == nil && file.gone["b.mp4"] != nil
+          && file.gone["b.mp4"]?.to == nil)
 
-// A publish with nothing in it leaves that copy alone.
-outcome = Library.write([:], as: myFile)
-check("an empty publish writes nothing", outcome.written.isEmpty, "\(outcome)")
-check("...and the share's copy survives",
-      JSONStore.load(published, fallback: [String: [String]]())["clips/a.mp4"] == ["Beach"])
+    // Moves chain; removals and loops end nowhere.
+    var chain = SharedTagFile()
+    chain.gone = ["x": .init(to: "y", at: 0), "y": .init(to: "z", at: 0),
+                  "r": .init(to: nil, at: 0), "l1": .init(to: "l2", at: 0),
+                  "l2": .init(to: "l1", at: 0)]
+    check("a path follows every move", chain.destination(of: "x") == "z")
+    check("a removed path goes nowhere", chain.destination(of: "r") == nil)
+    check("a loop goes nowhere", chain.destination(of: "l1") == nil)
+    check("a path never moved is itself", chain.destination(of: "q") == "q")
 
-// Same when the share is named but its entries are gone.
-outcome = Library.write(["nas": [:]], as: myFile)
-check("an emptied share is left alone", outcome.written.isEmpty, "\(outcome)")
-check("...and its tags are still there",
-      JSONStore.load(published, fallback: [String: [String]]()).count == 1)
-check("...and the reason says so",
-      outcome.skipped.first?.1.contains("left alone") == true, "\(outcome.skipped)")
+    // Records older than 60 days are forgotten.
+    var old = SharedTagFile()
+    let day = 24.0 * 3600
+    old.gone = ["stale": .init(to: nil, at: 0), "fresh": .init(to: nil, at: 59 * day)]
+    old.prune(now: 61 * day)
+    check("moves older than 60 days are pruned",
+          old.gone["stale"] == nil && old.gone["fresh"] != nil, "\(old.gone.keys)")
+
+    // What this Mac has to send.
+    let base = ["a.mp4": ["Beach"], "b.mp4": ["Sun"]]
+    check("nothing changed sends nothing",
+          SharedTagFile.pending(local: base, base: base, recorded: []).isEmpty)
+    check("a tag edit is sent as a set",
+          SharedTagFile.pending(local: ["a.mp4": ["Beach", "Trip"], "b.mp4": ["Sun"]],
+                                base: base, recorded: [])
+          == [.set("a.mp4", ["Beach", "Trip"])])
+    check("clearing a video's tags is sent as an empty set",
+          SharedTagFile.pending(local: ["a.mp4": ["Beach"]], base: base, recorded: [])
+          == [.set("b.mp4", [])])
+    let moved = SharedTagFile.pending(local: ["n/a.mp4": ["Beach"], "b.mp4": ["Sun"]],
+                                      base: base, recorded: [.move("a.mp4", "n/a.mp4")])
+    check("a recorded move is not also sent as its two halves",
+          moved == [.move("a.mp4", "n/a.mp4")], "\(moved)")
+    let undone = SharedTagFile.pending(local: base, base: base,
+                                       recorded: [.move("a.mp4", "n/a.mp4")])
+    check("undoing a move before it was sent puts both paths back",
+          undone == [.move("a.mp4", "n/a.mp4"), .set("a.mp4", ["Beach"]), .set("n/a.mp4", [])],
+          "\(undone)")
+    var replay = SharedTagFile(videos: base)
+    replay.apply(undone, at: 1)
+    check("...and the file ends where it started", replay.videos == base, "\(replay.videos)")
+
+    // The first file, built from the old ones.
+    let legacy = [
+        SharedTagFile.Legacy(name: "tags-appletv-1.json", mtime: 200,
+                             entries: ["a.mp4": ["TV"], "gone.mp4": ["Old"]]),
+        SharedTagFile.Legacy(name: "tags-mac.json", mtime: 100,
+                             entries: ["a.mp4": ["Mac"], "b.mp4": ["Sun"]]),
+    ]
+    let built = SharedTagFile.build(from: legacy, local: ["c.mp4": ["Mine"]],
+                                    exists: { $0 != "gone.mp4" })
+    check("a newer old file wins a video", built.file.videos["a.mp4"] == ["TV"])
+    check("this Mac's own tags go in", built.file.videos["c.mp4"] == ["Mine"])
+    check("a path whose file is not there is dropped and counted",
+          built.file.videos["gone.mp4"] == nil && built.dropped == 1)
+    check("this Mac's tags win over the old files",
+          SharedTagFile.build(from: legacy, local: ["a.mp4": ["Mine"]], exists: { _ in true })
+              .file.videos["a.mp4"] == ["Mine"])
+    let missingHere = SharedTagFile.build(from: [], local: ["lost.mp4": ["Keep"]],
+                                          exists: { _ in false })
+    check("this Mac's own missing path is kept, for Find Missing Files to repair",
+          missingHere.file.videos["lost.mp4"] == ["Keep"] && missingHere.dropped == 0)
+
+    // What an old-format device changed.
+    var shared = SharedTagFile(videos: ["new/a.mp4": ["Beach"], "c.mp4": ["Sun"]])
+    shared.gone = ["a.mp4": .init(to: "new/a.mp4", at: 0), "r.mp4": .init(to: nil, at: 0)]
+    let before = ["a.mp4": ["Beach"], "c.mp4": ["Sun"], "r.mp4": ["X"], "d.mp4": ["Y"]]
+    check("an old file that has not changed says nothing",
+          shared.editsFromLegacy(current: before, previous: before, exists: { _ in true }).isEmpty)
+    check("an unchanged old path is never brought back",
+          shared.editsFromLegacy(current: before.merging(["c.mp4": ["Sun", "Hot"]]) { $1 },
+                                 previous: before, exists: { _ in true })
+          == [.set("c.mp4", ["Sun", "Hot"])])
+    check("a change to a moved path follows the move",
+          shared.editsFromLegacy(current: before.merging(["a.mp4": ["Beach", "Trip"]]) { $1 },
+                                 previous: before, exists: { _ in true })
+          == [.set("new/a.mp4", ["Beach", "Trip"])])
+    check("a change to a removed path is skipped",
+          shared.editsFromLegacy(current: before.merging(["r.mp4": ["Z"]]) { $1 },
+                                 previous: before, exists: { _ in true }).isEmpty)
+    check("a change to a path whose file is not here is skipped",
+          shared.editsFromLegacy(current: before.merging(["e.mp4": ["New"]]) { $1 },
+                                 previous: before, exists: { $0 != "e.mp4" }).isEmpty)
+    check("a key an old full list dropped is sent as an empty set",
+          shared.editsFromLegacy(current: before.filter { $0.key != "c.mp4" },
+                                 previous: before, exists: { _ in true })
+          == [.set("c.mp4", [])])
+
+    // Old writers: unlisted, and recent.
+    var listed = SharedTagFile()
+    listed.devices = ["mac": .init(format: 1, seen: 0)]
+    let now = 100 * day
+    let recentTV = SharedTagFile.Legacy(name: "tags-appletv-1.json", mtime: now - day, entries: [:])
+    let oldTV = SharedTagFile.Legacy(name: "tags-appletv-1.json", mtime: now - 61 * day, entries: [:])
+    let myCopy = SharedTagFile.Legacy(name: "tags-mac.json", mtime: now, entries: [:])
+    check("an unlisted file written lately is an old writer",
+          listed.oldWritersActive([recentTV, myCopy], now: now))
+    check("one quiet for 60 days is not", !listed.oldWritersActive([oldTV, myCopy], now: now))
+    check("a listed device's copy never counts", !listed.oldWritersActive([myCopy], now: now))
+    check("a legacy name gives its slug",
+          SharedTagFile.slug(ofLegacy: "tags-appletv-1.json") == "appletv-1"
+          && SharedTagFile.slug(ofLegacy: "tags.json") == nil
+          && SharedTagFile.slug(ofLegacy: "tags-x.json.writing") == nil)
+}
+
+do {
+    // Against a folder standing in for a mounted share.
+    let fm = FileManager.default
+    let mount = volumes + "nas"
+    let folder = mount + "/.FolderVideoPlayer/quincy"
+    try! fm.createDirectory(atPath: folder + "/Home", withIntermediateDirectories: true)
+    try! fm.createDirectory(atPath: mount + "/Home", withIntermediateDirectories: true)
+    for video in ["a.mp4", "b.mp4", "c.mp4", "d.mp4"] {
+        fm.createFile(atPath: mount + "/Home/" + video, contents: Data())
+    }
+    let day = 24.0 * 3600
+    let now = Date().timeIntervalSince1970
+    func input(local: [String: [String]], base: [String: [String]]?,
+               recorded: [SharedTagEdit] = [],
+               seen: [String: SharedSyncState.LegacySeen] = [:],
+               known: Double? = nil) -> Library.ShareSyncInput {
+        Library.ShareSyncInput(share: "nas", mount: mount, folder: folder, device: "mac",
+                               local: local, base: base, recorded: recorded,
+                               legacySeen: seen, knownMtime: known)
+    }
+    func onDisk() -> SharedTagFile? {
+        if case let .file(file, _) = SharedTagDisk.read(folder: folder) { return file }
+        return nil
+    }
+    func touch(_ name: String, at time: Double) {
+        try? fm.setAttributes([.modificationDate: Date(timeIntervalSince1970: time)],
+                              ofItemAtPath: folder + "/" + name)
+    }
+
+    // An old Apple TV file, recently written, and this Mac's own old file.
+    JSONStore.save(folder + "/tags-appletv-1.json",
+                   ["Home/a.mp4": ["TV"], "Home/moved-away.mp4": ["Stale"]])
+    touch("tags-appletv-1.json", at: now - day)
+    JSONStore.save(folder + "/tags-mac.json", ["Home/b.mp4": ["Sun"]])
+
+    // 1. the first sync builds the file
+    var out = Library.syncShare(input(local: ["Home/b.mp4": ["Sun"], "Home/c.mp4": ["New"]],
+                                      base: nil), lockBudget: 1, now: now)
+    var file = onDisk()
+    check("the first sync writes tags.json", out.status == .inLine && file != nil, "\(out.status)")
+    check("...with the old files and this Mac's tags in it",
+          file?.videos == ["Home/a.mp4": ["TV"], "Home/b.mp4": ["Sun"], "Home/c.mp4": ["New"]],
+          "\(file?.videos ?? [:])")
+    check("...leaving out a path whose file is not there", out.dropped == 1)
+    check("...listing this Mac as a device", file?.devices["mac"] != nil)
+    check("...keeping a copy in the old format while an old device still writes",
+          JSONStore.load(folder + "/tags-mac.json", fallback: [String: [String]]())
+              == file?.videos)
+    check("...and the old TV file is still there",
+          fm.fileExists(atPath: folder + "/tags-appletv-1.json"))
+    check("no lock is left behind", !fm.fileExists(atPath: folder + "/tags.lock"))
+    var base = file?.videos ?? [:]
+    var seen = out.legacySeen
+
+    // 2. nothing to say: the file is read, not written
+    let before = SharedTagDisk.mtime(folder + "/tags.json")
+    out = Library.syncShare(input(local: base, base: base, seen: seen, known: out.mtime),
+                            lockBudget: 1, now: now + 1)
+    check("a sync with nothing to send writes nothing",
+          out.status == .inLine && !out.sentSomething
+          && SharedTagDisk.mtime(folder + "/tags.json") == before)
+
+    // 3. a move on this Mac, sent
+    var local = base
+    local["Home/d.mp4"] = local.removeValue(forKey: "Home/c.mp4")
+    out = Library.syncShare(input(local: local, base: base, recorded: [.move("Home/c.mp4", "Home/d.mp4")],
+                                  seen: seen), lockBudget: 1, now: now + 2)
+    file = onDisk()
+    check("a move reaches the file",
+          file?.videos["Home/d.mp4"] == ["New"] && file?.videos["Home/c.mp4"] == nil
+          && file?.gone["Home/c.mp4"]?.to == "Home/d.mp4", "\(file?.videos ?? [:])")
+    check("...and counts its recorded edit as sent", out.sentRecorded == 1)
+    base = file?.videos ?? [:]
+    seen = out.legacySeen
+
+    // 4. the old TV saves again: its full list still names the old path
+    JSONStore.save(folder + "/tags-appletv-1.json",
+                   ["Home/a.mp4": ["TV", "Fav"], "Home/moved-away.mp4": ["Stale"]])
+    touch("tags-appletv-1.json", at: now + 3)
+    out = Library.syncShare(input(local: base, base: base, seen: seen), lockBudget: 1, now: now + 4)
+    file = onDisk()
+    check("what the old TV changed comes in", file?.videos["Home/a.mp4"] == ["TV", "Fav"],
+          "\(file?.videos ?? [:])")
+    check("what it did not change is not re-sent",
+          file?.videos["Home/moved-away.mp4"] == nil && file?.videos["Home/c.mp4"] == nil)
+    base = file?.videos ?? [:]
+    seen = out.legacySeen
+
+    // 5. a lock another device holds
+    let held = "{\"by\":\"appletv-1\",\"token\":\"theirs\"}"
+    fm.createFile(atPath: folder + "/tags.lock", contents: Data(held.utf8))
+    out = Library.syncShare(input(local: base.merging(["Home/b.mp4": ["Sun", "Hot"]]) { $1 },
+                                  base: base, seen: seen), lockBudget: 0.3, now: now + 5)
+    check("a held lock makes the sync wait, then give up for now",
+          out.status == .skipped("another device is saving; tried again later"), "\(out.status)")
+    check("...leaving their lock alone", fm.fileExists(atPath: folder + "/tags.lock"))
+    // A lock nobody lets go of: a device that crashed while saving.
+    fm.createFile(atPath: folder + "/tags.lock",
+                  contents: Data("{\"by\":\"appletv-1\",\"token\":\"crashed\"}".utf8))
+    var clock = 1000.0
+    check("a lock is not taken over too soon",
+          SharedTagDisk.lock(folder: folder, by: "mac", budget: 0, now: { clock }) == nil)
+    clock += 31
+    let token = SharedTagDisk.lock(folder: folder, by: "mac", budget: 0, now: { clock })
+    check("the same lock 30 s later is taken over", token != nil)
+    SharedTagDisk.unlock(folder: folder, token: "not-mine")
+    check("unlocking with someone else's token leaves the lock",
+          fm.fileExists(atPath: folder + "/tags.lock"))
+    SharedTagDisk.unlock(folder: folder, token: token ?? "")
+    check("unlocking with our own token removes it", !fm.fileExists(atPath: folder + "/tags.lock"))
+
+    // 6. a half-finished tvOS save: no tags.json, only its scratch file
+    try? fm.moveItem(atPath: folder + "/tags.json",
+                     toPath: folder + "/tags.json.appletv-1.writing")
+    fm.createFile(atPath: folder + "/tags.lock", contents: Data(held.utf8))
+    out = Library.syncShare(input(local: base, base: base, seen: seen), lockBudget: 0.3, now: now + 6)
+    check("a missing file while someone holds the lock is not read as empty",
+          out.status == .skipped("another device is saving; tried again later"), "\(out.status)")
+    try? fm.removeItem(atPath: folder + "/tags.lock")
+    out = Library.syncShare(input(local: base.merging(["Home/b.mp4": ["Sun", "Hot"]]) { $1 },
+                                  base: base, seen: seen), lockBudget: 1, now: now + 7)
+    file = onDisk()
+    check("an unfinished save is picked up rather than rebuilt",
+          file?.videos["Home/a.mp4"] == ["TV", "Fav"] && file?.videos["Home/b.mp4"] == ["Sun", "Hot"],
+          "\(file?.videos ?? [:])")
+    base = file?.videos ?? [:]
+    seen = out.legacySeen
+
+    // 7. a file this version cannot read is never written over
+    let good = fm.contents(atPath: folder + "/tags.json")!
+    fm.createFile(atPath: folder + "/tags.json", contents: Data("not json".utf8))
+    out = Library.syncShare(input(local: ["Home/b.mp4": ["X"]], base: base, seen: seen),
+                            lockBudget: 1, now: now + 8)
+    check("an unreadable file is left alone",
+          String(decoding: fm.contents(atPath: folder + "/tags.json")!, as: UTF8.self) == "not json"
+          && out.status != .inLine)
+    fm.createFile(atPath: folder + "/tags.json",
+                  contents: Data("{\"format\": 2, \"videos\": {}}".utf8))
+    out = Library.syncShare(input(local: ["Home/b.mp4": ["X"]], base: base, seen: seen),
+                            lockBudget: 1, now: now + 9)
+    check("a file from a newer version is left alone", out.status != .inLine
+          && String(decoding: fm.contents(atPath: folder + "/tags.json")!, as: UTF8.self)
+              .contains("\"format\": 2"))
+    fm.createFile(atPath: folder + "/tags.json", contents: good)
+
+    // 8. 60 days after the old TV last wrote, the old files are retired
+    touch("tags-appletv-1.json", at: now - 61 * day)
+    out = Library.syncShare(input(local: base, base: base, seen: seen), lockBudget: 1, now: now + 10)
+    check("old files quiet for 60 days are moved to retired/",
+          !fm.fileExists(atPath: folder + "/tags-appletv-1.json")
+          && !fm.fileExists(atPath: folder + "/tags-mac.json")
+          && fm.fileExists(atPath: folder + "/retired/tags-appletv-1.json")
+          && fm.fileExists(atPath: folder + "/retired/tags-mac.json"))
+    check("...and tags.json is untouched by it", onDisk()?.videos == base)
+
+    // 9. the first build skips old files this Mac had already merged
+    let merged = mount + "/.FolderVideoPlayer/merged"
+    try! fm.createDirectory(atPath: merged, withIntermediateDirectories: true)
+    JSONStore.save(merged + "/tags-old-mac.json", ["Home/a.mp4": ["Removed here since"]])
+    try? fm.setAttributes([.modificationDate: Date(timeIntervalSince1970: now - 20 * day)],
+                          ofItemAtPath: merged + "/tags-old-mac.json")
+    JSONStore.save(merged + "/tags-appletv-2.json", ["Home/b.mp4": ["Tagged on TV since"]])
+    try? fm.setAttributes([.modificationDate: Date(timeIntervalSince1970: now - day)],
+                          ofItemAtPath: merged + "/tags-appletv-2.json")
+    var afterMerge = Library.ShareSyncInput(share: "nas", mount: mount, folder: merged, device: "mac",
+                                            local: ["Home/c.mp4": ["Mine"]], base: nil,
+                                            recorded: [], legacySeen: [:], knownMtime: nil)
+    afterMerge.mergedUpTo = now - 10 * day
+    _ = Library.syncShare(afterMerge, lockBudget: 1, now: now)
+    var mergedFile: SharedTagFile?
+    if case let .file(f, _) = SharedTagDisk.read(folder: merged) { mergedFile = f }
+    check("an old file this Mac merged before is not taken again",
+          mergedFile?.videos["Home/a.mp4"] == nil, "\(mergedFile?.videos ?? [:])")
+    check("...one changed since is",
+          mergedFile?.videos["Home/b.mp4"] == ["Tagged on TV since"]
+          && mergedFile?.videos["Home/c.mp4"] == ["Mine"], "\(mergedFile?.videos ?? [:])")
+
+    // 10. a share with nothing on it for this person stays empty
+    let bare = Library.ShareSyncInput(share: "bare", mount: volumes + "nas",
+                                      folder: mount + "/.FolderVideoPlayer/nobody", device: "mac",
+                                      local: [:], base: nil, recorded: [], legacySeen: [:],
+                                      knownMtime: nil)
+    check("nothing to say and nothing there creates nothing",
+          Library.syncShare(bare, lockBudget: 1).status == .nothingHere
+          && !fm.fileExists(atPath: mount + "/.FolderVideoPlayer/nobody"))
+    let unmounted = Library.ShareSyncInput(share: "gone", mount: volumes + "gone",
+                                           folder: volumes + "gone/.FolderVideoPlayer/quincy",
+                                           device: "mac", local: ["a.mp4": ["X"]], base: nil,
+                                           recorded: [], legacySeen: [:], knownMtime: nil)
+    check("a share that is not mounted is skipped",
+          Library.syncShare(unmounted, lockBudget: 1).status == .skipped("not mounted"))
+}
 
 try? FileManager.default.removeItem(atPath: shareRoot)
 
@@ -378,24 +673,6 @@ do {
                        newFolder: "c", tagNames: [], sizeMatches: true),
     ]
     check("two same-size copies are left for the user", MovedScan.sizeMatchPerKey(copies).isEmpty)
-}
-
-// -- merging another device's tags must not bring back a moved path --------
-
-do {
-    let incoming: [(String, [String])] = [
-        ("S/kept.mp4", ["Trip"]),        // already filed here: an ordinary edit
-        ("S/old/moved.mp4", ["Trip"]),   // moved away on this Mac; file gone
-        ("S/new.mp4", ["Cruise"]),       // new to this Mac, file present
-        ("S/gone.mp4", []),              // an empty list for a path this Mac lacks
-    ]
-    let taken = Library.mergeable(incoming,
-                                  known: ["S/kept.mp4", "S/new/moved.mp4"],
-                                  present: ["S/new.mp4"]).map(\.0)
-    check("merge keeps edits to paths already filed here", taken.contains("S/kept.mp4"))
-    check("merge takes in a new path whose file exists", taken.contains("S/new.mp4"))
-    check("merge does not resurrect a path whose file is gone",
-          !taken.contains("S/old/moved.mp4") && !taken.contains("S/gone.mp4"))
 }
 
 // -- name index (cached lookups vs hunt) ------------------------------------

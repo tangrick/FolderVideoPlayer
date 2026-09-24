@@ -280,6 +280,11 @@ enum Paths {
         (support as NSString).appendingPathComponent("tags.previous.json")
     }
 
+    /// What this Mac remembers of each share's shared tag file for a profile.
+    static func sharedSyncFile(_ name: String) -> String {
+        (profileDir(name) as NSString).appendingPathComponent("shared-sync.json")
+    }
+
     static func profileFile(_ name: String) -> String {
         (profileDir(name) as NSString).appendingPathComponent(ProfileBundle.tagsName)
     }

@@ -362,12 +362,12 @@ struct MainMenu: Commands {
             // Publish's other half: Publish pushes this device's tags out,
             // this pulls the other devices' in. Next to each other so the
             // sync verbs are in one place.
-            Button("Check Other Devices Now") {
+            Button("Refresh Tags") {
                 Task {
                     let adopted = await library.mergeShared()
-                    app.say("Merge finished", adopted == 0
-                            ? "Nothing new since the last merge."
-                            : "Took in \(adopted) entries from your other devices.")
+                    app.say("Tags refreshed", adopted == 0
+                            ? "Nothing changed on your other devices."
+                            : "\(adopted) videos' tags changed on your other devices.")
                 }
             }
 

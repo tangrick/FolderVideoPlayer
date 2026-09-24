@@ -134,6 +134,56 @@ struct ProfileDocumentTest {
               (ProfileBundle.manifest("quincy")?.lastPublishedAt ?? 0) > 0)
         check("a fully accepted publish is clean", library.publishedClean)
 
+        // MARK: the shared file, through the library
+
+        let sharedFolder = fakeShare + "/.FolderVideoPlayer/quincy"
+        func sharedOnDisk() -> SharedTagFile? {
+            if case let .file(file, _) = SharedTagDisk.read(folder: sharedFolder) { return file }
+            return nil
+        }
+        check("the publish wrote tags.json on the share",
+              sharedOnDisk()?.videos["a.mp4"] == ["Beach", "Holiday"],
+              "\(sharedOnDisk()?.videos ?? [:])")
+        // Another device tags a video this Mac has never seen tagged.
+        fm.createFile(atPath: fakeShare + "/b.mp4", contents: Data())
+        var theirs = sharedOnDisk()!
+        theirs.videos["b.mp4"] = ["From TV"]
+        _ = SharedTagDisk.write(theirs, folder: sharedFolder, device: "appletv-1")
+        let heard = await library.mergeShared()
+        let other = Paths.volumes + "media/b.mp4"
+        check("another device's edit comes in", library.tagsFor(other) == ["From TV"],
+              "\(library.tagsFor(other))")
+        check("...counted as one change from elsewhere", heard == 1, "\(heard)")
+        check("...without breaking the published state", library.publishedClean)
+        // Undo of an edit made here must not take back what came from elsewhere.
+        library.rememberForUndo("test edit")
+        library.setTags(["Beach"], for: video)
+        library.saveTags()
+        await library.publishTags()
+        var later = sharedOnDisk()!
+        later.videos["b.mp4"] = ["From TV", "Later"]
+        _ = SharedTagDisk.write(later, folder: sharedFolder, device: "appletv-1")
+        _ = await library.mergeShared()
+        library.undoTagChange()
+        await library.publishTags()
+        check("undo puts back this Mac's edit",
+              sharedOnDisk()?.videos["a.mp4"] == ["Beach", "Holiday"],
+              "\(sharedOnDisk()?.videos ?? [:])")
+        check("...and keeps what another device changed since",
+              library.tagsFor(other) == ["From TV", "Later"]
+              && sharedOnDisk()?.videos["b.mp4"] == ["From TV", "Later"],
+              "\(library.tagsFor(other))")
+        // A move here reaches the file as a move.
+        let moved = Paths.volumes + "media/moved/b.mp4"
+        library.moveTags(from: other, to: moved)
+        await library.publishTags()
+        check("a move here reaches the file as a move",
+              sharedOnDisk()?.videos["moved/b.mp4"] == ["From TV", "Later"]
+              && sharedOnDisk()?.videos["b.mp4"] == nil
+              && sharedOnDisk()?.gone["b.mp4"]?.to == "moved/b.mp4",
+              "\(sharedOnDisk()?.videos ?? [:])")
+        check("...and nothing is left waiting to be sent", library.sharedTagsInLine())
+
         // MARK: the device name
 
         let before = library.publishDeviceName
@@ -160,8 +210,8 @@ struct ProfileDocumentTest {
 
         // A writer that completes after an edit must not claim those newer tags reached the share.
         library.applyTags(["Before"], to: [video])
-        _ = await library.publishTags { entries, file in
-            let outcome = Library.write(entries, as: file)
+        _ = await library.publishTags { inputs in
+            let outcome = await Library.syncAsync(inputs)
             await MainActor.run { library.applyTags(["After"], to: [video]) }
             return outcome
         }
@@ -170,8 +220,8 @@ struct ProfileDocumentTest {
               ProfileBundle.manifest("Quincy")?.publishedClean == false)
 
         // The same async boundary with a different profile in force.
-        _ = await library.publishTags { entries, file in
-            let outcome = Library.write(entries, as: file)
+        _ = await library.publishTags { inputs in
+            let outcome = await Library.syncAsync(inputs)
             await MainActor.run { library.createProfile("Other") }
             return outcome
         }

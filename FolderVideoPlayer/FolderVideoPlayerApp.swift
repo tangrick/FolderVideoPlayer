@@ -506,7 +506,15 @@ final class AppModel: ObservableObject {
     /// Bare arrows → the text being typed, not the Playback menu.
     var textArrowWatcher: Any?
     private var foregroundWatchers: [NSObjectProtocol] = []
-    @Published var showTagPanel = false
+    @Published var showTagPanel = false {
+        // Opening the panel is about to show tags: check whether another
+        // device changed them first. Usually the file has not moved.
+        didSet {
+            if showTagPanel, !oldValue, let library {
+                Task { await library.catchUpWithOtherDevices() }
+            }
+        }
+    }
     /// The transcript strip. Shares the bottom slot with the tag panel, so the
     /// two are never open at once — the same space cannot show both.
     @Published var showTranscriptPanel = false
@@ -595,10 +603,7 @@ final class AppModel: ObservableObject {
         // asked, is asked once — at launch, where the answer decides whose
         // tags the session is about.
         needsProfileChoice = library.askProfileAtStartup && library.profiles.count > 1
-        Task {
-            _ = await library.mergeShared()
-            await library.publishTags()
-        }
+        Task { await library.publishIfNeeded(always: true) }
         watchForForeground()
     }
 

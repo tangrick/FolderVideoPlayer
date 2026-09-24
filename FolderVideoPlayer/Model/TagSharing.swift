@@ -12,20 +12,17 @@ struct SharePerson: Identifiable {
 
 /// Tags on the network.
 ///
-/// Each person gets a folder and each of their devices a file inside it:
+/// Each person gets a folder, and in it one file every device edits:
 ///
-///     .FolderVideoPlayer/quincy/tags-macbook.json
-///                               /tags-appletv.json
+///     .FolderVideoPlayer/quincy/tags.json
 ///
-/// Person, so several people sharing a NAS never overwrite each other.
-/// Device, because one person with two machines is still two writers, and two
-/// writers on one file is how tags get quietly lost.
+/// Person, so several people sharing a NAS never overwrite each other. One
+/// file, rather than one per device as it used to be, because merging several
+/// full lists is how a moved video came back at its old path. Two writers on
+/// one file is made safe by a lock held for one save; see `SharedTagFile`.
 extension Library {
 
     var myTagFolder: String { Paths.shareDir + "/" + slug(person) }
-    var myTagFile: String {
-        myTagFolder + "/" + String(format: Paths.deviceTags, slug(device))
-    }
 
     /// The tags split by the share they live on, keyed from the share root. A
     /// device talking SMB has no idea what some Mac called the mount point, so
@@ -42,32 +39,42 @@ extension Library {
         return byShare
     }
 
-    /// Leave this device's tags on each share. Silent by design: a NAS asleep,
-    /// unplugged or mounted read-only is a normal Tuesday.
+    /// Bring this profile's tags and each share's `tags.json` into line: send
+    /// this Mac's edits, take in everyone else's. Silent by design: a NAS
+    /// asleep, unplugged or mounted read-only is a normal Tuesday.
     ///
-    /// The tags are gathered here and written off the main thread: a share
-    /// that has gone to sleep answers its first write in seconds, and doing
-    /// that on the main thread is a spinning wheel at every launch.
-    /// Publishes are run one at a time.
+    /// The shares are read and written off the main thread; what comes back is
+    /// applied here. Syncs run one at a time.
     ///
-    /// There are seven ways to start one — launch, the eight-second hold after
-    /// tagging, coming to the front, quitting, the menu, the window button, and
-    /// adopting a profile — and two of them landing together is ordinary. Two
-    /// at once wrote through one another and the share answered "Resource
-    /// busy", so each waits for the one before it.
+    /// There are seven ways to start one — launch, the hold after tagging,
+    /// coming to the front, quitting, the menu, the window button, and adopting
+    /// a profile — and two of them landing together is ordinary. Two at once
+    /// wrote through one another and the share answered "Resource busy", so
+    /// each waits for the one before it.
     typealias PublishOutcome = (written: [(String, Int)], skipped: [(String, String)])
-    typealias ShareTags = [String: [String: [String]]]
+    typealias ShareSyncer = ([ShareSyncInput]) async -> [ShareSyncOutput]
 
     @discardableResult
-    func publishTags(writer: @escaping (ShareTags, String) async -> PublishOutcome = Library.writeAsync)
-        async -> PublishOutcome {
-        guard profileOpen else { return ([], []) }
+    func publishTags(syncer: @escaping ShareSyncer = Library.syncAsync) async -> PublishOutcome {
+        await syncTags(syncer: syncer).outcome
+    }
+
+    /// The same sync, for the menu that asks what came in: how many videos'
+    /// tags changed because another device changed them.
+    @discardableResult
+    func mergeShared(syncer: @escaping ShareSyncer = Library.syncAsync) async -> Int {
+        await syncTags(syncer: syncer).fromOthers
+    }
+
+    func syncTags(syncer: @escaping ShareSyncer = Library.syncAsync)
+        async -> (outcome: PublishOutcome, fromOthers: Int) {
+        guard profileOpen else { return (([], []), 0) }
         let context = profileContext
         let previous = publishQueue
-        let work = Task<PublishOutcome, Never> { [self] in
+        let work = Task<(outcome: PublishOutcome, fromOthers: Int), Never> { [self] in
             _ = await previous?.value
-            // A queued request must not silently become a publish for the next person.
-            guard profileOpen, profileContext == context else { return ([], []) }
+            // A queued request must not silently become a sync for the next person.
+            guard profileOpen, profileContext == context else { return (([], []), 0) }
             isPublishing = true
             defer {
                 if profileContext == context { isPublishing = false }
@@ -75,73 +82,364 @@ extension Library {
             let profile = person
             let root = Paths.support
             let snapshot = tags
-            let file = myTagFile
-            let outcome = await writer(shareTags(), file)
-            guard !outcome.written.isEmpty else { return outcome }
+            let inputs = shareSyncInputs()
+            let outputs = await syncer(inputs)
             let when = Date().timeIntervalSince1970
-            let current = profileOpen && profileContext == context
-            let clean = current && tags == snapshot && myTagFile == file && outcome.skipped.isEmpty
-            // The timestamp belongs to the writer, even if another document is now open.
-            ProfileBundle.markPublished(profile: profile, at: when, clean: clean, root: root)
-            if current {
-                lastPublishedAt = when
-                publishedClean = clean
+            guard profileOpen, profileContext == context else {
+                // Another profile is in force now. What came back is not
+                // taken in — it would land in the wrong profile — and that
+                // profile's base is left as it was, so its next sync simply
+                // sends the same edits again. The timestamp still belongs to
+                // the profile that wrote, never to the one now open.
+                if outputs.contains(where: { $0.status == .inLine && $0.sentSomething }) {
+                    ProfileBundle.markPublished(profile: profile, at: when, clean: false, root: root)
+                }
+                return (([], []), 0)
             }
-            return outcome
+            let (outcome, fromOthers) = applySync(inputs: inputs, outputs: outputs, sent: snapshot)
+            guard !outcome.written.isEmpty else { return (outcome, fromOthers) }
+            let clean = sharedTagsInLine() && outcome.skipped.isEmpty
+            ProfileBundle.markPublished(profile: profile, at: when, clean: clean, root: root)
+            lastPublishedAt = when
+            publishedClean = clean
+            return (outcome, fromOthers)
         }
         publishQueue = Task { _ = await work.value }
         return await work.value
     }
 
-    nonisolated static func writeAsync(_ entries: ShareTags, _ file: String) async -> PublishOutcome {
-        await Task.detached(priority: .utility) { Library.write(entries, as: file) }.value
+    /// The last push on the way out. Synchronous, with a short wait for the
+    /// lock: the app is going and there is no later to retry in.
+    func syncOnQuit() {
+        guard profileOpen else { return }
+        let inputs = shareSyncInputs()
+        guard inputs.contains(where: { $0.hasSomethingToSend }) else { return }
+        let outputs = inputs.map { Library.syncShare($0, lockBudget: 3) }
+        _ = applySync(inputs: inputs, outputs: outputs, sent: tags)
     }
 
-    nonisolated static func write(_ byShare: [String: [String: [String]]], as myTagFile: String)
-        -> (written: [(String, Int)], skipped: [(String, String)]) {
+    nonisolated static func syncAsync(_ inputs: [ShareSyncInput]) async -> [ShareSyncOutput] {
+        await Task.detached(priority: .utility) {
+            inputs.map { Library.syncShare($0, lockBudget: 10) }
+        }.value
+    }
+
+    /// One input per share this profile has anything to do with: tags on it,
+    /// a file seen on it before, edits waiting for it, or any network share —
+    /// another device may have started a file there.
+    func shareSyncInputs() -> [ShareSyncInput] {
+        let state = sharedSyncState()
+        let local = shareTags()
+        let shares = Set(local.keys).union(state.base.keys).union(state.pending.keys)
+            .union(Paths.networkShares())
+        let device = slug(self.device)
+        return shares.sorted().map { share in
+            let mount = Paths.volumes + share
+            return ShareSyncInput(
+                share: share, mount: mount,
+                folder: (mount as NSString).appendingPathComponent(myTagFolder),
+                device: device,
+                local: local[share] ?? [:],
+                base: state.base[share],
+                recorded: state.pending[share] ?? [],
+                legacySeen: state.legacySeen[share] ?? [:],
+                knownMtime: sharedTagMtimes[share],
+                mergedUpTo: lastMerge)
+        }
+    }
+
+    /// Take what came back from the shares into the tags in hand.
+    ///
+    /// `sent` is the tags as they were when the inputs were made. Anything
+    /// edited here since goes on top of the file rather than under it — it has
+    /// not been sent yet, and the next sync sends it.
+    private func applySync(inputs: [ShareSyncInput], outputs: [ShareSyncOutput],
+                           sent: [String: [String]]) -> (PublishOutcome, Int) {
+        var state = sharedSyncState()
+        var updated = tags
         var written: [(String, Int)] = []
         var skipped: [(String, String)] = []
-        for (share, entries) in byShare.sorted(by: { $0.key < $1.key }) {
-            let root = Paths.volumes + share
-            var isDir: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: root, isDirectory: &isDir),
-                  isDir.boolValue else {
-                skipped.append((share, "not mounted"))
+        var fromOthers = 0
+        for (input, output) in zip(inputs, outputs) {
+            let share = input.share
+            switch output.status {
+            case .skipped(let why):
+                // Only worth a word where this Mac had something to send.
+                if input.hasSomethingToSend { skipped.append((share, why)) }
                 continue
+            case .nothingHere:
+                continue
+            case .inLine:
+                break
             }
-            let target = (root as NSString).appendingPathComponent(myTagFile)
-            // Never quietly empty a file that has something in it. The only
-            // way this device holds no tags for a share it has published to is
-            // that something went wrong — a profile half-loaded, a store that
-            // failed to read — and overwriting is not recoverable.
-            if entries.isEmpty {
-                let existing: [String: [String]] = JSONStore.load(target, fallback: [:])
-                if !existing.isEmpty {
-                    skipped.append((share, "left alone — this device has no tags for it, "
-                                    + "and the share holds \(existing.count)"))
-                    continue
-                }
+            guard let file = output.file else { continue }
+            let prefix = share + "/"
+            let sentHere = sent.filter { $0.key.hasPrefix(prefix) }
+            let nowHere = updated.filter { $0.key.hasPrefix(prefix) }
+            var merged: [String: [String]] = [:]
+            for (rest, names) in file.videos { merged[prefix + rest] = names }
+            // Edits made here while the share was being written.
+            for key in Set(sentHere.keys).union(nowHere.keys)
+            where sentHere[key] != nowHere[key] {
+                merged[key] = nowHere[key]
             }
-            if let why = JSONStore.write(target, entries) {
-                // The path as well as the reason: "could not be written" on
-                // its own left nothing to act on, and the answer is usually
-                // which file it was and what the system said about it.
-                skipped.append((share, "\(why) — \(target)"))
-            } else {
-                written.append((share, entries.count))
-                retireLegacy(root, myTagFile)
-            }
+            fromOthers += file.videos.filter { input.local[$0.key] != $0.value }.count
+                + input.local.keys.filter { file.videos[$0] == nil }.count
+            for key in nowHere.keys { updated.removeValue(forKey: key) }
+            updated.merge(merged) { _, shared in shared }
+            state.base[share] = file.videos
+            let left = Array((state.pending[share] ?? []).dropFirst(output.sentRecorded))
+            state.pending[share] = left.isEmpty ? nil : left
+            state.legacySeen[share] = output.legacySeen
+            sharedTagMtimes[share] = output.mtime
+            written.append((share, file.videos.count))
         }
-        return (written, skipped)
+        saveSharedSyncState(state)
+        if updated != tags { adoptSharedTags(updated) }
+        return ((written, skipped), fromOthers)
     }
 
-    /// Drop the old un-owned tags.json once this person has a folder. It has
+    /// Whether every share's entries match what was last synced, with nothing
+    /// waiting to be sent — what "published" means now.
+    func sharedTagsInLine() -> Bool {
+        let state = sharedSyncState()
+        return shareTags().allSatisfy { share, entries in
+            state.base[share] == entries && (state.pending[share] ?? []).isEmpty
+        }
+    }
+
+    /// The sync state for the profile in force, read from its bundle the
+    /// first time it is asked for after a profile change.
+    func sharedSyncState() -> SharedSyncState {
+        let owner = slug(person)
+        if let cache = sharedSyncCache, cache.owner == owner { return cache.state }
+        let loaded = JSONStore.load(Paths.sharedSyncFile(person), fallback: SharedSyncState())
+        sharedSyncCache = (owner, loaded, [:])
+        return loaded
+    }
+
+    func saveSharedSyncState(_ state: SharedSyncState) {
+        guard profileOpen else { return }
+        _ = sharedSyncState()
+        sharedSyncCache?.state = state
+        JSONStore.save(Paths.sharedSyncFile(person), state)
+    }
+
+    /// The file times seen this session, per share: a file whose time has not
+    /// moved is not read again.
+    var sharedTagMtimes: [String: Double] {
+        get { _ = sharedSyncState(); return sharedSyncCache?.mtimes ?? [:] }
+        set { _ = sharedSyncState(); sharedSyncCache?.mtimes = newValue }
+    }
+
+    /// Note a move or a removal for the shared file. Tagging needs no note —
+    /// the next sync works it out by comparing — but a move compared looks
+    /// like a removal and an addition, and the file has to know it was a move.
+    func recordSharedEdit(moving from: String, to: String?) {
+        guard profileOpen else { return }
+        func split(_ key: String) -> (share: String, rest: String)? {
+            guard !key.hasPrefix("/"), let cut = key.firstIndex(of: "/") else { return nil }
+            let rest = String(key[key.index(after: cut)...])
+            return rest.isEmpty ? nil : (String(key[..<cut]), rest)
+        }
+        guard let old = split(from) else { return }
+        let edit: SharedTagEdit
+        if let to, let new = split(to), new.share == old.share {
+            edit = .move(old.rest, new.rest)
+        } else {
+            // Gone from this share: another share, a local folder, or the bin.
+            edit = .remove(old.rest)
+        }
+        var state = sharedSyncState()
+        state.pending[old.share, default: []].append(edit)
+        saveSharedSyncState(state)
+    }
+
+    // MARK: - one share, off the main thread
+
+    /// Everything one share's sync needs, gathered on the main thread.
+    struct ShareSyncInput {
+        var share: String
+        var mount: String
+        var folder: String
+        var device: String
+        /// This Mac's tags on this share, keyed from the share root.
+        var local: [String: [String]]
+        /// The file as this Mac last synced it. Nil: never synced here.
+        var base: [String: [String]]?
+        var recorded: [SharedTagEdit]
+        var legacySeen: [String: SharedSyncState.LegacySeen]
+        var knownMtime: Double?
+        /// Old files no newer than this were merged here before the shared
+        /// file existed; see `Library.lastMerge`. Zero takes them all.
+        var mergedUpTo: Double = 0
+
+        var hasSomethingToSend: Bool {
+            guard let base else { return !local.isEmpty || !recorded.isEmpty }
+            return !recorded.isEmpty || base != local
+        }
+    }
+
+    struct ShareSyncOutput {
+        enum Status: Equatable {
+            /// The file and this Mac agree now.
+            case inLine
+            /// No file and nothing to start one with.
+            case nothingHere
+            case skipped(String)
+        }
+        var status: Status
+        var file: SharedTagFile?
+        var mtime: Double?
+        /// How many of the recorded edits reached the file.
+        var sentRecorded = 0
+        var legacySeen: [String: SharedSyncState.LegacySeen] = [:]
+        /// Entries left out of a first file because their video is not there.
+        var dropped = 0
+        /// Whether this sync wrote the file, rather than only reading it.
+        var sentSomething = false
+    }
+
+    /// Sync one share. Blocking; see `SharedTagDisk`.
+    nonisolated static func syncShare(_ input: ShareSyncInput, lockBudget: Double,
+                                      now: Double = Date().timeIntervalSince1970) -> ShareSyncOutput {
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: input.mount, isDirectory: &isDir), isDir.boolValue else {
+            return ShareSyncOutput(status: .skipped("not mounted"))
+        }
+        let folder = input.folder
+        let me = input.device
+        let exists = { (rest: String) in
+            fm.fileExists(atPath: (input.mount as NSString).appendingPathComponent(rest))
+        }
+        let lockPath = (folder as NSString).appendingPathComponent(SharedTagFile.lockName)
+
+        // Look first, without the lock: most syncs have nothing to write.
+        var found: SharedTagFile?
+        var foundMtime: Double?
+        switch SharedTagDisk.read(folder: folder) {
+        case .unreadable:
+            return ShareSyncOutput(status: .skipped("tags.json could not be read, so it was left alone"))
+        case let .file(file, mtime):
+            if file.isReadOnlyHere {
+                return ShareSyncOutput(status: .skipped("tags.json was written by a newer version of the app"))
+            }
+            found = file
+            foundMtime = mtime
+        case .missing:
+            break
+        }
+        let times = SharedTagDisk.legacyTimes(folder: folder)
+        if found == nil {
+            if times.isEmpty && input.local.isEmpty && input.recorded.isEmpty {
+                return ShareSyncOutput(status: .nothingHere, legacySeen: input.legacySeen)
+            }
+            // Mid-save by someone else: the tvOS app deletes before it renames.
+            if fm.fileExists(atPath: lockPath) {
+                return ShareSyncOutput(status: .skipped("another device is saving; tried again later"))
+            }
+        }
+        let firstContact = input.base == nil
+        let edits = firstContact
+            ? input.recorded
+            : SharedTagFile.pending(local: input.local, base: input.base ?? [:], recorded: input.recorded)
+        let legacyNow = times.map { SharedTagFile.Legacy(name: $0.key, mtime: $0.value, entries: [:]) }
+
+        if let file = found {
+            let listed = { (name: String) in
+                file.devices[SharedTagFile.slug(ofLegacy: name) ?? ""] != nil
+            }
+            let legacyChanged = times.contains { name, mtime in
+                !listed(name) && input.legacySeen[name]?.mtime != mtime
+            }
+            let oldActive = file.oldWritersActive(legacyNow, now: now)
+            let retireDue = !times.isEmpty && !oldActive
+            let quiet = edits.isEmpty && !legacyChanged && !retireDue && file.devices[me] != nil
+            if quiet {
+                if oldActive, foundMtime != input.knownMtime {
+                    SharedTagDisk.writeCompatCopy(file.videos, folder: folder, device: me)
+                }
+                return ShareSyncOutput(status: .inLine, file: file, mtime: foundMtime,
+                                       legacySeen: input.legacySeen)
+            }
+        }
+
+        // Something to write: take the lock, and read again under it.
+        try? fm.createDirectory(atPath: folder, withIntermediateDirectories: true)
+        guard let token = SharedTagDisk.lock(folder: folder, by: me, budget: lockBudget) else {
+            return ShareSyncOutput(status: .skipped("another device is saving; tried again later"))
+        }
+        defer { SharedTagDisk.unlock(folder: folder, token: token) }
+
+        var current: SharedTagFile?
+        switch SharedTagDisk.read(folder: folder) {
+        case .unreadable:
+            return ShareSyncOutput(status: .skipped("tags.json could not be read, so it was left alone"))
+        case let .file(file, _):
+            if file.isReadOnlyHere {
+                return ShareSyncOutput(status: .skipped("tags.json was written by a newer version of the app"))
+            }
+            current = file
+        case .missing:
+            current = SharedTagDisk.unfinishedWrite(folder: folder)
+        }
+
+        let legacy = SharedTagDisk.legacy(folder: folder)
+        var seen = input.legacySeen
+        var file: SharedTagFile
+        var dropped = 0
+        if var existing = current {
+            existing.apply(edits, at: now)
+            // What the devices that have not been updated changed since last time.
+            for old in legacy where old.slug != me && existing.devices[old.slug] == nil {
+                if let before = seen[old.name], before.mtime != old.mtime {
+                    existing.apply(existing.editsFromLegacy(current: old.entries,
+                                                            previous: before.entries,
+                                                            exists: exists), at: now)
+                }
+                seen[old.name] = SharedSyncState.LegacySeen(mtime: old.mtime, entries: old.entries)
+            }
+            file = existing
+        } else {
+            // The first file on this share, from the old ones and this Mac's tags.
+            // Only old files with news this Mac never merged: the rest are in
+            // its own tags already, removals included.
+            let unmerged = legacy.filter { $0.slug != me && $0.mtime > input.mergedUpTo }
+            (file, dropped) = SharedTagFile.build(from: unmerged, local: input.local, exists: exists)
+            file.apply(input.recorded.filter { if case .set = $0 { return false }; return true },
+                       at: now)
+            for old in legacy {
+                seen[old.name] = SharedSyncState.LegacySeen(mtime: old.mtime, entries: old.entries)
+            }
+        }
+        file.devices[me] = SharedTagFile.Device(format: SharedTagFile.currentFormat, seen: now)
+        file.prune(now: now)
+
+        if let why = SharedTagDisk.write(file, folder: folder, device: me) {
+            return ShareSyncOutput(status: .skipped(why))
+        }
+        let mtime = SharedTagDisk.mtime((folder as NSString).appendingPathComponent(SharedTagFile.name))
+        retireRootLegacy(input.mount, folder)
+
+        if file.oldWritersActive(legacy, now: now) {
+            SharedTagDisk.writeCompatCopy(file.videos, folder: folder, device: me)
+        } else if !legacy.isEmpty {
+            SharedTagDisk.retire(legacy.map(\.name), folder: folder)
+            for old in legacy { seen[old.name] = nil }
+        }
+        return ShareSyncOutput(status: .inLine, file: file, mtime: mtime,
+                               sentRecorded: input.recorded.count, legacySeen: seen,
+                               dropped: dropped, sentSomething: true)
+    }
+
+    /// Drop the old un-owned tags.json once this person has a file. It has
     /// to go rather than linger: it belongs to nobody, so every person on the
     /// share would keep reading tags that are not theirs. Only ever removed
     /// after its contents have been written into the person's own file.
-    private nonisolated static func retireLegacy(_ root: String, _ myTagFile: String) {
-        let legacy = (root as NSString).appendingPathComponent(Paths.legacyTags)
-        let mine = (root as NSString).appendingPathComponent(myTagFile)
+    private nonisolated static func retireRootLegacy(_ mount: String, _ folder: String) {
+        let legacy = (mount as NSString).appendingPathComponent(Paths.legacyTags)
+        let mine = (folder as NSString).appendingPathComponent(SharedTagFile.name)
         if FileManager.default.fileExists(atPath: legacy),
            FileManager.default.fileExists(atPath: mine) {
             try? FileManager.default.removeItem(atPath: legacy)
@@ -173,90 +471,6 @@ extension Library {
         }.value
     }
 
-    /// Take in tags this person made on their other devices.
-    ///
-    /// Only this person's files are read — another person's tags are none of
-    /// our business. A file newer than our last merge wins for the videos it
-    /// names: coarse, per video rather than per tag, but it is a rule you can
-    /// hold in your head.
-    ///
-    /// The shares are read off the main thread and the result applied here:
-    /// listing a sleeping NAS and reading a file per device is not something
-    /// to do while the window is trying to draw.
-    @discardableResult
-    func mergeShared() async -> Int {
-        guard profileOpen else { return 0 }
-        let context = profileContext
-        let mine = (myTagFile as NSString).lastPathComponent
-        let shares = shareTags().keys.sorted()
-        let folder = myTagFolder
-        let since = lastMerge
-        let harvest = await Task.detached(priority: .utility) {
-            Library.readShared(shares: shares, folder: folder, mine: mine, since: since)
-        }.value
-        guard profileOpen, profileContext == context, !harvest.entries.isEmpty else { return 0 }
-        // Another device publishes ALL its tags, including paths this Mac has
-        // since moved or renamed the file away from — it was never told. Taking
-        // those in brought the old path back beside the new one: the same
-        // video twice, once as a missing file. So a path this Mac has no entry
-        // for is only taken in if its file is there. Stat'ed off the main
-        // thread; only such new paths are asked about, not every entry.
-        let known = Set(tags.keys)
-        let fresh = harvest.entries.map(\.0).filter { !known.contains($0) }
-        let present = await Task.detached(priority: .utility) {
-            Set(fresh.filter { FileManager.default.fileExists(atPath: Paths.tagPath($0)) })
-        }.value
-        guard profileOpen, profileContext == context else { return 0 }
-        let taken = Self.mergeable(harvest.entries, known: known, present: present)
-        for (key, names) in taken {
-            // An empty list is a real statement — "that device says no tags" —
-            // so it removes rather than being ignored.
-            setTags(names, for: Paths.tagPath(key))
-        }
-        lastMerge = max(lastMerge, harvest.newest)
-        saveTags()
-        save()
-        return taken.count
-    }
-
-    /// Which of another device's entries to take in.
-    ///
-    /// A path this Mac already files tags under is always taken — that is an
-    /// ordinary edit from elsewhere. A path it does not know is taken only if
-    /// the file exists: a path whose file is gone is one this Mac moved or
-    /// removed, and the other device is replaying its old copy. Nothing is
-    /// lost by skipping it — the file is not there to carry tags.
-    nonisolated static func mergeable(_ entries: [(String, [String])],
-                                      known: Set<String>,
-                                      present: Set<String>) -> [(String, [String])] {
-        entries.filter { key, _ in known.contains(key) || present.contains(key) }
-    }
-
-    nonisolated static func readShared(shares: [String], folder: String, mine: String,
-                                       since: Double)
-        -> (entries: [(String, [String])], newest: Double) {
-        var newest = since
-        var found: [(String, [String])] = []
-        for share in (shares.isEmpty ? Paths.networkShares() : shares) {
-            let dir = ((Paths.volumes + share) as NSString).appendingPathComponent(folder)
-            guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir)
-            else { continue }
-            for name in names.sorted() where name != mine {
-                guard name.hasPrefix("tags-"), name.hasSuffix(".json") else { continue }
-                let path = (dir as NSString).appendingPathComponent(name)
-                guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-                      let changed = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970,
-                      changed > since else { continue }
-                newest = max(newest, changed)
-                let entries: [String: [String]] = JSONStore.load(path, fallback: [:])
-                for (rest, names) in entries {
-                    found.append(("\(share)/\(rest)", parseTags(names.joined(separator: ","))))
-                }
-            }
-        }
-        return (found, newest)
-    }
-
     /// Every name published on the mounted shares. Read from the shares rather
     /// than remembered, because the point of the list is to show what other
     /// devices are actually filing under — including names this Mac has never
@@ -284,11 +498,27 @@ extension Library {
                 // because it sits here. "thumbs" is where poster frames are
                 // published, and it was being offered as a person to choose.
                 let files = (try? fm.contentsOfDirectory(atPath: folder)) ?? []
-                guard files.contains(where: {
+                let shared: SharedTagFile?
+                if case let .file(file, _) = SharedTagDisk.read(folder: folder) {
+                    shared = file
+                } else {
+                    shared = nil
+                }
+                guard shared != nil || files.contains(where: {
                     $0.hasPrefix("tags-") && $0.hasSuffix(".json")
                 }) else { continue }
                 var entry = found[name] ?? SharePerson(name: name)
                 entry.shares.append(share)
+                // The shared file, once there is one, is the whole answer: the
+                // old per-device files are copies of it or retired.
+                if let shared {
+                    entry.devices += shared.devices.count
+                    let path = (folder as NSString).appendingPathComponent(SharedTagFile.name)
+                    entry.changed = max(entry.changed, SharedTagDisk.mtime(path) ?? 0)
+                    for rest in shared.videos.keys { entry.videos.insert("\(share)/\(rest)") }
+                    found[name] = entry
+                    continue
+                }
                 for leaf in files.sorted()
                 where leaf.hasPrefix("tags-") && leaf.hasSuffix(".json") {
                     entry.devices += 1

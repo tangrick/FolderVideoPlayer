@@ -161,6 +161,11 @@ final class Library: ObservableObject {
         guard gethostuuid(&bytes, &timeout) == 0 else { return "" }
         return bytes.map { String(format: "%02x", $0) }.joined()
     }
+    /// The newest old per-device tag file this Mac had merged, from before the
+    /// shared file. No longer moved: it only tells the one-time build of a
+    /// share's `tags.json` which old files hold news this Mac never took in.
+    /// An old file older than this is already in this Mac's own tags, and
+    /// taking it again would put back tags removed here since.
     @Published var lastMerge: Double = 0
     @Published var showThumbnails = true { didSet { save() } }
     @Published var playlistStyle: PlaylistStyle = .list { didSet { save() } }
@@ -345,6 +350,10 @@ final class Library: ObservableObject {
     /// The publish in flight, so the next one waits rather than writing
     /// through it. See `publishTags()`.
     var publishQueue: Task<Void, Never>?
+    /// The shared tag file's sync state for the profile in force, loaded on
+    /// first use and whenever the profile changes, with the file times seen
+    /// this session. See `sharedSyncState()` in TagSharing.
+    var sharedSyncCache: (owner: String, state: SharedSyncState, mtimes: [String: Double])?
     /// Invalidates async share work even after closing and reopening the same name.
     private(set) var profileContext = UUID()
     private var lastCatchUp: TimeInterval = 0
@@ -688,6 +697,32 @@ final class Library: ObservableObject {
         scheduleAutoPublish()
     }
 
+    /// Tags that changed because the shared file did. Kept and shown, but not
+    /// an edit of this Mac's: there is nothing to send, and the published
+    /// state is not broken by it.
+    func adoptSharedTags(_ updated: [String: [String]]) {
+        guard profileOpen else { return }
+        // What another device changed goes into the Undo snapshot too. Undo
+        // puts back the whole snapshot, and the sync sends whatever differs
+        // from the file — so without this, undoing an edit of this Mac's
+        // would also take back, on every device, a change it never made.
+        let changed = Set(tags.keys).union(updated.keys).filter { tags[$0] != updated[$0] }
+        if !changed.isEmpty {
+            if var held = undoable {
+                for key in changed { held.tags[key] = updated[key] }
+                undoable = held
+            }
+            if hasStoredUndo {
+                var stored: [String: [String]] = JSONStore.load(Paths.tagsBackup, fallback: [:])
+                for key in changed { stored[key] = updated[key] }
+                JSONStore.save(Paths.tagsBackup, stored)
+            }
+        }
+        tags = updated
+        recount()
+        JSONStore.save(Paths.tagsFile, tags)
+    }
+
     /// Read the readings off disk.
     ///
     /// **Global, not per profile** — a reading does not depend on who is
@@ -824,16 +859,17 @@ final class Library: ObservableObject {
         guard profileOpen else { return }
         autoPublish?.cancel()
         autoPublish = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(8))
+            try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
             await self?.publishIfNeeded()
         }
     }
 
-    /// Publish, and take in whatever the other devices have said. Silent: a
-    /// NAS asleep, unplugged or mounted read-only is a normal Tuesday.
-    func publishIfNeeded() async {
-        guard tagsDirty, profileOpen else { return }
+    /// Sync with the shared file, and take in whatever the other devices have
+    /// said. Silent: a NAS asleep, unplugged or mounted read-only is a normal
+    /// Tuesday. `always` syncs with nothing to send — to hear what changed.
+    func publishIfNeeded(always: Bool = false) async {
+        guard tagsDirty || always, profileOpen else { return }
         let context = profileContext
         let outcome = await publishTags()
         guard context == profileContext else { return }
@@ -844,20 +880,21 @@ final class Library: ObservableObject {
 
     /// Catch up with the other devices, at most this often. Called when the
     /// app comes to the front, which is when a share is most likely to have
-    /// just been mounted or another device to have just finished tagging.
-    func catchUpWithOtherDevices(minimumGap: TimeInterval = 60) async {
+    /// just been mounted or another device to have just finished tagging, and
+    /// when a tag panel or tag playlist opens. Most of these find the file
+    /// unchanged, which costs one directory listing on the share.
+    func catchUpWithOtherDevices(minimumGap: TimeInterval = 5) async {
         let now = Date().timeIntervalSince1970
         guard now - lastCatchUp > minimumGap else { return }
         lastCatchUp = now
-        _ = await mergeShared()
-        await publishIfNeeded()
+        await publishIfNeeded(always: true)
     }
 
     /// A last push on the way out, for changes the hold above has not reached
-    /// yet. Best effort and off the main thread's critical path.
+    /// yet. Blocks for at most a few seconds on another device's lock.
     func publishOnQuit() {
-        guard tagsDirty, profileOpen else { return }
-        _ = Library.write(shareTags(), as: myTagFile)
+        guard profileOpen else { return }
+        syncOnQuit()
     }
 
     /// Derive everything the views ask about tags, in one pass.
@@ -954,6 +991,7 @@ final class Library: ObservableObject {
         }
         tags[to] = kept
         tags.removeValue(forKey: from)
+        recordSharedEdit(moving: from, to: to)
         return true
     }
 
@@ -966,6 +1004,7 @@ final class Library: ObservableObject {
         forgetFacts(path)
         guard tags[key] != nil else { return false }
         tags.removeValue(forKey: key)
+        recordSharedEdit(moving: key, to: nil)
         saveTags()
         return true
     }
@@ -2017,8 +2056,8 @@ extension Library {
         undoable = nil
         try? FileManager.default.removeItem(atPath: Paths.tagsBackup)
         try? FileManager.default.removeItem(atPath: Paths.factsBackup)
-        // A profile that has never been seen on this Mac starts from whatever
-        // its own devices have published, rather than from nothing.
+        // Nothing of a profile never seen on this Mac has been merged here, so
+        // its first shared file takes every old file there is.
         lastMerge = 0
         saveTags()
         saveFacts()
@@ -2068,8 +2107,6 @@ extension Library {
         await seedFromSharesIfEmpty()
         guard context == profileContext else { return }
         await claimName()
-        guard context == profileContext else { return }
-        _ = await mergeShared()
         guard context == profileContext else { return }
         await publishTags()
     }
@@ -2515,6 +2552,12 @@ extension Library {
             var found: [String: [String]] = [:]
             for share in Paths.mountedShares() {
                 let dir = ((Paths.volumes + share) as NSString).appendingPathComponent(folder)
+                // The shared file, where there is one; the old per-device
+                // files only on a share nobody has moved to it yet.
+                if case let .file(file, _) = SharedTagDisk.read(folder: dir) {
+                    for (rest, tagged) in file.videos { found["\(share)/\(rest)"] = tagged }
+                    continue
+                }
                 guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir)
                 else { continue }
                 for leaf in names.sorted()
