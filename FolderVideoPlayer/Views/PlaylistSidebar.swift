@@ -59,6 +59,8 @@ struct PlaylistSidebar: View {
     /// and re-checking them every pass would spend a third of every run on
     /// paths that cannot be analysed at all.
     @State private var gone: Set<String> = []
+    /// The words typed into the library-wide transcript search.
+    @State private var saidTyped = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -69,6 +71,10 @@ struct PlaylistSidebar: View {
             // screen while it is up — with the way out on it.
             if playback.mode == .hidden {
                 HiddenBanner()
+                Divider()
+            }
+            if playback.mode == .said {
+                saidBanner
                 Divider()
             }
             // The action row sits DIRECTLY on the list, not up in the toolbar.
@@ -171,6 +177,12 @@ struct PlaylistSidebar: View {
             .padding(.vertical, 4)
             .background(Color(nsColor: .controlBackgroundColor), in: .rect(cornerRadius: 6))
 
+            // Band 1b — the whole library, by what is said in it. Not a filter
+            // on the list below: the list only holds this folder or tag, and
+            // the words can be anywhere in the profile, so Return REPLACES the
+            // list with every video they are said in.
+            saidField
+
             // Band 2 — narrowing. What the engine is busy with is not a band:
             // it is one line in the footer under the list, with the Stop that
             // belongs against it. The doing controls are not here either: they
@@ -178,6 +190,77 @@ struct PlaylistSidebar: View {
             tagStrip
         }
         .padding(8)
+    }
+
+    // MARK: - band 1b: search what was said, across the library
+
+    private var saidField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "text.bubble").foregroundStyle(.secondary)
+            TextField("Find videos where it\u{2019}s said", text: $saidTyped)
+                .textFieldStyle(.plain)
+                .onSubmit(runSaidSearch)
+            if !saidTyped.isEmpty {
+                Button {
+                    saidTyped = ""
+                    playback.leaveSaid()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .help("Clear the search")
+                .accessibilityLabel("Clear the transcript search")
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color(nsColor: .controlBackgroundColor), in: .rect(cornerRadius: 6))
+        .help(journal.transcribedPaths.isEmpty
+              ? "Searches the words in transcribed videos. None in this profile is transcribed yet."
+              : "Searches the words in the \(journal.transcribedPaths.count) transcribed "
+                + "\(journal.transcribedPaths.count == 1 ? "video" : "videos") in this profile, "
+                + "in any folder. Press Return.")
+        .onChange(of: playback.mode) { _, mode in
+            if mode != .said { saidTyped = "" }
+        }
+    }
+
+    /// What the list is while it holds a search, and the way back out.
+    private var saidBanner: some View {
+        let mentions = playback.saidMentions.values.reduce(0) { $0 + $1.count }
+        return HStack(spacing: 6) {
+            Image(systemName: "text.bubble.fill")
+            Text("\(playback.saidMentions.count) \(playback.saidMentions.count == 1 ? "video" : "videos") · "
+                 + "\(mentions) \(mentions == 1 ? "mention" : "mentions")")
+                .font(.caption)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Button("Done") {
+                saidTyped = ""
+                playback.leaveSaid()
+            }
+            .font(.caption)
+            .buttonStyle(.link)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thinMaterial)
+        .help("Every video in this profile where \u{201C}\(playback.saidQuery ?? "")\u{201D} is said. "
+              + "Each starts at the first mention; the Transcript panel shows the lines. "
+              + "Done goes back to the folder or tag you were in.")
+    }
+
+    /// Search every transcript in the profile and make the hits the list.
+    private func runSaidSearch() {
+        let query = saidTyped.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+        var mentions: [String: [Double]] = [:]
+        for line in journal.transcriptMatches(query, limit: 5000) {
+            mentions[line.path, default: []].append(line.start)
+        }
+        playback.playSaid(query, mentions: mentions.mapValues { $0.sorted() })
     }
 
     // MARK: - band 2: the named actions

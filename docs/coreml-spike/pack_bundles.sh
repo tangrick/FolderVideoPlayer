@@ -97,26 +97,35 @@ need "$models/siglip2_base_prompts.f32"
 # Hub. Required all the same — a catalogue that silently loses its speech bundle
 # is a Settings row that offers nothing, and nobody would see it here.
 need "$here/speech-bundle.json"
+# The smaller speech packs (build_speech_bundle.py), offered beside the full one
+# so the Speech row's pack picker has a real choice.
+need "$here/speech-small-bundle.json"
+need "$here/speech-base-bundle.json"
 
 # `ditto -c -k --sequesterRsrc --keepParent` is the archive shape macOS itself
 # writes, so the reader in `ModelArchive.unwrapPackage` (also `ditto`) cannot
 # disagree with it about where the package directory sits in the zip.
-# The one bundle whose bytes are not ours to host.
+# The bundles whose bytes are not ours to host.
 #
-# 22 Core ML Whisper files (MIT), 645.7 MB, fetched from the Hugging Face Hub at
+# Core ML Whisper files (MIT) — the full pack is 22 files, 645.7 MB; the smaller
+# two are 21 files each, tokenizer included — fetched from the Hugging Face Hub at
 # a pinned commit — neither hosted nor repacked here. Republishing 646 MB to a
 # GitHub release to save a redirect is a worse trade than a pinned URL, and the
 # catalogue is the trust anchor either way.
 #
-# The whole entry, digests included, lives in speech-bundle.json: there is
+# Each whole entry, digests included, lives in its speech*-bundle.json: there is
 # nothing local to assemble, so `asset` has nothing to do here. It is indented to
 # sit in the document exactly like the bundles above it.
 speech_bundle() {
-    python3 - "$here/speech-bundle.json" <<'PY'
+    python3 - "$here/speech-bundle.json" "$here/speech-small-bundle.json" \
+              "$here/speech-base-bundle.json" <<'PY'
 import json, sys
-bundle = json.load(open(sys.argv[1]))
-for line in json.dumps(bundle, indent=2).splitlines():
-    print("    " + line)
+for index, path in enumerate(sys.argv[1:]):
+    lines = json.dumps(json.load(open(path)), indent=2).splitlines()
+    if index < len(sys.argv) - 2:
+        lines[-1] += ","
+    for line in lines:
+        print("    " + line)
 PY
 }
 
@@ -254,9 +263,13 @@ for b in d["bundles"]:
         # A bundle whose bytes live elsewhere must PIN them to a commit: a branch
         # would let the bytes change under a digest that never does, and the
         # digest is the only thing the app actually checks.
+        # Another repository on the pack's own host is allowed: the smaller
+        # speech packs take their tokenizer from openai/whisper-*.
         src = (b.get("pack") or {}).get("sourceURL")
         if not a["url"].startswith("https://github.com/"):
-            assert src and a["url"].startswith(src + "/resolve/"), (b["id"], a["install"], src)
+            host = "/".join((src or "").split("/")[:3]) + "/"
+            assert src and a["url"].startswith(host) and "/resolve/" in a["url"], \
+                (b["id"], a["install"], src)
             commit = a["url"].split("/resolve/", 1)[1].split("/", 1)[0]
             assert len(commit) == 40, commit
             assert all(c in "0123456789abcdef" for c in commit.lower()), commit

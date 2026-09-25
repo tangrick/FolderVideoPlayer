@@ -711,7 +711,7 @@ final class EvidenceStore: EvidenceRepository {
                 SELECT t.id, t.path, t.start_s, t.end_s, t.text, t.language, t.source
                 FROM transcript_fts f JOIN transcript t ON t.id = f.rowid
                 WHERE f.text MATCH ? AND t.profile = ?
-                ORDER BY t.start_s LIMIT ?
+                ORDER BY t.path, t.start_s LIMIT ?
                 """)
             defer { sqlite3_finalize(statement) }
             bindText(statement, 1, Self.matchQuery(trimmed))
@@ -723,7 +723,7 @@ final class EvidenceStore: EvidenceRepository {
         let statement = try prepare("""
             SELECT id, path, start_s, end_s, text, language, source FROM transcript
             WHERE profile = ? AND text LIKE ? ESCAPE '\\'
-            ORDER BY start_s LIMIT ?
+            ORDER BY path, start_s LIMIT ?
             """)
         defer { sqlite3_finalize(statement) }
         bindText(statement, 1, profile)

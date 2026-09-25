@@ -112,13 +112,26 @@ struct PromptTable {
     // MARK: - where it lives
 
     /// Same directory as the image model it belongs to, because Phase 5's
-    /// ModelDownloader ships them together.
+    /// ModelDownloader ships them together. Each tower build ships its own copy
+    /// of the same public table; the active build's copy is read, and the
+    /// other build's when only that one is on disk.
     static func jsonURL(root: String) -> URL {
-        URL(fileURLWithPath: (root as NSString).appendingPathComponent("tags/\(slug).json"))
+        URL(fileURLWithPath: (root as NSString).appendingPathComponent("tags/\(installedStem(root: root)).json"))
     }
 
     static func binURL(root: String) -> URL {
-        URL(fileURLWithPath: (root as NSString).appendingPathComponent("tags/\(slug).f32"))
+        URL(fileURLWithPath: (root as NSString).appendingPathComponent("tags/\(installedStem(root: root)).f32"))
+    }
+
+    private static func installedStem(root: String) -> String {
+        let active = ModelSpace.activeTower(root: root)
+        let order = [active] + ModelSpace.towers.filter { $0 != active }
+        let fm = FileManager.default
+        let found = order.first { tower in
+            let base = (root as NSString).appendingPathComponent("tags/\(tower.prompts)")
+            return fm.fileExists(atPath: base + ".json") && fm.fileExists(atPath: base + ".f32")
+        }
+        return (found ?? active).prompts
     }
 
     /// The paired tags' names as the installed overlay declares them, in

@@ -251,6 +251,28 @@ struct EvidenceStoreTest {
         check("an empty query finds nothing", (try store?.transcriptMatches("  ", limit: 10) ?? []).isEmpty)
         check("a limit is a limit",
               (try store?.transcriptMatches("the", limit: 1) ?? []).count <= 1)
+
+        // The panel groups hits by video, so they come back by video, then by
+        // time — never interleaved across videos by timestamp.
+        _ = try store?.insertTranscript([
+            TranscriptLine(path: other, start: 9, end: 10, text: "a better offer came later", source: "whisper"),
+            TranscriptLine(path: other, start: 1, end: 2, text: "the first offer", source: "whisper"),
+            TranscriptLine(path: other, start: 4, end: 5, text: "去海边吧", source: "whisper"),
+        ], path: other, language: "mixed")
+        let expectedOrder = [video, other].sorted()
+        for query in ["offer", "海边"] {
+            let hits = try store?.transcriptMatches(query, limit: 10) ?? []
+            let order = hits.map(\.path)
+            let byVideo = zip(order, order.dropFirst()).allSatisfy { $0 <= $1 }
+            let byTime = Dictionary(grouping: hits, by: \.path).values.allSatisfy { lines in
+                zip(lines, lines.dropFirst()).allSatisfy { $0.start <= $1.start }
+            }
+            check("hits for \(query) come back grouped by video, then in time order",
+                  Set(order) == Set(expectedOrder) && byVideo && byTime,
+                  hits.map { "\($0.path.suffix(8))@\($0.start)" }.joined(separator: " "))
+        }
+        // Back to one video's transcript for the checks below.
+        try store?.deleteTranscript(for: other)
         var transcriptRefused = false
         do {
             _ = try store?.insertTranscript([TranscriptLine(path: video, start: 0, end: 1, text: "")],

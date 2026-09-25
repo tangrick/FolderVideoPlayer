@@ -16,17 +16,19 @@ struct ModelPackDescriptor: Codable, Equatable {
     /// Adding a catalog entry cannot turn an arbitrary checkpoint into one.
     func incompatibility(feature: String, environment: ModelPackEnvironment = .current) -> String? {
         guard version == 1 else { return "This model pack needs a newer app." }
-        let supported: [String: String] = [
-            "tags": "siglip2-base-v1",
-            "classify": "falconsai-v1",
-            "faces": "yunet-sface-v1",
+        let supported: [String: Set<String>] = [
+            "tags": ["siglip2-base-v1"],
+            "classify": ["falconsai-v1"],
+            "faces": ["yunet-sface-v1"],
             // The speech adapter is the app's own WhisperKit wrapper. It is not a
             // URL or a model name: it is the contract that says the app knows how
             // to feed audio to this pack and read words back out. A catalogue
             // entry that names anything else is refused rather than half-used.
-            "speech": "whisperkit-large-v3-turbo-v1"
+            // One adapter per speech pack, because each pack has its own folder
+            // (`AICapability.speechPacks`) — the adapter is how the app finds it.
+            "speech": Set(AICapability.speechPacks.map(\.adapter))
         ]
-        guard supported[feature] == adapter else {
+        guard supported[feature]?.contains(adapter) == true else {
             return "This app does not support the pack’s model adapter."
         }
         guard architectures.contains(environment.architecture) else {

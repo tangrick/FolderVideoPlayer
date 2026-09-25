@@ -1,0 +1,188 @@
+{
+  "id": "speech-base",
+  "title": "Speech transcription (smallest)",
+  "what": "Writes down what is said, so you can find a video by its words. A smaller download that is less accurate than the full pack.",
+  "feature": "speech",
+  "pack": {
+    "version": 1,
+    "modelID": "openai_whisper-base",
+    "revision": "0f63a7800b00dd0226abd051b906c246e1907482",
+    "adapter": "whisperkit-base-v1",
+    "minimumMacOS": "14.0",
+    "architectures": [
+      "arm64"
+    ],
+    "license": "MIT (tokenizer Apache-2.0)",
+    "sourceURL": "https://huggingface.co/argmaxinc/whisperkit-coreml"
+  },
+  "assets": [
+    {
+      "url": "https://huggingface.co/argmaxinc/whisperkit-coreml/resolve/0f63a7800b00dd0226abd051b906c246e1907482/openai_whisper-base/AudioEncoder.mlmodelc/analytics/coremldata.bin",
+      "sha256": "c4e096b2abd561f00b9b698401df3fbe1a0d0c8d2476ff19cb4e1995680e827e",
+      "bytes": 243,
+      "kind": "file",
+      "install": "models/speech-base/AudioEncoder.mlmodelc/analytics/coremldata.bin",
+      "_digest": "published"
+    },
+    {
+      "url": "https://huggingface.co/argmaxinc/whisperkit-coreml/resolve/0f63a7800b00dd0226abd051b906c246e1907482/openai_whisper-base/AudioEncoder.mlmodelc/coremldata.bin",
+      "sha256": "e316980638e2099e83cb1a93b903717dc12b3c2168d0ab69113764c3767696ba",
+      "bytes": 347,
+      "kind": "file",
+      "install": "models/speech-base/AudioEncoder.mlmodelc/coremldata.bin",
+      "_digest": "published"
+    },
+    {
+      "url": "https://huggingface.co/argmaxinc/whisperkit-coreml/resolve/0f63a7800b00dd0226abd051b906c246e1907482/openai_whisper-base/AudioEncoder.mlmodelc/metadata.json",
+      "sha256": "d6785fae31c3f86d60058c14c79902f716f106dd9e36af7d3fe78b9c34867fce",
+      "bytes": 1863,
+      "kind": "file",
+      "install": "models/speech-base/AudioEncoder.mlmodelc/metadata.json",
+      "_digest": "computed here"
+    },
+    {
+      "url": "https://huggingface.co/argmaxinc/whisperkit-coreml/resolve/0f63a7800b00dd0226abd051b906c246e1907482/openai_whisper-base/AudioEncoder.mlmodelc/model.mil",
+      "sha256": "dc74813e26fce790fe22a33dcef8be535b9dce566f38a8bdb677f5e07dcf9138",
+      "bytes": 579125,
+      "kind": "file",
+      "install": "models/speech-base/AudioEncoder.mlmodelc/model.mil",
+      "_digest": "computed here"
+    },
+    {
+      "url": "https://huggingface.co/argmaxinc/whisperkit-coreml/resolve/0f63a7800b00dd0226abd051b906c246e1907482/openai_whisper-base/AudioEncoder.mlmodelc/model.mlmodel",
+      "sha256": "1d42038f84b508da5ce9b953302387ffedc097c346d36a56b765109002b6080e",
+      "bytes": 79853,
+      "kind": "file",
+      "install": "models/speech-base/AudioEncoder.mlmodelc/model.mlmodel",
+      "_digest": "published"
+    },
+    {
+      "url": "https://huggingface.co/argmaxinc/whisperkit-coreml/resolve/0f63a7800b00dd0226abd051b906c246e1907482/openai_whisper-base/AudioEncoder.mlmodelc/weights/weight.bin",
+      "sha256": "061ff4d74e5de3937b31288465d6c6f2697f92d121c80b23f51dd26bbdfe642b",
+      "bytes": 41189632,
+      "kind": "file",
+      "install": "models/speech-base/AudioEncoder.mlmodelc/weights/weight.bin",
+      "_digest": "published"
+    },
+    {
+      "url": "https://huggingface.co/argmaxinc/whisperkit-coreml/resolve/0f63a7800b00dd0226abd051b906c246e1907482/openai_whisper-base/MelSpectrogram.mlmodelc/analytics/coremldata.bin",
+      "sha256": "7f77e6457285248f99cd7aa3fd4cc2efbb17733e63e7023ac53abe1f95785d07",
+      "bytes": 243,
+      "kind": "file",
+      "install": "models/speech-base/MelSpectrogram.mlmodelc/analytics/coremldata.bin",
+      "_digest": "published"
+    },
+    {
+      "url": "https://huggingface.co/argmaxinc/whisperkit-coreml/resolve/0f63a7800b00dd0226abd051b906c246e1907482/openai_whisper-base/MelSpectrogram.mlmodelc/coremldata.bin",
+      "sha256": "dabdc5aa69f6ef4d97dc9499f5c30514e00e96b53b750b33a5a6471363c71662",
+      "bytes": 328,
+      "kind": "file",
+      "install": "models/speech-base/MelSpectrogram.mlmodelc/coremldata.bin",
+      "_digest": "published"
+    },
+    {
+      "url": "https://huggingface.co/argmaxinc/whisperkit-coreml/resolve/0f63a7800b00dd0226abd051b906c246e1907482/openai_whisper-base/MelSpectrogram.mlmodelc/metadata.json",
+      "sha256": "f2b08d80d9cdd39fc0ccdbb5fac86a5f8dd9bcaa839706c3568be6fe8abd82d4",
+      "bytes": 1848,
+      "kind": "file",
+      "install": "models/speech-base/MelSpectrogram.mlmodelc/metadata.json",
+      "_digest": "computed here"
+    },
+    {
+      "url": "https://huggingface.co/argmaxinc/whisperkit-coreml/resolve/0f63a7800b00dd0226abd051b906c246e1907482/openai_whisper-base/MelSpectrogram.mlmodelc/model.mil",
+      "sha256": "b8063d8e57c113472ac7c2d248e44383568a018978a753c1884ac406b997a374",
+      "bytes": 10176,
+      "kind": "file",
+      "install": "models/speech-base/MelSpectrogram.mlmodelc/model.mil",
+      "_digest": "computed here"
+    },
+    {
+      "url": "https://huggingface.co/argmaxinc/whisperkit-coreml/resolve/0f63a7800b00dd0226abd051b906c246e1907482/openai_whisper-base/MelSpectrogram.mlmodelc/weights/weight.bin",
+      "sha256": "35d74417ef9c765e70f4ef85fe7405015a7086e9af05e3b63a5c2c7c748b2efc",
+      "bytes": 354080,
+      "kind": "file",
+      "install": "models/speech-base/MelSpectrogram.mlmodelc/weights/weight.bin",
+      "_digest": "published"
+    },
+    {
+      "url": "https://huggingface.co/argmaxinc/whisperkit-coreml/resolve/0f63a7800b00dd0226abd051b906c246e1907482/openai_whisper-base/TextDecoder.mlmodelc/analytics/coremldata.bin",
+      "sha256": "6ac1227740ecc2fd7a03df50ac6e2a7f7946acfa77069cf2c486ae0255356b95",
+      "bytes": 243,
+      "kind": "file",
+      "install": "models/speech-base/TextDecoder.mlmodelc/analytics/coremldata.bin",
+      "_digest": "published"
+    },
+    {
+      "url": "https://huggingface.co/argmaxinc/whisperkit-coreml/resolve/0f63a7800b00dd0226abd051b906c246e1907482/openai_whisper-base/TextDecoder.mlmodelc/coremldata.bin",
+      "sha256": "9f1f6fe409486e2797d3f0c65d9a6d5af596771760548cd86f41939c54cdbe7c",
+      "bytes": 633,
+      "kind": "file",
+      "install": "models/speech-base/TextDecoder.mlmodelc/coremldata.bin",
+      "_digest": "published"
+    },
+    {
+      "url": "https://huggingface.co/argmaxinc/whisperkit-coreml/resolve/0f63a7800b00dd0226abd051b906c246e1907482/openai_whisper-base/TextDecoder.mlmodelc/metadata.json",
+      "sha256": "0a64b3686b9a4b2eff0792e7df3cfe1b20467ec5d5ac52c0e01c3dbf6697b65d",
+      "bytes": 4753,
+      "kind": "file",
+      "install": "models/speech-base/TextDecoder.mlmodelc/metadata.json",
+      "_digest": "computed here"
+    },
+    {
+      "url": "https://huggingface.co/argmaxinc/whisperkit-coreml/resolve/0f63a7800b00dd0226abd051b906c246e1907482/openai_whisper-base/TextDecoder.mlmodelc/model.mil",
+      "sha256": "45b9e61a0f286cddcad96e2c890c7a68460adcaa3319c4907ee4f962dfeb2c8b",
+      "bytes": 205217,
+      "kind": "file",
+      "install": "models/speech-base/TextDecoder.mlmodelc/model.mil",
+      "_digest": "computed here"
+    },
+    {
+      "url": "https://huggingface.co/argmaxinc/whisperkit-coreml/resolve/0f63a7800b00dd0226abd051b906c246e1907482/openai_whisper-base/TextDecoder.mlmodelc/model.mlmodel",
+      "sha256": "ae260ff7b95d0c957c3c1f4df4dbeaa0ae6c76bacc55eb86caca8f6820d346f0",
+      "bytes": 164481,
+      "kind": "file",
+      "install": "models/speech-base/TextDecoder.mlmodelc/model.mlmodel",
+      "_digest": "published"
+    },
+    {
+      "url": "https://huggingface.co/argmaxinc/whisperkit-coreml/resolve/0f63a7800b00dd0226abd051b906c246e1907482/openai_whisper-base/TextDecoder.mlmodelc/weights/weight.bin",
+      "sha256": "72325d42a4a4ccc8a6fa974ede6cdf2e0770685a5c4f9da94f41495b94d8d174",
+      "bytes": 104122162,
+      "kind": "file",
+      "install": "models/speech-base/TextDecoder.mlmodelc/weights/weight.bin",
+      "_digest": "published"
+    },
+    {
+      "url": "https://huggingface.co/argmaxinc/whisperkit-coreml/resolve/0f63a7800b00dd0226abd051b906c246e1907482/openai_whisper-base/config.json",
+      "sha256": "67e25477d03bf3a1c34bfd137724beed94b5218d0457e8c1d25f70379a61d9d5",
+      "bytes": 1464,
+      "kind": "file",
+      "install": "models/speech-base/config.json",
+      "_digest": "computed here"
+    },
+    {
+      "url": "https://huggingface.co/argmaxinc/whisperkit-coreml/resolve/0f63a7800b00dd0226abd051b906c246e1907482/openai_whisper-base/generation_config.json",
+      "sha256": "662a99e3db3067708549d04d5f141910eb455f0935aed0c9b06d707f44bfbcaf",
+      "bytes": 2762,
+      "kind": "file",
+      "install": "models/speech-base/generation_config.json",
+      "_digest": "computed here"
+    },
+    {
+      "url": "https://huggingface.co/openai/whisper-base/resolve/e37978b90ca9030d5170a5c07aadb050351a65bb/tokenizer.json",
+      "sha256": "27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566",
+      "bytes": 2480466,
+      "kind": "file",
+      "install": "models/speech-base/tokenizer.json",
+      "_digest": "computed here"
+    },
+    {
+      "url": "https://huggingface.co/openai/whisper-base/resolve/e37978b90ca9030d5170a5c07aadb050351a65bb/tokenizer_config.json",
+      "sha256": "2a4c4281cf9f51ac6ccc406fdc711a087afe6530f671fa7b80953edc498275ce",
+      "bytes": 282683,
+      "kind": "file",
+      "install": "models/speech-base/tokenizer_config.json",
+      "_digest": "computed here"
+    }
+  ]
+}

@@ -26,10 +26,10 @@ actor VisionEmbedder {
     /// different shape fails loudly in embed() instead of mis-reading here.
     private let outputName: String
 
-    /// Where the downloaded bundle keeps the compiled model.
-    /// Same layout ModelDownloader ships: <root>/tags/siglip2_base.mlmodelc
+    /// Where the downloaded bundle keeps the compiled model: the float32 or
+    /// float16 build, whichever `ModelSpace.activeTower` picks.
     static func modelURL(root: String) -> URL {
-        URL(fileURLWithPath: (root as NSString).appendingPathComponent("tags/siglip2_base.mlmodelc"))
+        ModelSpace.towerDirectory(root: root)
     }
 
     /// A model file is present and loadable from `root`? Cheap check for the

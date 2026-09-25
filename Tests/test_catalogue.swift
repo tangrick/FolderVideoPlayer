@@ -67,28 +67,73 @@ struct CatalogueHarness {
             check("the shipped catalogue passes ModelCatalogPolicy.validate", false, "\(error)")
         }
 
-        // --- 2. one bundle per feature, ids unique ----------------------------
+        // --- 2. one bundle per feature, except speech and tags ----------------
+        // Speech offers packs of different sizes, and tags the tower at two
+        // precisions, for their rows' pack pickers; every other feature still
+        // has exactly one.
         let features = manifest.bundles.compactMap(\.capabilityFeature)
-        check("no two bundles claim the same feature", Set(features).count == features.count,
+            .filter { $0 != .speech && $0 != .tags }
+        check("no two bundles claim the same feature (speech and tags aside)",
+              Set(features).count == features.count,
               features.map(\.rawValue).joined(separator: ", "))
 
-        // --- 3. the speech bundle, if the catalogue offers one ----------------
-        guard let speech = manifest.bundles.first(where: { $0.id == "speech" }) else {
+        // --- 3. the speech bundles, if the catalogue offers any ---------------
+        let speechBundles = manifest.bundles.filter { $0.capabilityFeature == .speech }
+        guard !speechBundles.isEmpty else {
             skip("this catalogue offers no speech bundle (older catalogue — the app still works)")
             print("\n\(failures == 0 ? "ALL PASS" : "\(failures) FAILURES") catalogue"
                   + " (\(skipped) skip)")
             exit(failures == 0 ? 0 : 1)
         }
+        // What each pack is known to be: asset count and a floor on its size.
+        let expected: [String: (assets: Int, minBytes: Int64)] = [
+            "speech": (22, 600_000_000),
+            "speech-small": (21, 200_000_000),
+            "speech-base": (21, 140_000_000),
+        ]
+        let adapters = speechBundles.compactMap { $0.pack?.adapter }
+        check("every speech pack names its own adapter",
+              Set(adapters).count == speechBundles.count, adapters.joined(separator: ", "))
+        for speech in speechBundles { checkSpeech(speech, expected: expected[speech.id]) }
 
-        check("the speech bundle is what the Speech row asks for",
+        // --- 7. every tags bundle installs a tower the app can load -----------
+        for tags in manifest.bundles where tags.capabilityFeature == .tags {
+            let tower = ModelSpace.towers.first { $0.bundleID == tags.id }
+            check("\(tags.id) is a tower build this app knows", tower != nil)
+            if let tower {
+                let installs = Set(tags.assets.map(\.install))
+                check("\(tags.id) installs its tower where the app loads it",
+                      installs.contains(tower.directory), tower.directory)
+                check("\(tags.id) installs its own prompt table",
+                      installs.contains("tags/\(tower.prompts).json")
+                        && installs.contains("tags/\(tower.prompts).f32"), tower.prompts)
+            }
+        }
+        print("")
+        if failures == 0 {
+            print("ALL PASS catalogue (\(skipped) skip)")
+            exit(0)
+        }
+        print("\(failures) FAILURES")
+        exit(1)
+    }
+
+    static func checkSpeech(_ speech: AIBundle, expected: (assets: Int, minBytes: Int64)?) {
+        check("\(speech.id) is what the Speech row asks for",
               speech.capabilityFeature == .speech, speech.capabilityFeature?.rawValue ?? "nil")
-        check("the speech bundle carries a pack descriptor", speech.pack != nil)
-        check("the speech bundle has 22 assets (\(speech.assets.count))", speech.assets.count == 22)
-        let total = speech.assets.reduce(Int64(0)) { $0 + $1.bytes }
-        check("the speech bundle's size is the pack's (\(total / 1_000_000) MB)", total > 600_000_000)
+        check("\(speech.id) carries a pack descriptor", speech.pack != nil)
+        if let expected {
+            check("\(speech.id) has \(expected.assets) assets (\(speech.assets.count))",
+                  speech.assets.count == expected.assets)
+            let total = speech.assets.reduce(Int64(0)) { $0 + $1.bytes }
+            check("\(speech.id)'s size is the pack's (\(total / 1_000_000) MB)",
+                  total > expected.minBytes)
+        } else {
+            check("\(speech.id) is a speech pack this gate knows", false)
+        }
 
         for asset in speech.assets {
-            check("speech: \(asset.install) is https and credential-free",
+            check("\(speech.id): \(asset.install) is https and credential-free",
                   ModelCatalogPolicy.secureURL(asset.url) != nil, asset.url)
         }
 
@@ -115,9 +160,9 @@ struct CatalogueHarness {
             if seen[asset.url] != nil { repeated.append("duplicate URL: " + asset.install) }
             seen[asset.url] = asset.install
         }
-        check("every speech asset's URL names the same file as its install path",
+        check("every \(speech.id) asset's URL names the same file as its install path",
               mismatched.isEmpty, mismatched.prefix(2).joined(separator: " | "))
-        check("no speech asset URL repeats a component or duplicates another",
+        check("no \(speech.id) asset URL repeats a component or duplicates another",
               repeated.isEmpty, repeated.prefix(2).joined(separator: " | "))
 
         // --- 4. pinned to a commit, never a branch ----------------------------
@@ -127,7 +172,7 @@ struct CatalogueHarness {
                 && asset.url.range(of: "/main/") == nil
             let commit = asset.url.split(separator: "/")
                 .first { $0.count == 40 && $0.unicodeScalars.allSatisfy(hex.contains) } != nil
-            check("speech: \(asset.install) is pinned to a commit", pinned && commit,
+            check("\(speech.id): \(asset.install) is pinned to a commit", pinned && commit,
                   pinned ? "no 40-hex commit in the URL" : "not a /resolve/ URL, or points at a branch")
         }
 
@@ -135,39 +180,37 @@ struct CatalogueHarness {
         // Every asset must land inside the folder the Speech row reads for its
         // "what is installed" list, or the row reports nothing after a
         // successful install.
+        // And in the folder its adapter maps to, or the app installs the pack
+        // and then transcribes with a different one.
         let roots = AICapability.Feature.speech.modelLocations.map { $0 + "/" }
+        let folder = AICapability.speechPacks.first { $0.adapter == speech.pack?.adapter }?.folder
         for asset in speech.assets {
-            check("speech: \(asset.install) lands in the folder the row reads",
+            check("\(speech.id): \(asset.install) lands in the folder the row reads",
                   roots.contains { asset.install.hasPrefix($0) },
                   "the row looks in \(roots.joined(separator: ", "))")
+            check("\(speech.id): \(asset.install) lands in its adapter's folder",
+                  folder.map { asset.install.hasPrefix($0 + "/") } ?? false,
+                  "adapter folder \(folder ?? "none")")
         }
 
         // --- 6. the descriptor must be usable HERE ----------------------------
         if let pack = speech.pack {
             let here = ModelPackEnvironment(architecture: "arm64", macOSVersion: "14.0")
-            check("the speech pack is compatible on Apple silicon and macOS 14",
+            check("\(speech.id) is compatible on Apple silicon and macOS 14",
                   pack.incompatibility(feature: "speech", environment: here) == nil,
                   pack.incompatibility(feature: "speech", environment: here) ?? "")
             // The adapter is per feature. A pack for speech must not be
             // acceptable as the tag model, or a description could talk the app
             // into loading it for the wrong job.
-            check("the speech pack is not accepted as the tag model",
+            check("\(speech.id) is not accepted as the tag model",
                   pack.incompatibility(feature: "tags", environment: here) != nil)
-            check("the speech pack names its licence for the release notes",
+            check("\(speech.id) names its licence for the release notes",
                   !pack.license.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   pack.license)
-            check("the speech pack names the revision it was built from",
+            check("\(speech.id) names the revision it was built from",
                   pack.revision == "0f63a7800b00dd0226abd051b906c246e1907482", pack.revision)
-            check("the speech pack points at the repository it came from",
+            check("\(speech.id) points at the repository it came from",
                   pack.sourceURL.contains("huggingface.co/argmaxinc/whisperkit-coreml"), pack.sourceURL)
         }
-
-        print("")
-        if failures == 0 {
-            print("ALL PASS catalogue (\(skipped) skip)")
-            exit(0)
-        }
-        print("\(failures) FAILURES")
-        exit(1)
     }
 }

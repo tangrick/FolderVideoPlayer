@@ -79,8 +79,8 @@ struct AICapability: Equatable {
                 // Under models/ like the classify and faces files: the catalogue
                 // may only install into tags/ or models/, and a path outside
                 // those makes the app refuse the whole catalogue, not just this
-                // bundle.
-                return ["models/speech"]
+                // bundle. One folder per pack the user can choose between.
+                return AICapability.speechPacks.map(\.folder)
             }
         }
 
@@ -96,7 +96,12 @@ struct AICapability: Equatable {
                 let full = (root as NSString).appendingPathComponent(location)
                 var isDir: ObjCBool = false
                 guard fm.fileExists(atPath: full, isDirectory: &isDir) else { continue }
-                if isDir.boolValue {
+                if isDir.boolValue, self == .speech {
+                    // Every speech pack holds the same three model names, so
+                    // name the pack's folder instead: which packs are here is
+                    // the question, not what is inside each one.
+                    found.append((location as NSString).lastPathComponent)
+                } else if isDir.boolValue {
                     // A directory of model parts (tags/): name the models
                     // inside it, not the folder.
                     let inside = (try? fm.contentsOfDirectory(atPath: full)) ?? []
@@ -275,16 +280,48 @@ struct AICapability: Equatable {
         return found
     }
 
-    /// The all-or-nothing speech check, shared by both probes.
+    /// The speech packs this build can load: each in its own folder, named by
+    /// the adapter its catalogue entry declares. Largest first, so with nothing
+    /// chosen the best installed pack is the one used.
     ///
-    /// The pack is 22 files that only mean anything together, so "installed"
-    /// means the four compiled model directories are all present. A pack that
-    /// half-installed would otherwise fail at load time with something much
-    /// less clear than "the speech model is not downloaded".
+    /// Separate folders are not a nicety. The catalogue refuses two bundles
+    /// whose install paths overlap, and one folder shared by two packs would
+    /// leave files of the old pack inside the new one's model directories.
+    static let speechPacks: [(adapter: String, folder: String)] = [
+        ("whisperkit-large-v3-turbo-v1", "models/speech"),
+        ("whisperkit-small-216mb-v1", "models/speech-small"),
+        ("whisperkit-base-v1", "models/speech-base"),
+    ]
+
+    /// The speech pack to transcribe with: the one chosen in Settings when it is
+    /// installed, otherwise the first installed pack. Nil when none is.
+    ///
+    /// The adapter comes back with the folder so a transcript records the pack
+    /// that actually wrote it, not the one the choice record hoped for.
+    static func speechPack(root: String = Paths.support) -> (adapter: String, folder: URL)? {
+        let installed = speechPacks.filter { isCompleteSpeechPack(folder: $0.folder, root: root) }
+        let chosen = ModelRegistry.read(root: root).selection(for: .speech)?.pack?.adapter
+        guard let pick = installed.first(where: { $0.adapter == chosen }) ?? installed.first else {
+            return nil
+        }
+        return (pick.adapter,
+                URL(fileURLWithPath: (root as NSString).appendingPathComponent(pick.folder)))
+    }
+
+    /// The all-or-nothing speech check, shared by both probes.
     private static func hasSpeechModels(root: String = Paths.support) -> Bool {
-        for directory in ["AudioEncoder.mlmodelc", "TextDecoder.mlmodelc",
-                          "MelSpectrogram.mlmodelc", "TextDecoderContextPrefill.mlmodelc"] {
-            let path = ((root as NSString).appendingPathComponent("models/speech") as NSString)
+        speechPack(root: root) != nil
+    }
+
+    /// A pack is files that only mean anything together, so "installed" means
+    /// the three compiled model directories WhisperKit loads are all present. A
+    /// pack that half-installed would otherwise fail at load time with something
+    /// much less clear than "the speech model is not downloaded". (The large
+    /// pack also carries a TextDecoderContextPrefill model; WhisperKit 1.1.0
+    /// never loads it and the smaller packs do not have one.)
+    private static func isCompleteSpeechPack(folder: String, root: String) -> Bool {
+        for directory in ["AudioEncoder.mlmodelc", "TextDecoder.mlmodelc", "MelSpectrogram.mlmodelc"] {
+            let path = ((root as NSString).appendingPathComponent(folder) as NSString)
                 .appendingPathComponent(directory)
             var isDir: ObjCBool = false
             guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir),

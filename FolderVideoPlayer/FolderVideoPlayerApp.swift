@@ -675,6 +675,8 @@ final class AppModel: ObservableObject {
             startMovedScan(paths: pb.playlist, label: "Favorites")
         case .hidden:
             startMovedScan(paths: pb.playlist, label: "Hidden")
+        case .said:
+            startMovedScan(paths: pb.playlist, label: pb.sessionLabel)
         }
     }
 

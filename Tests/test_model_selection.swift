@@ -217,6 +217,52 @@ struct ModelSelectionTest {
         check("a removed pack is forgotten and the first pack is offered again",
               shop.chosenPack(for: .tags) == nil && shop.bundle(for: .tags)?.id == first.id)
 
+        // --- 7. speech loads the chosen pack's folder -----------------------------
+        // Each speech pack has its own folder; the transcriber must read the one
+        // the user chose when it is installed, and whichever is installed when not.
+        let speechRoot = root + "/speech"
+        func installSpeech(_ folder: String) throws {
+            for model in ["AudioEncoder", "TextDecoder", "MelSpectrogram"] {
+                try fm.createDirectory(atPath: "\(speechRoot)/\(folder)/\(model).mlmodelc",
+                                       withIntermediateDirectories: true)
+            }
+        }
+        func speechBundle(_ id: String, adapter: String) -> AIBundle {
+            bundle(id, feature: "speech", descriptor: pack(id, adapter: adapter))
+        }
+        check("with no speech pack installed there is nothing to transcribe with",
+              AICapability.speechPack(root: speechRoot) == nil)
+
+        try installSpeech("models/speech-base")
+        check("the only installed pack is used even when nothing is chosen",
+              AICapability.speechPack(root: speechRoot)?.adapter == "whisperkit-base-v1")
+
+        try installSpeech("models/speech")
+        check("with nothing chosen the largest installed pack is used",
+              AICapability.speechPack(root: speechRoot)?.adapter == "whisperkit-large-v3-turbo-v1")
+
+        try ModelRegistry.choose(speechBundle("speech-base", adapter: "whisperkit-base-v1"),
+                                 root: speechRoot)
+        let chosenSpeech = AICapability.speechPack(root: speechRoot)
+        check("choosing the smaller pack makes the transcriber load its folder",
+              chosenSpeech?.adapter == "whisperkit-base-v1"
+                && chosenSpeech?.folder.path.hasSuffix("/models/speech-base") == true,
+              chosenSpeech?.folder.path ?? "none")
+
+        try ModelRegistry.choose(speechBundle("speech-small", adapter: "whisperkit-small-216mb-v1"),
+                                 root: speechRoot)
+        check("a chosen pack that is not installed yet falls back to an installed one",
+              AICapability.speechPack(root: speechRoot)?.adapter == "whisperkit-large-v3-turbo-v1")
+
+        try fm.removeItem(atPath: "\(speechRoot)/models/speech-base/TextDecoder.mlmodelc")
+        try ModelRegistry.choose(speechBundle("speech-base", adapter: "whisperkit-base-v1"),
+                                 root: speechRoot)
+        check("a half-installed pack is never loaded",
+              AICapability.speechPack(root: speechRoot)?.adapter == "whisperkit-large-v3-turbo-v1")
+
+        check("a speech adapter this build does not know is refused",
+              pack("x", adapter: "whisperkit-tiny-v1").incompatibility(feature: "speech") != nil)
+
         print(failures == 0 ? "\nALL PASS model selection" : "\n\(failures) FAILURES")
         exit(failures == 0 ? 0 : 1)
     }

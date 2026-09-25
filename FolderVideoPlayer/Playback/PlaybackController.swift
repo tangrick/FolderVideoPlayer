@@ -139,6 +139,11 @@ final class PlaybackController: ObservableObject {
     /// exactly as they were — previewing must not feel like navigation.
     @Published private(set) var previewPath: String?
 
+    /// The words a `.said` playlist was searched for, and each video's
+    /// moments where they are said (seconds, in order).
+    @Published private(set) var saidQuery: String?
+    @Published private(set) var saidMentions: [String: [Double]] = [:]
+
     init(library: Library, media: MediaCache) {
         self.library = library
         self.media = media
@@ -207,6 +212,33 @@ final class PlaybackController: ObservableObject {
         Task { [library] in await library.catchUpWithOtherDevices() }
     }
 
+    /// Play every video where `query` is said. `mentions` is each video's
+    /// matching moments, in time order — the library panel's transcript search
+    /// hands them over, since the transcripts live in the profile's store.
+    /// Videos no longer on disk are left out; a search that finds none says so.
+    func playSaid(_ query: String, mentions: [String: [Double]]) {
+        let present = mentions.filter { FileManager.default.fileExists(atPath: $0.key) }
+        guard !present.isEmpty else {
+            trouble = mentions.isEmpty
+                ? "\u{201C}\(query)\u{201D} is not said in any transcribed video."
+                : "\u{201C}\(query)\u{201D} is said only in videos that are no longer on disk."
+            return
+        }
+        saidQuery = query
+        saidMentions = present
+        start(Array(present.keys), mode: .said, root: nil, resume: nil)
+        if present.count < mentions.count {
+            trouble = "\(mentions.count - present.count) of the videos it is said in are no longer on disk."
+        }
+    }
+
+    /// Back to the folder or tag the search was opened from — the session,
+    /// which a search never overwrites.
+    func leaveSaid() {
+        guard mode == .said else { return }
+        if !resumeLastSession() { closePlaylist() }
+    }
+
     /// Play the hidden videos. Callers must have asked for the password first;
     /// this function does not check the lock, because the point of the lock is
     /// to stop the list being REACHED, and every caller goes through the
@@ -242,6 +274,10 @@ final class PlaybackController: ObservableObject {
             // A relaunch is locked, so there is nothing to resume into. The
             // session is left alone rather than cleared.
             return false
+        case .said:
+            // Never written as the session (see `saveSession`); an old one
+            // that somehow says so resumes into nothing.
+            return false
         }
         return true
     }
@@ -255,6 +291,10 @@ final class PlaybackController: ObservableObject {
         self.mode = mode
         self.root = root
         if mode != .tag { tagName = nil }
+        if mode != .said {
+            saidQuery = nil
+            saidMentions = [:]
+        }
         failures = 0
         nameFilter = ""
         tagFilter = []
@@ -297,6 +337,8 @@ final class PlaybackController: ObservableObject {
         mode = .folder
         root = nil
         tagName = nil
+        saidQuery = nil
+        saidMentions = [:]
         nameFilter = ""
         tagFilter = []
         tagExcluded = []
@@ -360,7 +402,9 @@ final class PlaybackController: ObservableObject {
         engine.rate = library.speed
         engine.volume = library.volume
         conversionOffer = nil
-        engine.load(URL(fileURLWithPath: path), startAt: library.resumePoint(path))
+        // In a search, a video starts where the words are first said.
+        let saidStart = mode == .said ? saidMentions[path]?.first : nil
+        engine.load(URL(fileURLWithPath: path), startAt: saidStart ?? library.resumePoint(path))
         engine.play()
         head.playing = true
         // Auto duplicate scanning is switched off: the index no longer
@@ -756,7 +800,10 @@ final class PlaybackController: ObservableObject {
     }
 
     func saveSession() {
-        guard let path = currentPath else { return }
+        // A search is a look through the library, not a place to come back
+        // to: the session keeps naming the folder or tag it was opened from,
+        // which is also what `leaveSaid` returns to.
+        guard mode != .said, let path = currentPath else { return }
         library.session = Session(mode: mode.rawValue, root: root, path: path,
                                   tag: tagName)
         library.save()
@@ -788,8 +835,9 @@ final class PlaybackController: ObservableObject {
             break
         case .hidden:
             playlist = library.sorted(library.hiddenPaths())
-        case .folder:
-            // Same files on disk — only their drawn tags were stale.
+        case .folder, .said:
+            // Same files on disk — only their drawn tags were stale. A search's
+            // membership is what was said, which a tag repair does not change.
             rebuildRows()
             return
         }
@@ -817,7 +865,7 @@ final class PlaybackController: ObservableObject {
             break
         case .hidden:
             playlist = library.sorted(library.hiddenPaths())
-        case .folder:
+        case .folder, .said:
             // A folder's membership is the disk's business, not a tag's —
             // but hiding is the app's, so what was just hidden leaves the
             // list in hand rather than waiting for the folder to be reopened.
@@ -922,6 +970,10 @@ final class PlaybackController: ObservableObject {
         case .hidden:
             playlist = library.sorted(library.hiddenPaths())
             settle(on: playingNow)
+        case .said:
+            // What was said is fixed; what is still on disk is not.
+            playlist = playlist.filter { FileManager.default.fileExists(atPath: $0) }
+            settle(on: playingNow)
         }
     }
 
@@ -1007,6 +1059,7 @@ final class PlaybackController: ObservableObject {
         case .tag: name = tagName ?? "Tag"
         case .favorites: name = "Favorites"
         case .hidden: name = "Hidden"
+        case .said: name = "Said: \u{201C}\(saidQuery ?? "")\u{201D}"
         }
         return playlist.isEmpty ? name : "\(name) (\(playlist.count))"
     }

@@ -163,6 +163,9 @@ sh "$here/run_profile_bundle.sh"
 
 # Reject corrupt or incompatible installed visual-space identities before inference.
 sh "$here/run_model_space_validation.sh"
+# The tagging tower at float32 and float16 as one space: the chosen build loads,
+# the other precision joins the recorded identity, and removal keeps the other.
+sh "$here/run_tower_precision.sh"
 
 # Which model pack each AI capability uses: one recorded choice per capability,
 # an incompatible pack refused with its reason, and nothing-chosen behaving as it

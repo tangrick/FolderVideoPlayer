@@ -28,6 +28,19 @@ struct ModelSpace: Codable, Equatable {
     /// existed. It is folded into `digest`, so a preprocessing change moves
     /// the identity even when the tower bytes did not.
     var preprocess: String?
+    /// The tower builds accepted as this space: tower directory → digest of
+    /// its bytes. Absent on markers written before the 16-bit tower existed,
+    /// where the one accepted build is `digest` at the float32 tower's path
+    /// (see `accepted`).
+    ///
+    /// Two entries only ever arise one way: a float16 build installed while
+    /// the float32 build this marker identifies is on disk and unchanged, or
+    /// the other way round (see `write`). They are the same weights at two
+    /// precisions — measured on 400 real frames, trained-head decisions
+    /// flipped 1 in 800 — so they share this space's cached vectors, heads and
+    /// prompt table instead of stranding them. `digest` stays the space's
+    /// name throughout, so nothing keyed by it moves.
+    var members: [String: String]? = nil
 
     /// This space's identity in one line, as an evidence row records it.
     ///
@@ -149,18 +162,69 @@ struct ModelSpace: Codable, Equatable {
               space.adapter == "siglip2-base-v1", space.dim == 768,
               space.digest.utf8.count == 64,
               space.digest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
-              space.preprocess == nil || space.preprocess == declaredPreprocess else {
+              space.preprocess == nil || space.preprocess == declaredPreprocess,
+              (space.members ?? [:]).allSatisfy({ entry in
+                  towers.contains { $0.directory == entry.key } && isDigest(entry.value)
+              }) else {
             throw MarkerError.invalid
         }
         return space
+    }
+
+    private static func isDigest(_ value: String) -> Bool {
+        value.utf8.count == 64
+            && value.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })
+    }
+
+    /// One build of the image tower this app can load, and the prompt table
+    /// that ships beside it.
+    struct Tower: Equatable {
+        /// The catalogue bundle that installs it — what the Tags row's pack
+        /// picker records as the choice.
+        let bundleID: String
+        let directory: String
+        /// The prompt table's file stem under tags/. Both bundles ship the
+        /// same public table under their own names, because the catalogue
+        /// refuses two bundles that install to the same path.
+        let prompts: String
+    }
+
+    /// The same SigLIP 2 weights at two precisions. float32 first: it is the
+    /// build every installation before this had, so with nothing chosen it
+    /// stays the one used.
+    static let towers: [Tower] = [
+        Tower(bundleID: "tags", directory: "tags/siglip2_base.mlmodelc",
+              prompts: "siglip2_base_prompts"),
+        Tower(bundleID: "tags-fp16", directory: "tags/siglip2_base_fp16.mlmodelc",
+              prompts: "siglip2_base_fp16_prompts"),
+    ]
+
+    static func isInstalled(_ tower: Tower, root: String) -> Bool {
+        var isDir: ObjCBool = false
+        let path = (root as NSString).appendingPathComponent(tower.directory)
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
+    }
+
+    /// The tower to load: the one chosen in Settings when it is installed,
+    /// otherwise the first installed. The float32 tower when none is, so a
+    /// "not installed" message names the path an install would fill.
+    static func activeTower(root: String) -> Tower {
+        let installed = towers.filter { isInstalled($0, root: root) }
+        let chosen = ModelRegistry.read(root: root).selection(for: .tags)?.bundleID
+        return installed.first { $0.bundleID == chosen } ?? installed.first ?? towers[0]
     }
 
     /// The tower whose bytes this identity is OF. One place, so the write
     /// path and the re-check path can never disagree about what is being
     /// identified.
     static func towerDirectory(root: String) -> URL {
-        URL(fileURLWithPath: (root as NSString)
-            .appendingPathComponent("tags/siglip2_base.mlmodelc"))
+        URL(fileURLWithPath: (root as NSString).appendingPathComponent(activeTower(root: root).directory))
+    }
+
+    /// Every build this marker accepts, by tower directory. A marker written
+    /// before `members` existed identified the float32 tower alone.
+    var accepted: [String: String] {
+        members ?? [Self.towers[0].directory: digest]
     }
 
     /// Does this marker still describe the bytes that are on disk NOW?
@@ -190,21 +254,81 @@ struct ModelSpace: Codable, Equatable {
     /// re-stamps the marker to match is indistinguishable from an install.
     /// That is authentication — T03's separate release gate.
     func matchesInstalledBytes(root: String) -> Bool {
-        guard let onDisk = Self.digestOfDirectory(at: Self.towerDirectory(root: root),
-                                                  preprocess: preprocess)
+        let tower = Self.activeTower(root: root)
+        guard let expected = accepted[tower.directory],
+              let onDisk = Self.digestOfDirectory(
+                  at: URL(fileURLWithPath: (root as NSString).appendingPathComponent(tower.directory)),
+                  preprocess: preprocess)
         else { return false }
-        return onDisk == digest
+        return onDisk == expected
     }
 
     /// Record the identity of what an install just put in place. The digest is
     /// recomputed from disk rather than trusted from the caller, and the
     /// declared preprocessing is part of it — see `digestOfDirectory`.
+    ///
+    /// A build of the OTHER precision joins the recorded space instead of
+    /// replacing it, but only when that space's own build is still on disk
+    /// with the bytes it recorded — the proof that these are the two
+    /// precisions of one install, not a stale marker. A tower reinstalled with
+    /// different bytes at a path the marker already knows still mints a new
+    /// space, exactly as before.
+    ///
+    /// `joinOnly` is for a bundle with no pack descriptor: it may add its
+    /// build to an intact space, and do nothing else — an undescribed install
+    /// is never a space change.
     static func write(adapter: String, dim: Int, root: String,
-                      preprocess: String? = nil) throws {
-        let tower = towerDirectory(root: root)
-        guard let digest = digestOfDirectory(at: tower, preprocess: preprocess) else { return }
-        let space = ModelSpace(adapter: adapter, digest: digest, dim: dim, preprocess: preprocess)
+                      preprocess: String? = nil, tower: Tower = towers[0],
+                      joinOnly: Bool = false) throws {
+        let directory = URL(fileURLWithPath: (root as NSString).appendingPathComponent(tower.directory))
+        guard let digest = digestOfDirectory(at: directory, preprocess: preprocess) else { return }
+        var space = ModelSpace(adapter: adapter, digest: digest, dim: dim, preprocess: preprocess,
+                               members: [tower.directory: digest])
+        if let existing = try? readForInference(root: root),
+           existing.adapter == adapter, existing.dim == dim, existing.preprocess == preprocess {
+            var accepted = existing.accepted
+            // The same bytes again: the identity already says so.
+            if accepted[tower.directory] == digest { return }
+            let siblingIntact = accepted.contains { path, recorded in
+                path != tower.directory
+                    && digestOfDirectory(at: URL(fileURLWithPath: (root as NSString)
+                                            .appendingPathComponent(path)),
+                                         preprocess: preprocess) == recorded
+            }
+            if accepted[tower.directory] == nil, siblingIntact {
+                accepted[tower.directory] = digest
+                space = existing
+                space.members = accepted
+            } else if joinOnly {
+                return
+            }
+        } else if joinOnly {
+            return
+        }
         let data = try JSONEncoder().encode(space)
         try data.write(to: URL(fileURLWithPath: digestFile(root: root)), options: .atomic)
+    }
+
+    /// A tower build was removed. The marker loses that build; it is deleted
+    /// only when no build it accepts is still on disk — removing one precision
+    /// must not unbind every consumer from the other, which is still installed.
+    static func forget(_ tower: Tower, root: String) {
+        let file = digestFile(root: root)
+        guard let existing = read(root: root) else { return }
+        var remaining = existing.accepted
+        remaining[tower.directory] = nil
+        let intact = remaining.contains { path, recorded in
+            digestOfDirectory(at: URL(fileURLWithPath: (root as NSString).appendingPathComponent(path)),
+                              preprocess: existing.preprocess) == recorded
+        }
+        guard intact else {
+            try? FileManager.default.removeItem(atPath: file)
+            return
+        }
+        var space = existing
+        space.members = remaining
+        if let data = try? JSONEncoder().encode(space) {
+            try? data.write(to: URL(fileURLWithPath: file), options: .atomic)
+        }
     }
 }

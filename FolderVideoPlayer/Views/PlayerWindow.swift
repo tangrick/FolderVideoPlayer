@@ -382,8 +382,8 @@ struct PlayerScreen: View {
     /// at all for a run that was cancelled or whose file changed underneath it.
     private func transcribe(_ path: String) async {
         guard app.transcribingPath == nil, app.transcribeBatch == nil,
-              let root = speechModels() else { return }
-        let transcriber = WhisperKitTranscriber(modelsRoot: root)
+              let pack = speechModels() else { return }
+        let transcriber = WhisperKitTranscriber(modelsRoot: pack.folder, source: pack.adapter)
         app.transcribing = transcriber
         defer { app.transcribing = nil }
         do {
@@ -407,8 +407,8 @@ struct PlayerScreen: View {
             app.say("Nothing to transcribe", "Every video here already has a transcript.")
             return
         }
-        guard let root = speechModels() else { return }
-        let transcriber = WhisperKitTranscriber(modelsRoot: root)
+        guard let pack = speechModels() else { return }
+        let transcriber = WhisperKitTranscriber(modelsRoot: pack.folder, source: pack.adapter)
         app.transcribing = transcriber
         app.transcribeBatchCancelled = false
         app.transcribeBatch = .init(done: 0, total: todo.count)
@@ -457,13 +457,14 @@ struct PlayerScreen: View {
     }
 
     /// Where the speech model lives, or nil after saying it is not installed.
-    private func speechModels() -> URL? {
-        let root = URL(fileURLWithPath: Paths.support).appendingPathComponent("models/speech")
-        guard FileManager.default.fileExists(atPath: root.path) else {
+    /// The pack chosen in Settings ▸ AI when it is installed, otherwise
+    /// whichever speech pack is.
+    private func speechModels() -> (adapter: String, folder: URL)? {
+        guard let pack = AICapability.speechPack() else {
             app.jobNotice = "The speech model is not installed. Install it in Settings → AI."
             return nil
         }
-        return root
+        return pack
     }
 
     private static func transcribeFailure(_ error: Error) -> String {

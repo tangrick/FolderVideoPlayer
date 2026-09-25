@@ -161,7 +161,7 @@ if [ -n "$dist" ]; then
         # it for every asset — the original rule, kept because it caught both
         # silent-404 incidents named above. A bundle whose bytes live elsewhere
         # (the speech pack lives on Hugging Face) must instead keep every asset
-        # under the host and repository its own pack.sourceURL names, and every
+        # under the host its own pack.sourceURL names, and every
         # asset must be pinned to a COMMIT: a branch would let the bytes change
         # under a digest that never does, which is the failure this check is here
         # to prevent in the first place.
@@ -182,10 +182,14 @@ for b in doc.get("bundles", []):
         if not src:
             bad.append(f"{b['id']}/{a['install']}: not under {own} and the bundle names no pack.sourceURL")
             continue
-        if not url.startswith(src + "/resolve/"):
-            bad.append(f"{b['id']}/{a['install']}: not under its pack.sourceURL {src}")
+        # Another repository on the SAME host is allowed (the smaller speech
+        # packs take their tokenizer from openai/whisper-*), pinned all the same.
+        host = "/".join(src.split("/")[:3]) + "/"
+        repo = url[len(host):].split("/resolve/", 1)[0] if url.startswith(host) else ""
+        if not repo or "/resolve/" not in url:
+            bad.append(f"{b['id']}/{a['install']}: not on the host of its pack.sourceURL {src}")
             continue
-        commit = url[len(src) + len("/resolve/"):].split("/", 1)[0]
+        commit = url[len(host) + len(repo) + len("/resolve/"):].split("/", 1)[0]
         if len(commit) != 40 or any(c not in hexes for c in commit.lower()):
             bad.append(f"{b['id']}/{a['install']}: not pinned to a commit ('{commit}')")
             continue

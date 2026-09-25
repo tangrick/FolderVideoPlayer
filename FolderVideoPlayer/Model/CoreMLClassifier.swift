@@ -134,6 +134,10 @@ actor CoreMLClassifier {
     private var loadedSpaceKey: String?
     private var table: PromptTable?
     private var embedder: VisionEmbedder?
+    /// The tower build `embedder` was loaded from. Choosing the other
+    /// precision in Settings reloads at the next warm — same space, so the
+    /// cached vectors, heads and table stay valid across the switch.
+    private var loadedTower: String?
     private var nsfw: NSFWClassifier?
     /// The face engine, built on first use and only in builds where the face
     /// bundle is installed. It lives here rather than in `FaceStore` because
@@ -169,6 +173,11 @@ actor CoreMLClassifier {
     func warm(loadClassifier: Bool = true) throws -> Bool {
         let installedSpace = try ModelSpace.readForInference(root: root)
         let key = installedSpace?.digest ?? cache.slug
+        let tower = ModelSpace.activeTower(root: root).directory
+        if let loadedTower, loadedTower != tower {
+            embedder = nil
+            table = nil
+        }
         if let loadedSpaceKey, loadedSpaceKey != key {
             throw ClassifierError.spaceMismatch("The installed model changed. Restart the app before analysing with the replacement.")
         }
@@ -204,6 +213,7 @@ actor CoreMLClassifier {
         embedder = preparedEmbedder
         nsfw = preparedNSFW
         loadedSpaceKey = key
+        loadedTower = tower
         return true
     }
 

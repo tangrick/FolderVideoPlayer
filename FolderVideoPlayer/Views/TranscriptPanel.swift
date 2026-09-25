@@ -1,9 +1,12 @@
 import SwiftUI
 
-/// What was said, in order, with a search box over the whole profile.
+/// What was said in the video that is playing, in order, with a search box
+/// over its lines.
 ///
-/// The panel reads; it never writes transcript lines. Search asks the store's
-/// own index rather than filtering in memory, so a hit here is a hit anywhere.
+/// The panel reads; it never writes transcript lines. It is about THIS video:
+/// finding the videos a word is said in is the library panel's search
+/// ("Find videos where it's said"), and while that search is the playlist this
+/// panel opens already narrowed to the same words.
 /// Lines are read back from the profile's store when the panel opens, so a film
 /// transcribed last week still shows its words — the last transcription run in
 /// this session is not the source of truth.
@@ -14,12 +17,21 @@ struct TranscriptPanel: View {
 
     @State private var typed = ""
     @State private var lines: [TranscriptLine] = []
-    @State private var hits: [TranscriptLine] = []
 
     private var path: String? { playback.currentPath }
     private var query: String { typed.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var searching: Bool { !query.isEmpty }
-    private var shown: [TranscriptLine] { searching ? hits : lines }
+    /// This video's lines containing every word typed, in any case. Filtered
+    /// in memory: one video's transcript is small, and a substring match finds
+    /// words inside Chinese text the way the store's search does.
+    private var shown: [TranscriptLine] {
+        guard searching else { return lines }
+        let words = query.lowercased().split(whereSeparator: \.isWhitespace)
+        return lines.filter { line in
+            let text = line.text.lowercased()
+            return words.allSatisfy { text.contains($0) }
+        }
+    }
     private var transcribingThis: Bool { path != nil && app.transcribingPath == path }
 
     var body: some View {
@@ -31,7 +43,6 @@ struct TranscriptPanel: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
         .padding(.horizontal, 14)
         .task(id: path) { reload() }
-        .onChange(of: typed) { _, _ in search() }
         .onChange(of: app.transcriptLines) { _, _ in reload() }
     }
 
@@ -40,6 +51,10 @@ struct TranscriptPanel: View {
             Text("Transcript").font(.headline)
             if transcribingThis, let progress = app.transcribeProgress {
                 Text(progress.label)
+                    .font(.callout).monospacedDigit()
+                    .foregroundStyle(.secondary)
+            } else if searching, !lines.isEmpty {
+                Text("\(shown.count) of \(lines.count) lines")
                     .font(.callout).monospacedDigit()
                     .foregroundStyle(.secondary)
             } else if !lines.isEmpty {
@@ -71,9 +86,9 @@ struct TranscriptPanel: View {
             }
             Spacer(minLength: 12)
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Search what was said", text: $typed)
+            TextField("Search this video", text: $typed)
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 240)
+                .frame(width: 200)
             Button { app.showTranscriptPanel = false } label: {
                 Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
             }
@@ -132,19 +147,16 @@ struct TranscriptPanel: View {
     }
 
     private var emptyMessage: String {
-        if searching { return "Nothing matches “\(query)”." }
+        if searching, !lines.isEmpty { return "“\(query)” is not said in this video." }
         if transcribingThis { return "Transcribing this video — lines appear as they are written." }
         return "No transcript for this video yet. Press Transcribe above to make one."
     }
 
     private func reload() {
-        guard let path else { lines = []; hits = []; return }
+        guard let path else { lines = []; return }
         lines = journal.transcript(for: path)
-        if searching { search() } else { hits = [] }
-    }
-
-    private func search() {
-        hits = searching ? journal.transcriptMatches(query) : []
+        // A library search is the playlist: show this video's lines for it.
+        if playback.mode == .said, let said = playback.saidQuery { typed = said }
     }
 
     /// h:mm:ss past an hour, m:ss below it — the shape the progress label uses

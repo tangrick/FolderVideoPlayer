@@ -30,6 +30,11 @@ enum PlayMode: String {
     /// The Hidden view: only hidden videos, and only reachable through the
     /// password. Not resumable across launches — a relaunch is locked.
     case hidden
+    /// Every video in the profile where some words are spoken — a transcript
+    /// search from the library panel. Never written as the session: it is a
+    /// look through the library, so leaving it (or relaunching) returns to
+    /// the folder or tag it was opened from.
+    case said
     /// `.favorites` remains a valid raw value so an old session still decodes
     /// — it resumes into nothing, never a crash. The former `.rated` mode is
     /// gone outright: star playlists are tag playlists, and a stored "rated"

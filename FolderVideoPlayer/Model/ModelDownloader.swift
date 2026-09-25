@@ -651,12 +651,20 @@ enum ModelInstaller {
             // described bundle that does not carry the tower (faces, say) must
             // not stamp: the marker describes THIS space, not whichever model
             // happened to be installed last.
-            if let pack = bundle.pack,
-               bundle.assets.contains(where: {
-                   $0.install.lowercased() == "tags/siglip2_base.mlmodelc"
-               }) {
-                try? ModelSpace.write(adapter: pack.adapter, dim: VisionEmbedder.dim,
-                                      root: root, preprocess: ModelSpace.declaredPreprocess)
+            //
+            // Either precision of the tower stamps (`ModelSpace.towers`); the
+            // other precision joins the recorded space rather than replacing
+            // it — see `ModelSpace.write`. A bundle with no descriptor may
+            // only JOIN its build to an intact space: it never writes a first
+            // marker (an installation without one keeps its legacy namespace)
+            // and never replaces one (a legacy refresh is not a space change).
+            if let tower = ModelSpace.towers.first(where: { tower in
+                   bundle.assets.contains { $0.install.lowercased() == tower.directory.lowercased() }
+               }),
+               let adapter = bundle.pack?.adapter ?? ModelSpace.read(root: root)?.adapter {
+                try? ModelSpace.write(adapter: adapter, dim: VisionEmbedder.dim,
+                                      root: root, preprocess: ModelSpace.declaredPreprocess,
+                                      tower: tower, joinOnly: bundle.pack == nil)
             }
         } catch {
             // Roll back to the complete previous version. Assets that had no
@@ -710,9 +718,13 @@ enum ModelInstaller {
         // The marker dies only with the tower it identifies: removing an
         // unrelated bundle must not unbind every consumer from a tower that
         // is still installed. Case-insensitive compare — the volume may not be.
-        let towerPath = (root as NSString).appendingPathComponent("tags/siglip2_base.mlmodelc")
-        if destinations.contains(where: { $0.lowercased() == towerPath.lowercased() }) {
-            try? fm.removeItem(atPath: ModelSpace.digestFile(root: root))
+        // With both precisions installed, removing one keeps the marker for
+        // the other (`ModelSpace.forget`).
+        for tower in ModelSpace.towers {
+            let towerPath = (root as NSString).appendingPathComponent(tower.directory)
+            if destinations.contains(where: { $0.lowercased() == towerPath.lowercased() }) {
+                ModelSpace.forget(tower, root: root)
+            }
         }
         InstalledReceipt.remove(bundleID: bundle.id, root: root)
         guard removed > 0 else { throw ModelInstallError.nothingToRemove(bundle.title) }
