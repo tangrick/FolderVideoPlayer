@@ -2379,8 +2379,25 @@ struct RowMenu: View {
             guard app.requireAI(.classify) else { return }
             Task { await app.classifyNow(paths: targets) }
         }
-        .help("Ask the local engine for a Safe / NSFW verdict on these videos. "
-              + "Videos already settled by you or the machine are skipped.")
+        // Disabled with the reason, like the AI menu's Classify — one rule for
+        // both places, not a live item here and a dead one there.
+        .disabled(!app.ai.works(.classify))
+        .help(app.ai.reason(.classify)
+              ?? ("Ask the local engine for a Safe / NSFW verdict on these videos. "
+                  + "Videos already settled by you or the machine are skipped."))
+        // The selection's Transcribe, beside its Classify: the same batch run
+        // the AI menu starts for the whole list, so it skips videos that have
+        // a transcript and reports in the footer with a Stop. Disabled while
+        // another transcription runs — that run would silently ignore it.
+        Button(targets.count > 1 ? "Transcribe \(targets.count) Videos" : "Transcribe") {
+            guard app.requireAI(.speech) else { return }
+            NotificationCenter.default.post(name: AppModel.transcribeBatchNotification,
+                                            object: targets)
+        }
+        .disabled(app.transcribingPath != nil || app.transcribeBatch != nil || !app.ai.works(.speech))
+        .help(app.ai.reason(.speech)
+              ?? ("Write down what is said in these videos, one after another. "
+                  + "Videos that already have a transcript are skipped."))
         Divider()
         // Stars on the targets — the ticked rows when this row is one of
         // them. The tick shows this row's own rating; picking the ticked

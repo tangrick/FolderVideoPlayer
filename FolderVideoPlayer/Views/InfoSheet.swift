@@ -181,7 +181,12 @@ struct InfoSheet: View {
                 row("Corrections", "\(record.history.count) by you")
             }
         } else {
-            Text("Not classified yet. AI ▾ → Classify runs it.")
+            // Only point at Classify when it can run: without the model that
+            // item is disabled, and the hint would lead to a dead end.
+            Text(app.ai.reason(.classify).map { why in
+                    let fixable = (app.ai.blockers[.classify] ?? []).contains { $0.fixableInApp }
+                    return "Not classified yet. \(why)" + (fixable ? " Settings → AI can download it." : "")
+                 } ?? "Not classified yet. AI ▾ → Classify runs it.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }

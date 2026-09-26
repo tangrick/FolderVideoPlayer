@@ -92,6 +92,15 @@ struct Phase2Test {
         FrameSampler.wantedTimes(duration: dur, interval: FrameSampler.clampInterval(duration: dur))).count
     check("frame count matches the arithmetic (\(expected) wanted)", frames.count == expected)
 
+    // The cache key must survive a fresh decode, or every replay re-embeds.
+    let redecoded = try await FrameSampler.sample(url: URL(fileURLWithPath: videoPath))
+    let firstHashes = frames.map { EmbeddingCache.frameHash(of: $0.image) }
+    check("frame hashes are identical across two decodes",
+          firstHashes == redecoded.map { EmbeddingCache.frameHash(of: $0.image) })
+    check("frame hashes are 32 hex chars", firstHashes.allSatisfy { $0.count == 32 })
+    check("different frames get different hashes (\(Set(firstHashes).count) of \(frames.count))",
+          Set(firstHashes).count > 1)
+
     // --- 3. model: compile if needed, embed, cache round-trip ---------------------
     guard FileManager.default.fileExists(atPath: modelPath) else {
         print("SKIP model checks — no model at \(modelPath)")
