@@ -96,7 +96,8 @@ struct PlayerScreen: View {
     /// out in the column, it would instead push the picture to nothing and
     /// then shove the transport bar off the bottom.
     private var panelCap: CGFloat {
-        let share = columnHeight * 0.4
+        // Editing a transcript needs room for its rows and tools.
+        let share = columnHeight * (app.transcriptEditing && app.showTranscriptPanel ? 0.6 : 0.4)
         let spare = columnHeight - Self.videoFloor - Self.barReserve
         return max(120, min(share, spare))
     }
@@ -1241,7 +1242,8 @@ struct LibrarySidebar: View {
 
     private var smartCollections: some View {
         section("Smart Collections", count: smart.collections.count, open: $smartOpen,
-                empty: "Save a question — “unwatched videos of Anna” — and it keeps itself up to date.") {
+                empty: "Save a question — “unwatched videos of Anna” — and it keeps itself up to date.",
+                alwaysOpen: true) {
             ForEach(smart.collections) { collection in
                 let count = smart.members[collection.id].map { "\($0.count)" } ?? "…"
                 row("\(collection.name) (\(count))",
@@ -1599,7 +1601,13 @@ struct LibrarySidebar: View {
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 0)
                     Button("Save…") {
-                        let rules = query.names.map { SmartRule(kind: .tag, op: .includes, text: $0) }
+                        // A reading off the file becomes a file-fact rule; a
+                        // tag, star or person stays a tag rule.
+                        let rules = query.names.map { name in
+                            SmartRule(kind: library.count(of: name) == 0 && library.factCount(of: name) > 0
+                                          ? .fact : .tag,
+                                      op: .includes, text: name)
+                        }
                         editSmart(nil, seed: SmartCollection(name: smart.uniqueName(query.label),
                                                              match: query.match == .all ? .all : .any,
                                                              rules: rules))
@@ -1654,8 +1662,12 @@ struct LibrarySidebar: View {
     /// so the thing the user was reaching for is somewhere else the next time
     /// they look — and there is nothing on screen to explain why.
     @ViewBuilder
+    /// `alwaysOpen`: the rows are drawn even with nothing counted — for a
+    /// section whose rows include the way to make its first item, so the
+    /// feature is findable before it has been used.
     private func section<Content: View>(_ title: String, count: Int,
                                         open: Binding<Bool>, empty: String,
+                                        alwaysOpen: Bool = false,
                                         @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Button {
@@ -1665,8 +1677,8 @@ struct LibrarySidebar: View {
                     Image(systemName: open.wrappedValue ? "chevron.down" : "chevron.right")
                         .font(.system(size: 8, weight: .bold))
                         .frame(width: 8)
-                        .opacity(count == 0 ? 0.3 : 1)
-                    Text(count == 0 ? title : "\(title) (\(count))")
+                        .opacity(count == 0 && !alwaysOpen ? 0.3 : 1)
+                    Text(count == 0 && !alwaysOpen ? title : "\(title) (\(count))")
                         .font(.caption.weight(.semibold))
                     Spacer(minLength: 0)
                 }
@@ -1675,16 +1687,17 @@ struct LibrarySidebar: View {
                 .padding(.horizontal, 6)
             }
             .buttonStyle(.plain)
-            .disabled(count == 0)
+            .disabled(count == 0 && !alwaysOpen)
             .help(open.wrappedValue ? "Hide \(title.lowercased())" : "Show \(title.lowercased())")
 
-            if count == 0 {
+            if count == 0 && (!alwaysOpen || open.wrappedValue) {
                 Text(empty)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 6)
-            } else if open.wrappedValue {
+            }
+            if (count > 0 || alwaysOpen) && open.wrappedValue {
                 content()
             }
         }

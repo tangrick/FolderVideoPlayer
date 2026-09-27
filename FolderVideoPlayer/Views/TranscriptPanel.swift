@@ -3,7 +3,8 @@ import SwiftUI
 /// What was said in the video that is playing, in order, with a search box
 /// over its lines.
 ///
-/// The panel reads; it never writes transcript lines. It is about THIS video:
+/// Reading is the panel's usual job; Edit turns it into the transcript editor
+/// in place (`TranscriptEditor`), and Done turns it back. It is about THIS video:
 /// finding the videos a word is said in is the library panel's search
 /// ("Find videos where it's said"), and while that search is the playlist this
 /// panel opens already narrowed to the same words.
@@ -14,9 +15,10 @@ struct TranscriptPanel: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var journal: EvidenceJournal
     @EnvironmentObject private var moments: MomentStore
-    @Environment(\.openWindow) private var openWindow
     let playback: PlaybackController
 
+    /// The video whose transcript is being edited, or nil when reading.
+    @State private var editing: String?
     @State private var typed = ""
     @State private var lines: [TranscriptLine] = []
     @State private var edited = false
@@ -39,8 +41,13 @@ struct TranscriptPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            header
-            content
+            if let editing {
+                TranscriptEditor(path: editing, playback: playback) { stopEditing() }
+                    .id(editing)
+            } else {
+                header
+                content
+            }
         }
         .padding(14)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
@@ -48,6 +55,38 @@ struct TranscriptPanel: View {
         .task(id: path) { reload() }
         .onChange(of: app.transcriptLines) { _, _ in reload() }
         .onChange(of: journal.transcriptEdits) { _, _ in reload() }
+        .onAppear { takeEditRequest() }
+        .onChange(of: app.transcriptEditTarget) { _, _ in takeEditRequest() }
+        .onDisappear {
+            // Closing the panel ends the edit. Unsaved work is not kept behind
+            // a panel nobody can see.
+            if editing != nil { stopEditing() }
+        }
+    }
+
+    /// View ▸ Edit Transcript asks for the playing video; take it up if it has
+    /// lines to edit.
+    private func takeEditRequest() {
+        guard let target = app.transcriptEditTarget else { return }
+        app.transcriptEditTarget = nil
+        guard editing == nil, !journal.transcript(for: target).isEmpty else {
+            if editing == nil { app.jobNotice = "This video has no transcript to edit yet." }
+            return
+        }
+        startEditing(target)
+    }
+
+    private func startEditing(_ target: String) {
+        typed = ""
+        editing = target
+        app.transcriptEditing = true
+    }
+
+    private func stopEditing() {
+        editing = nil
+        app.transcriptEditing = false
+        app.transcriptEditDirty = false
+        reload()
     }
 
     private var header: some View {
@@ -81,10 +120,7 @@ struct TranscriptPanel: View {
                     .help("Stop transcribing. Nothing is written for half a transcript.")
                 } else {
                     if !lines.isEmpty {
-                        Button("Edit…") {
-                            app.transcriptEditTarget = path
-                            openWindow(id: "transcript-editor")
-                        }
+                        Button("Edit") { startEditing(path) }
                         .controlSize(.small)
                         .help("Correct the words and times, split or merge lines, and export")
                         Menu("Export") {

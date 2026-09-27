@@ -27,7 +27,8 @@ no account, no cloud service, and no video, frame or tag leaves the machine.
   the marks on the scrubber, and export a stretch as its own clip.
 - **Smart collections** — save a question about the library ("unwatched videos
   of Anna rated 4★ or more", "transcripts that mention *beach*", "files that
-  need converting") and it keeps itself up to date: tags, people, ratings,
+  need converting") and it keeps itself up to date: tags, people, file facts
+  (date, camera, quality, place), ratings,
   recording date, date added, transcript text, watch state, analysis state,
   Safe/NSFW verdict and file state, matched by all or any of the rules.
 - **Tag profiles** — several people can share a Mac or a NAS without writing
@@ -56,8 +57,8 @@ no account, no cloud service, and no video, frame or tag leaves the machine.
   (split, merge, insert, delete, shift a line or the whole transcript, with undo),
   check each line against the video, and export it as `.srt`, `.vtt`, `.txt`,
   `.csv` or `.json`. The machine's original transcription is kept, so
-  *Restore Original* is always one click away. View → Edit Transcript…, or Edit…
-  in the transcript panel.
+  *Restore Original* is always one click away. Edit right in the transcript
+  panel under the video (its Edit button, or View → Edit Transcript).
 
 - **Subtitles and audio tracks** — pick among a file's own subtitle and audio
   tracks without restarting playback, show an `.srt`/`.vtt` file that sits beside

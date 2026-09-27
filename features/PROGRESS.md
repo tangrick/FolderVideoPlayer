@@ -71,9 +71,9 @@ Tasks:
 - [x] Moved-file repair carries transcripts: `Library.pathMoved` hook called from `moveTags`, wired to the journal in `FolderVideoPlayerApp`
 - [x] Retranscribe asks "Keep My Edits / Replace" (`PlayerWindow.transcribe`); batch already skips videos that have transcripts
 - [x] Tests: `Tests/test_transcript_edit.swift` + `run_transcript_edit.sh` + line in `run.sh` (all pass)
-- [x] UI: `Views/TranscriptEditorWindow.swift` — Window id `transcript-editor`, target `AppModel.transcriptEditTarget`
+- [x] UI: `Views/TranscriptEditor.swift` — editing happens IN the transcript panel (user feedback, 2026-09-27; the separate window was removed). `TranscriptPanel` has an `editing` path; Edit / View ▸ Edit Transcript (`AppModel.transcriptEditTarget` request) switches it; Done asks Save / Discard / Keep Editing when dirty; `AppModel.transcriptEditing` widens the panel cap to 60%; `AppModel.mayLeaveTranscriptEdit()` guards the transport-bar panel buttons
 - [x] UI: Export menu (panel + editor) via `TranscriptExporter` (NSSavePanel confirms overwrite)
-- [x] Menus: View ▸ Edit Transcript…; panel has Edit… and Export
+- [x] Menus: View ▸ Edit Transcript (opens the panel in edit mode); panel has Edit and Export
 - [x] README bullet
 - [ ] Manual UI pass (couldn't automate: the user's own FolderVideoPlayer instances share the bundle id). Scratch fixture recipe: `ffmpeg -f lavfi -i testsrc=duration=30 ... demo.mp4`, seed lines with an `EvidenceStore` script under `FVP_SUPPORT`, then `open -n --env FVP_SUPPORT=<dir> build/dd/.../FolderVideoPlayer.app demo.mp4`
 - [ ] (optional) Help window mention
@@ -127,12 +127,13 @@ there is no catalogue of every file on every share; the editor says so.
 Stat-needing rules (date added, file state) are prefetched off the main thread
 (`Library.warmStats`; existence cached 2 min).
 
+- [x] File fact rule kind (`.fact`: dates, camera, quality, place — user feedback): matches `SmartContext.facts` only; Tag/Person rules now match tags only; editor picker groups facts by kind; combined-playlist Save… turns fact names into fact rules
 - [x] Model `Model/SmartCollections.swift`: `SmartCollection`, `SmartRule` (+ `Kind`, `Op`, `fresh`, `values`), `SmartAnalysis`/`SmartVerdict`/`SmartFileState`, `SmartContext`, `SmartEvaluator.members/holds/problem`, `SmartCollectionFile`
 - [x] `Library.knownVideoKeys`, `recordedDate(key:)` (from Date facts), `smartContext(adding:)`
 - [x] Store `Model/SmartCollectionStore.swift` (MainActor): load per profile, save/duplicate/rename/delete, `problems(in:)`, debounced `refresh()` on library/analysis/transcript changes, `evaluate(_:)` for editor previews
 - [x] Controller: `smartCollection`, `playCollection`, `collectionChanged`, members via `collectionMembers` closure; cleared by `start`/`playTag`/query/`closePlaylist`; not saved as session
 - [x] App wiring: `@StateObject smart`, env object, attach, profile-change reload, `Window("Smart Collection", id: "smart-collection")`, `AppModel.smartEditTarget/smartEditSeed`
-- [x] Sidebar "Smart Collections" section (counts, context menu Play/Edit/Duplicate/Rename/Delete, New…); combined-playlist band gains "Save…" (query → collection)
+- [x] Sidebar "Smart Collections" section — always shown, even as "Smart Collections (0)" with "New Smart Collection…" (user feedback; `section(... alwaysOpen:)`); counts, context menu Play/Edit/Duplicate/Rename/Delete; combined-playlist band gains "Save…" (query → collection)
 - [x] Editor `Views/SmartCollectionEditor.swift` (name, all/any, rule rows with kind/op/value, per-rule problem text, live match count, Delete)
 - [x] Tests `Tests/test_smart_collections.swift` (64 checks incl. watch state) + runner + `run.sh`
 - [x] README bullet
@@ -236,6 +237,8 @@ in places (`PlaybackController.engine`, `VideoSurface(player:)`,
 ## Session log
 
 - 2026-09-27 — Session 1: surveyed codebase, baseline Debug build OK, wrote this plan. Implemented P1–P8 (+ the My Tags / File Facts label refinement). Final full `sh Tests/run.sh`: 2,782 checks, exit 0 (model-dependent stages skip without downloaded models). App Debug build succeeds with no new warnings. NOT done: any hand-driven UI pass (the user's own FolderVideoPlayer instances share the bundle id; a dev copy can be built with `PRODUCT_BUNDLE_IDENTIFIER=com.tangrick.foldervideoplayer.dev` into `build/dd-dev`, but screen control was declined), P9 (awaiting an engine decision). Nothing committed — all work is uncommitted in the working tree.
+
+- 2026-09-27 — Session 1 (cont.): user testing feedback addressed — Smart Collections section always visible with New…; File fact rule kind; transcript editing moved into the transcript panel.
 
 ## Next steps for whoever continues
 

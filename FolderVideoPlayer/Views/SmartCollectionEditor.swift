@@ -33,7 +33,8 @@ struct SmartCollectionEditor: View {
                     ForEach($draft.rules) { $rule in
                         RuleRow(rule: $rule, problem: problems[rule.id],
                                 tags: library.handTaggableTags(),
-                                people: faceStore.people.map(\.name).sorted()) {
+                                people: faceStore.people.map(\.name).sorted(),
+                                facts: library.factsByKind()) {
                             draft.rules.removeAll { $0.id == rule.id }
                         }
                     }
@@ -126,6 +127,8 @@ private struct RuleRow: View {
     let problem: String?
     let tags: [String]
     let people: [String]
+    /// The file facts in the library, grouped the way the sidebar groups them.
+    let facts: [(kind: String, names: [String])]
     let remove: () -> Void
 
     var body: some View {
@@ -181,6 +184,22 @@ private struct RuleRow: View {
                 .fixedSize()
                 .disabled(names.isEmpty)
                 .help(kind == .tag ? "Choose a tag" : "Choose a person")
+            }
+        case .fact:
+            HStack(spacing: 4) {
+                TextField("Date, camera, quality or place", text: $rule.text)
+                    .frame(minWidth: 140)
+                Menu {
+                    ForEach(facts, id: \.kind) { group in
+                        Section(group.kind) {
+                            ForEach(group.names, id: \.self) { name in Button(name) { rule.text = name } }
+                        }
+                    }
+                } label: { Image(systemName: "list.bullet") }
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .disabled(facts.isEmpty)
+                .help(facts.isEmpty ? "No facts have been read from the files yet" : "Choose a file fact")
             }
         case .rating:
             Picker("Stars", selection: $rule.stars) {

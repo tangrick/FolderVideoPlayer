@@ -56,6 +56,7 @@ struct TransportBar: View {
                 }
 
                 Button {
+                    guard app.mayLeaveTranscriptEdit() else { return }
                     app.showTranscriptPanel = false
                     app.showMomentsPanel = false
                     app.showTagPanel.toggle()
@@ -68,6 +69,7 @@ struct TransportBar: View {
                 // What was said, and where — reads the profile's store, so it
                 // shows a transcript made in any session, not just this one.
                 Button {
+                    if app.showTranscriptPanel, !app.mayLeaveTranscriptEdit() { return }
                     app.showTagPanel = false
                     app.showMomentsPanel = false
                     app.showTranscriptPanel.toggle()
@@ -79,6 +81,7 @@ struct TransportBar: View {
 
                 // Bookmarks in this video: add, name, jump, export a clip.
                 Button {
+                    guard app.mayLeaveTranscriptEdit() else { return }
                     app.showTagPanel = false
                     app.showTranscriptPanel = false
                     app.showMomentsPanel.toggle()

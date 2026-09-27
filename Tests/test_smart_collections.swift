@@ -179,6 +179,14 @@ struct SmartCollectionsTest {
         check("verdict needs review", run(.all, [SmartRule(kind: .verdict, op: .isValue, text: "needsReview")]) == [kc])
         check("file missing", run(.all, [SmartRule(kind: .file, op: .isValue, text: "missing")]) == [kc])
         check("file needs conversion", run(.all, [SmartRule(kind: .file, op: .isValue, text: "needsConversion")]) == [ke])
+        check("a file fact rule matches readings off the file",
+              run(.all, [SmartRule(kind: .fact, op: .includes, text: "may 2016")]) == [ka])
+        check("a file fact rule excludes by reading",
+              !run(.all, [SmartRule(kind: .fact, op: .excludes, text: "2019")]).contains(kd))
+        check("a tag rule does not match a reading of the same name",
+              run(.all, [SmartRule(kind: .tag, op: .includes, text: "2016")]).isEmpty)
+        check("a file fact rule does not match a tag",
+              run(.all, [SmartRule(kind: .fact, op: .includes, text: "Beach")]).isEmpty)
         check("two kinds of rule combine",
               run(.all, [anna, SmartRule(kind: .analysis, op: .isValue, text: "failed")]) == [kd])
 
