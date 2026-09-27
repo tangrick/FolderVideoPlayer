@@ -133,6 +133,19 @@ struct SmartCollectionsTest {
         check("switching back restores this profile's history",
               library.watchState(pc) == .watched && library.watchState(pd) == .unwatched)
 
+        // --- facts arriving from a share (1.1.22) -------------------------------------------
+
+        let sentFacts = library.facts.byKey
+        let arrivedKey = Paths.tagKey(pd)
+        library.takeSharedFacts([arrivedKey: ["2021", "Oslo"]], sent: sentFacts)
+        check("facts from a share are taken in", library.factsFor(pd) == ["2021", "Oslo"])
+        let snapshot = library.facts.byKey
+        library.setFacts(["2022"], for: pe)          // changed here while a sync ran
+        library.takeSharedFacts([Paths.tagKey(pe): ["1999"], arrivedKey: []], sent: snapshot)
+        check("a video changed here during the sync keeps this Mac's facts", library.factsFor(pe) == ["2022"])
+        check("an empty list from the share removes a video's facts", library.factsFor(pd).isEmpty)
+        library.setFacts([], for: pe)
+
         // --- 6. smart collections -------------------------------------------------------
 
         library.addTag("Beach", to: [pa, pc])

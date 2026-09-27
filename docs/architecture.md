@@ -195,6 +195,15 @@ Each profile owns its own tags. The profile in force keeps them in `tags.json`
 switching swaps them, so picking a profile shows that profile's tags and
 nobody else's. Nothing is merged across profiles: two profiles are two people.
 
+Beside the tags, a profile's folder on each share carries what another Mac
+would otherwise have to rebuild (`SharedExtras`): `faces.json` (the people
+named, with their face vectors), `transcripts.json`, and — since 1.1.22 —
+`facts.json`, the readings taken off the files (dates, camera and quality,
+places). Facts merge per video against the last sync, so a correction made on
+one Mac reaches the others and a Mac's own reading is never overwritten on a
+first meeting. Watch history, moments and smart collections stay on the Mac
+that made them.
+
 ## Nothing is deleted outright
 
 Accidental deletion is a safety problem, not a security one, so instead of

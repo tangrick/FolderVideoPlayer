@@ -1,12 +1,13 @@
 import Foundation
 
 /// What follows a profile to another Mac besides its tags: the people it has
-/// named, and the transcripts it has made.
+/// named, the transcripts it has made, and the facts read off its files.
 ///
-/// Both sit beside the person's `tags.json` on every share:
+/// All three sit beside the person's `tags.json` on every share:
 ///
 ///     .FolderVideoPlayer/quincy/faces.json         names, face vectors, thumbnails
 ///     .FolderVideoPlayer/quincy/transcripts.json   this share's videos' transcripts
+///     .FolderVideoPlayer/quincy/facts.json         this share's videos' file facts
 ///
 /// Without them a second Mac opening the profile got the tags and nothing
 /// else: nobody recognised, and every transcript made again from scratch.
@@ -20,10 +21,20 @@ import Foundation
 /// **Transcripts only accumulate.** A transcript is what a video says, not a
 /// judgement, so each Mac takes what it lacks and sends what the share lacks.
 /// A video transcribed again on one Mac keeps its old lines on the others.
+///
+/// **File facts merge three ways, per video** — dates, camera and quality,
+/// places. They are read off the files, so another Mac COULD read them again,
+/// but only by opening every video over the network (and asking the internet
+/// for every place): minutes to hours on a big library. Worse, a place
+/// corrected by hand exists nowhere but in this profile. So a video's facts
+/// follow the same rule as people: changed only on the other Mac, take theirs;
+/// changed only here, send ours; changed on both, this Mac's stand. A first
+/// meeting only fills gaps, so neither Mac's own reading is overwritten.
 enum SharedExtras {
 
     static let facesName = "faces.json"
     static let transcriptsName = "transcripts.json"
+    static let factsName = "facts.json"
     static let currentFormat = 1
 
     struct Faces: Codable, Equatable {
@@ -49,11 +60,35 @@ enum SharedExtras {
         }
     }
 
+    struct Facts: Codable, Equatable {
+        var format = SharedExtras.currentFormat
+        /// Keyed from the share root, like the tags: path → the facts on it.
+        var videos: [String: [String]] = [:]
+    }
+
     /// Per profile, in its bundle: what each share held at the last sync.
     struct State: Codable, Equatable {
         var faceBase: [String: [String: [String]]] = [:]
         var transcriptMtime: [String: Double] = [:]
         var transcriptsOnShare: [String: [String]] = [:]
+        /// Share → the facts file as it was at the last sync. Nil for a share
+        /// never met, which is what makes the first sync fill gaps only.
+        var factBase: [String: [String: [String]]] = [:]
+        var factMtime: [String: Double] = [:]
+
+        init() {}
+
+        /// Every field optional on the way in: a state file written before a
+        /// field existed must still load, or the face merge would lose its
+        /// base and treat a known share as a first meeting.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            faceBase = try c.decodeIfPresent([String: [String: [String]]].self, forKey: .faceBase) ?? [:]
+            transcriptMtime = try c.decodeIfPresent([String: Double].self, forKey: .transcriptMtime) ?? [:]
+            transcriptsOnShare = try c.decodeIfPresent([String: [String]].self, forKey: .transcriptsOnShare) ?? [:]
+            factBase = try c.decodeIfPresent([String: [String: [String]]].self, forKey: .factBase) ?? [:]
+            factMtime = try c.decodeIfPresent([String: Double].self, forKey: .factMtime) ?? [:]
+        }
     }
 
     static func stateFile(_ profile: String, root: String) -> String {
@@ -89,6 +124,41 @@ enum SharedExtras {
         return merged
     }
 
+    // MARK: - the fact merge
+
+    /// One share's facts: `local` against `shared`, with `base` the file as it
+    /// was at the last sync (nil: never met). Keys are paths from the share
+    /// root. Returns what this Mac should hold and what the share should hold;
+    /// a video with no facts is simply absent from either.
+    ///
+    /// Compared as sets, case-insensitively — the order readings were added in
+    /// is not a change.
+    static func mergeFacts(local: [String: [String]], base: [String: [String]]?,
+                           shared: [String: [String]]) -> (local: [String: [String]], shared: [String: [String]]) {
+        func same(_ a: [String]?, _ b: [String]?) -> Bool {
+            Set((a ?? []).map { $0.lowercased() }) == Set((b ?? []).map { $0.lowercased() })
+        }
+        var mine: [String: [String]] = [:], theirs: [String: [String]] = [:]
+        let keys = Set(local.keys).union(shared.keys).union(base.map { Array($0.keys) } ?? [])
+        for key in keys {
+            let (l, s) = (local[key], shared[key])
+            let (keep, send): ([String]?, [String]?)
+            if let base {
+                let b = base[key]
+                if same(l, b) { (keep, send) = (s, s) }          // only the share changed (or nothing)
+                else if same(s, b) { (keep, send) = (l, l) }     // only this Mac did
+                else { (keep, send) = (l, l) }                   // both: this Mac's stand
+            } else {
+                // First meeting: fill gaps both ways, overwrite nothing.
+                keep = (l ?? []).isEmpty ? s : l
+                send = (s ?? []).isEmpty ? l : s
+            }
+            if let keep, !keep.isEmpty { mine[key] = keep }
+            if let send, !send.isEmpty { theirs[key] = send }
+        }
+        return (mine, theirs)
+    }
+
     // MARK: - one sync, off the main thread
 
     struct Input {
@@ -101,12 +171,19 @@ enum SharedExtras {
         /// Share name → this profile's folder on it.
         var folders: [String: String]
         var state: State
+        /// This Mac's file facts, keyed like tags (`share/path`). A snapshot:
+        /// the library applies what comes back only where it has not changed
+        /// them since.
+        var facts: [String: [String]] = [:]
     }
 
     struct Output {
         var state: State
         var facesChanged = false
         var transcriptsImported = 0
+        /// Facts this Mac should now hold, keyed like tags; an empty list means
+        /// the video's facts were removed elsewhere.
+        var factUpdates: [String: [String]] = [:]
     }
 
     /// Blocking. Every failure is silent, as the tag sync's are: the next
@@ -120,6 +197,7 @@ enum SharedExtras {
         }
         out.facesChanged = syncFaces(input, mounted, &out.state, lockBudget: lockBudget)
         out.transcriptsImported = syncTranscripts(input, mounted, &out.state, lockBudget: lockBudget)
+        out.factUpdates = syncFacts(input, mounted, &out.state, lockBudget: lockBudget)
         return out
     }
 
@@ -253,6 +331,54 @@ enum SharedExtras {
             }
         }
         return imported
+    }
+
+    private static func syncFacts(_ input: Input, _ folders: [String: String],
+                                  _ state: inout State, lockBudget: Double) -> [String: [String]] {
+        var updates: [String: [String]] = [:]
+        for (share, folder) in folders.sorted(by: { $0.key < $1.key }) {
+            let prefix = share + "/"
+            var mine: [String: [String]] = [:]
+            for (key, names) in input.facts where key.hasPrefix(prefix) && !names.isEmpty {
+                mine[String(key.dropFirst(prefix.count))] = names
+            }
+            let file = path(folder, factsName)
+            let mtime = SharedTagDisk.mtime(file)
+            let base = state.factBase[share]
+            // Unchanged since the last sync: the file is what the base says,
+            // and a big library is not read again for nothing.
+            let shared: Facts
+            if let base, let mtime, mtime == state.factMtime[share] {
+                shared = Facts(videos: base)
+            } else if mtime != nil {
+                guard let read = readJSON(Facts.self, file) else { continue }
+                shared = read
+            } else {
+                shared = Facts()
+            }
+            guard shared.format <= currentFormat else { continue }
+
+            let merged = mergeFacts(local: mine, base: base, shared: shared.videos)
+            for key in Set(mine.keys).union(merged.local.keys) where mine[key] != merged.local[key] {
+                updates[prefix + key] = merged.local[key] ?? []
+            }
+            state.factBase[share] = shared.videos
+            state.factMtime[share] = mtime
+            guard merged.shared != shared.videos else { continue }
+
+            try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+            guard let token = SharedTagDisk.lock(folder: folder, by: input.device, budget: lockBudget)
+            else { continue }
+            defer { SharedTagDisk.unlock(folder: folder, token: token) }
+            // Written by another Mac since it was read: leave it for the next
+            // sync to merge, rather than write over what it just said.
+            if SharedTagDisk.mtime(file) != mtime { continue }
+            if write(Facts(videos: merged.shared), file, device: input.device) {
+                state.factBase[share] = merged.shared
+                state.factMtime[share] = SharedTagDisk.mtime(file)
+            }
+        }
+        return updates
     }
 
     // MARK: - disk

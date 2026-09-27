@@ -109,9 +109,10 @@ extension Library {
         return await work.value
     }
 
-    /// The named people and the transcripts, to and from the same shares, right
-    /// after the tags — so every way a tag sync starts (adopting a profile on a
-    /// new Mac included) carries them too. See `SharedExtras`.
+    /// The named people, the transcripts and the file facts, to and from the
+    /// same shares, right after the tags — so every way a tag sync starts
+    /// (adopting a profile on a new Mac included) carries them too. See
+    /// `SharedExtras`.
     private func syncSharedExtras(context: UUID) async {
         let profile = slug(person)
         let root = Paths.support
@@ -123,15 +124,17 @@ extension Library {
         let input = SharedExtras.Input(
             root: root, profile: profile, device: slug(device), volumes: Paths.volumes,
             folders: folders,
-            state: JSONStore.load(stateFile, fallback: SharedExtras.State()))
+            state: JSONStore.load(stateFile, fallback: SharedExtras.State()),
+            facts: facts.byKey)
         let output = await Task.detached(priority: .utility) {
             SharedExtras.sync(input, lockBudget: 10)
         }.value
         // Written for the profile that synced, even if another is open now:
         // the state describes that profile's files, wherever they went.
         if output.state != input.state { _ = JSONStore.save(stateFile, output.state) }
-        guard profileContext == context,
-              output.facesChanged || output.transcriptsImported > 0 else { return }
+        guard profileContext == context else { return }
+        takeSharedFacts(output.factUpdates, sent: input.facts)
+        guard output.facesChanged || output.transcriptsImported > 0 else { return }
         NotificationCenter.default.post(name: .fvpSharedExtrasArrived, object: profile)
     }
 

@@ -352,6 +352,9 @@ final class Library: ObservableObject {
 
     /// Set when the tags have changed and the shares have not been told yet.
     private var tagsDirty = false
+    /// File facts changed on this Mac since the last sync, so the shares should
+    /// hear about them even if no tag changed.
+    private var factsDirty = false
     private var autoPublish: Task<Void, Never>?
     /// The publish in flight, so the next one waits rather than writing
     /// through it. See `publishTags()`.
@@ -743,10 +746,34 @@ final class Library: ObservableObject {
     /// Write the readings. Nothing is published: they are this Mac's, and the
     /// devices that share the tag file read the same values out of the same
     /// files.
-    func saveFacts() {
+    ///
+    /// Since 1.1.22 they do travel: a scan or a correction here is sent to the
+    /// shares with the next sync (`SharedExtras`), so another Mac need not open
+    /// every video again to learn its date. `fromShare` is for facts that just
+    /// arrived FROM a share, which have nothing to send back.
+    func saveFacts(fromShare: Bool = false) {
         guard profileOpen else { return }
         recountFacts()
         facts.save(to: Paths.metadataFile)
+        guard !fromShare else { return }
+        factsDirty = true
+        scheduleAutoPublish()
+    }
+
+    /// File facts from another Mac, taken in only for videos whose facts have
+    /// not changed here while the sync ran — a scan or a correction made in the
+    /// meantime is newer, and goes out with the next sync instead.
+    func takeSharedFacts(_ updates: [String: [String]], sent: [String: [String]]) {
+        guard profileOpen, !updates.isEmpty else { return }
+        var changed = 0
+        var next = facts
+        for (key, names) in updates where next.names(for: key) == (sent[key] ?? []) {
+            next.set(names, for: key)
+            changed += 1
+        }
+        guard changed > 0 else { return }
+        facts = next
+        saveFacts(fromShare: true)
     }
 
     // MARK: - the one-time separation
@@ -880,8 +907,11 @@ final class Library: ObservableObject {
     /// said. Silent: a NAS asleep, unplugged or mounted read-only is a normal
     /// Tuesday. `always` syncs with nothing to send — to hear what changed.
     func publishIfNeeded(always: Bool = false) async {
-        guard tagsDirty || always, profileOpen else { return }
+        guard tagsDirty || factsDirty || always, profileOpen else { return }
         let context = profileContext
+        // Cleared before the sync, which carries the facts: a change made while
+        // it runs sets it again and goes out next time.
+        factsDirty = false
         let outcome = await publishTags()
         guard context == profileContext else { return }
         // Only counted as done when a share actually took it, so a NAS that

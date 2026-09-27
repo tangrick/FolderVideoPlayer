@@ -244,6 +244,8 @@ in places (`PlaybackController.engine`, `VideoSurface(player:)`,
 
 - 2026-09-27 — This public repo is now THE working repo. The old private working repo (`tangrick/FolderVideoPlayerSwift`, which published snapshots here) is archived on GitHub and no longer used. Release tooling moved here: `scripts/release.sh`, `scripts/exportOptions.plist`, `docs/releasing.md`. Commit as `tangrick <40586271+tangrick@users.noreply.github.com>` (set in this checkout's git config) — never a personal address.
 
+- 2026-09-27 — 1.1.22: file facts now sync between Macs through the profile's share folder (`facts.json`, `SharedExtras.syncFacts`/`mergeFacts`, three-way per video; `Library.takeSharedFacts` applies only to videos unchanged during the sync; `factsDirty` schedules a sync after a scan or correction; `SharedExtras.State` decodes older files). Tests in `test_shared_extras.swift` and `test_smart_collections.swift`. Verified before: on the real NAS, facts for 3,505 videos were not shared at all.
+
 ## Next steps for whoever continues
 
 1. P9 is on hold (KIV) — skip it unless the user reopens it.

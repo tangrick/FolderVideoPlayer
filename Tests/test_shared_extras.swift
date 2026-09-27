@@ -11,7 +11,12 @@
 //   4. a forgotten person stays forgotten on the other Mac;
 //   5. two Macs naming different people at once both keep both;
 //   6. a transcript made on the second Mac reaches the first;
-//   7. a file written by a newer format is left exactly as it is.
+//   7. a file written by a newer format is left exactly as it is;
+//   8. file facts (dates, cameras, places) travel: a new Mac takes them, a
+//      correction or a removal on one Mac reaches the other, a Mac's own
+//      reading is never overwritten on a first meeting, a video on this Mac's
+//      own disk is never published, and a newer facts file is left alone;
+//   9. a sync-state file from before facts existed still loads its face base.
 //
 // Run: Tests/run_shared_extras.sh
 
@@ -36,15 +41,34 @@ struct SharedExtrasTest {
 
     static func mac(_ name: String) -> String { scratch + "/" + name }
 
-    static func sync(_ root: String, device: String) -> SharedExtras.Output {
+    static func sync(_ root: String, device: String,
+                     facts: [String: [String]] = [:]) -> SharedExtras.Output {
         let stateFile = SharedExtras.stateFile(profile, root: root)
         let input = SharedExtras.Input(
             root: root, profile: profile, device: device, volumes: volumes,
             folders: ["nas": folder],
-            state: JSONStore.load(stateFile, fallback: SharedExtras.State()))
+            state: JSONStore.load(stateFile, fallback: SharedExtras.State()),
+            facts: facts)
         let output = SharedExtras.sync(input, lockBudget: 2)
         _ = JSONStore.save(stateFile, output.state)
         return output
+    }
+
+    /// One Mac's facts, as the library holds them, with a sync's updates
+    /// applied the way `Library.takeSharedFacts` applies them.
+    static var factsOf: [String: [String: [String]]] = [:]
+    @discardableResult
+    static func syncFacts(_ root: String, device: String) -> [String: [String]] {
+        let output = sync(root, device: device, facts: factsOf[root] ?? [:])
+        for (key, names) in output.factUpdates {
+            factsOf[root, default: [:]][key] = names.isEmpty ? nil : names
+        }
+        return output.factUpdates
+    }
+
+    static func sharedFacts() -> [String: [String]]? {
+        fm.contents(atPath: folder + "/facts.json")
+            .flatMap { try? JSONDecoder().decode(SharedExtras.Facts.self, from: $0) }?.videos
     }
 
     static func people(_ root: String) -> [String: [String]] {
@@ -157,6 +181,77 @@ struct SharedExtrasTest {
         // The merge on its own: a first meeting unions, a missing base is not a removal.
         check(SharedExtras.mergePeople(local: ["A": ["1"]], base: nil, shared: ["A": ["2"], "B": ["3"]])
                 == ["A": ["1", "2"], "B": ["3"]], "a first meeting keeps every face")
+
+        // 8. File facts.
+        // The merge on its own first.
+        let first = SharedExtras.mergeFacts(local: ["a": ["2016"], "b": ["1080p"]], base: nil,
+                                            shared: ["a": ["2017"], "c": ["Singapore"]])
+        check(first.local == ["a": ["2016"], "b": ["1080p"], "c": ["Singapore"]],
+              "a first meeting fills this Mac's gaps and keeps its own reading")
+        check(first.shared == ["a": ["2017"], "b": ["1080p"], "c": ["Singapore"]],
+              "...and fills the share's gaps without overwriting it")
+        let theirs = SharedExtras.mergeFacts(local: ["a": ["2016"]], base: ["a": ["2016"]],
+                                             shared: ["a": ["2016", "Singapore"]])
+        check(theirs.local == ["a": ["2016", "Singapore"]], "a change made only elsewhere is taken")
+        let ours = SharedExtras.mergeFacts(local: ["a": ["2016", "Iceland"]], base: ["a": ["2016"]],
+                                           shared: ["a": ["2016"]])
+        check(ours.shared == ["a": ["2016", "Iceland"]], "a change made only here is sent")
+        let both = SharedExtras.mergeFacts(local: ["a": ["Mine"]], base: ["a": ["Old"]],
+                                           shared: ["a": ["Theirs"]])
+        check(both.local == ["a": ["Mine"]] && both.shared == ["a": ["Mine"]],
+              "changed on both: this Mac's stands")
+        let gone = SharedExtras.mergeFacts(local: [:], base: ["a": ["2016"]], shared: ["a": ["2016"]])
+        check(gone.shared.isEmpty && gone.local.isEmpty, "facts removed here are removed from the share")
+        let reordered = SharedExtras.mergeFacts(local: ["a": ["2016", "1080P"]], base: ["a": ["1080p", "2016"]],
+                                                shared: ["a": ["1080p", "2016"]])
+        check(reordered.shared == ["a": ["1080p", "2016"]], "order and case are not a change")
+
+        // Two Macs through the share.
+        let (c, d) = (mac("c"), mac("d"))
+        factsOf[c] = ["nas/clips/a.mp4": ["2016", "May 2016", "1080p", "Singapore"],
+                      "nas/clips/b.mp4": ["2019"],
+                      "/Users/someone/Movies/local.mp4": ["2020"]]
+        syncFacts(c, device: "mac-c")
+        check(sharedFacts() == ["clips/a.mp4": ["2016", "May 2016", "1080p", "Singapore"],
+                                "clips/b.mp4": ["2019"]],
+              "the share holds the facts, keyed from its root")
+        check(sharedFacts()?.keys.contains { $0.contains("local.mp4") } == false,
+              "a video on this Mac's own disk is never published")
+
+        let taken = syncFacts(d, device: "mac-d")
+        check(taken.count == 2 && factsOf[d]?["nas/clips/a.mp4"] == ["2016", "May 2016", "1080p", "Singapore"],
+              "a new Mac takes every fact without opening a video")
+        check(syncFacts(d, device: "mac-d").isEmpty, "a second sync changes nothing")
+
+        factsOf[d]?["nas/clips/a.mp4"] = ["2016", "May 2016", "1080p", "Kuala Lumpur"]
+        syncFacts(d, device: "mac-d")
+        syncFacts(c, device: "mac-c")
+        check(factsOf[c]?["nas/clips/a.mp4"]?.contains("Kuala Lumpur") == true
+                && factsOf[c]?["nas/clips/a.mp4"]?.contains("Singapore") == false,
+              "a place corrected on one Mac arrives on the other")
+
+        factsOf[c]?["nas/clips/b.mp4"] = nil
+        syncFacts(c, device: "mac-c")
+        syncFacts(d, device: "mac-d")
+        check(factsOf[d]?["nas/clips/b.mp4"] == nil, "a video's facts removed on one Mac go on the other")
+
+        let e = mac("e")
+        factsOf[e] = ["nas/clips/a.mp4": ["2015"]]
+        syncFacts(e, device: "mac-e")
+        check(factsOf[e]?["nas/clips/a.mp4"] == ["2015"], "a Mac's own reading survives its first meeting")
+
+        let newerFacts = Data("{\"format\":99,\"videos\":{}}".utf8)
+        try! newerFacts.write(to: URL(fileURLWithPath: folder + "/facts.json"))
+        factsOf[c]?["nas/clips/z.mp4"] = ["2030"]
+        check(syncFacts(c, device: "mac-c").isEmpty
+                && fm.contents(atPath: folder + "/facts.json") == newerFacts,
+              "a newer facts file is neither merged nor written over")
+
+        // 9. A state file from before facts: its face base must survive.
+        let old = Data("{\"faceBase\":{\"nas\":{\"Bob\":[\"h\"]}},\"transcriptMtime\":{},\"transcriptsOnShare\":{}}".utf8)
+        let decoded = try? JSONDecoder().decode(SharedExtras.State.self, from: old)
+        check(decoded?.faceBase["nas"] == ["Bob": ["h"]] && decoded?.factBase.isEmpty == true,
+              "an older sync state still loads, with no fact base")
 
         print(failures == 0 ? "ALL PASS" : "\(failures) FAILED")
         exit(failures == 0 ? 0 : 1)
