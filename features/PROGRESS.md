@@ -240,6 +240,8 @@ in places (`PlaybackController.engine`, `VideoSurface(player:)`,
 
 - 2026-09-27 — Session 1 (cont.): user testing feedback addressed — Smart Collections section always visible with New…; File fact rule kind; transcript editing moved into the transcript panel.
 
+- 2026-09-27 — Session 1 (cont.): fixed a launch stall reported in testing — a smart collection with a Date added rule stat-ed every known video on the NAS 8-at-a-time at launch (now a 15 s-delayed 2-at-a-time background trickle; stat rules answer from the warm cache), and `knownVideoKeys` natural-sorted ~12k keys on the main thread every refresh (now a plain sort; only results are naturally sorted). User confirmed the test copy works.
+
 ## Next steps for whoever continues
 
 1. P9 is on hold (KIV) — skip it unless the user reopens it.
