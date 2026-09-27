@@ -31,13 +31,24 @@ die() { printf 'release: %s\n' "$*" >&2; exit 1; }
 [ -z "$(git status --porcelain)" ] || die "the working tree has uncommitted changes; a release must match a commit"
 [ ! -e "$dmg" ] || die "$dmg already exists — move it aside rather than overwrite a published image"
 
-identity=$(security find-identity -v -p codesigning \
-    | grep "Developer ID Application" | grep "($team)" | head -1 | sed 's/.*"\(.*\)"/\1/')
+# By SHA-1, not by name: a Keychain can hold two certificates with the same
+# name (a renewal, or the same one imported twice), and codesign refuses an
+# ambiguous name. Of those valid for the team, the one expiring last wins.
+identity=""
+latest=0
+for hash in $(security find-identity -v -p codesigning \
+        | grep "Developer ID Application" | grep "($team)" | awk '{print $2}'); do
+    ends=$(security find-certificate -a -Z -p -c "Developer ID Application" \
+        | awk -v h="$hash" '/^SHA-1 hash:/{on=($3==h)} on' \
+        | openssl x509 -noout -enddate 2>/dev/null | sed 's/notAfter=//')
+    epoch=$(date -j -f "%b %e %T %Y %Z" "$ends" +%s 2>/dev/null || echo 0)
+    if [ -z "$identity" ] || [ "$epoch" -gt "$latest" ]; then identity=$hash; latest=$epoch; fi
+done
 [ -n "$identity" ] || die "no Developer ID Application certificate for team $team in the Keychain"
 xcrun notarytool history --keychain-profile "$profile" >/dev/null 2>&1 \
     || die "notarytool profile '$profile' not found (xcrun notarytool store-credentials $profile --team-id $team)"
 
-echo "FolderVideoPlayer $version from $(git rev-parse --short HEAD), team $team"
+echo "FolderVideoPlayer $version from $(git rev-parse --short HEAD), team $team, certificate ${identity:0:8}…"
 
 if [ "${1:-}" != "--skip-tests" ]; then
     say "tests"
