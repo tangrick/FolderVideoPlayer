@@ -242,6 +242,8 @@ in places (`PlaybackController.engine`, `VideoSurface(player:)`,
 
 - 2026-09-27 — Session 1 (cont.): fixed a launch stall reported in testing — a smart collection with a Date added rule stat-ed every known video on the NAS 8-at-a-time at launch (now a 15 s-delayed 2-at-a-time background trickle; stat rules answer from the warm cache), and `knownVideoKeys` natural-sorted ~12k keys on the main thread every refresh (now a plain sort; only results are naturally sorted). User confirmed the test copy works.
 
+- 2026-09-27 — This public repo is now THE working repo. The old private working repo (`tangrick/FolderVideoPlayerSwift`, which published snapshots here) is archived on GitHub and no longer used. Release tooling moved here: `scripts/release.sh`, `scripts/exportOptions.plist`, `docs/releasing.md`. Commit as `tangrick <40586271+tangrick@users.noreply.github.com>` (set in this checkout's git config) — never a personal address.
+
 ## Next steps for whoever continues
 
 1. P9 is on hold (KIV) — skip it unless the user reopens it.

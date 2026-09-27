@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  What `xcodebuild -exportArchive` reads for a release: a Developer ID export
+  (a DMG outside the App Store), signed manually for this one build while the
+  project itself stays on automatic signing for running from Xcode. The team
+  ID is public — it is in every app it signs. scripts/release.sh overrides it
+  with FVP_TEAM when that is set.
+-->
+<plist version="1.0">
+<dict>
+    <key>method</key>
+    <string>developer-id</string>
+    <key>teamID</key>
+    <string>4DMMS5733P</string>
+    <key>signingStyle</key>
+    <string>manual</string>
+    <key>destination</key>
+    <string>export</string>
+</dict>
+</plist>
