@@ -50,6 +50,9 @@ final class SmartCollectionStore: ObservableObject {
         self.profile = profile
         collections = profile.isEmpty ? [] : SmartCollectionFile.load(at: Paths.smartCollectionsFile(profile)).collections
         members = [:]
+        warming?.cancel()
+        warming = nil
+        datesAsked = []
         existenceCache = [:]
         existenceCheckedAt = .distantPast
         scheduleRefresh(after: 0)
@@ -172,26 +175,22 @@ final class SmartCollectionStore: ObservableObject {
             let hits = journal?.transcriptMatches(words, limit: 100_000) ?? []
             context.transcriptHits[words] = Set(hits.map { Paths.tagKey($0.path) })
         }
-        // Stats, only when a rule needs them, and off the main thread.
+        // Rules that need a file's stat answer from what is ALREADY known, and
+        // never wait on the disk. What is not known yet is fetched behind, as a
+        // trickle (see `warmDisk`), and the collections re-answer when it lands.
+        // Waiting here — or flooding the share to be quick — was what stopped a
+        // video opening at launch on a NAS (2026-09-27).
         let universe = context.universe
-        if rules.contains(where: { $0.kind == .added }) {
-            let paths = universe.map { Paths.tagPath($0) }
-            await library.warmStats(paths)
-            for (key, path) in zip(universe, paths) { context.addedOn[key] = library.addedOn(path) }
-        }
-        if rules.contains(where: { $0.kind == .file }) {
-            // Re-asked at most every two minutes, and for new videos: the
-            // library changes every few seconds while something plays, and a
-            // NAS should not be asked about every file each time.
-            let stale = Date().timeIntervalSince(existenceCheckedAt) > 120
-            let unknown = universe.filter { existenceCache[$0] == nil }
-            if stale || !unknown.isEmpty {
-                let fresh = await Self.existence(of: stale ? universe : unknown)
-                existenceCache.merge(fresh) { _, new in new }
-                if stale { existenceCheckedAt = Date() }
+        let wantsDates = rules.contains(where: { $0.kind == .added })
+        let wantsFiles = rules.contains(where: { $0.kind == .file })
+        if wantsDates {
+            for key in universe {
+                let when = library.addedOn(Paths.tagPath(key))
+                if when > 0 { context.addedOn[key] = when }
             }
-            context.fileExists = existenceCache
         }
+        if wantsFiles { context.fileExists = existenceCache }
+        if wantsDates || wantsFiles { warmDisk(universe, dates: wantsDates, files: wantsFiles) }
         var out: [UUID: [String]] = [:]
         for collection in items {
             out[collection.id] = SmartEvaluator.members(collection, in: context).map { Paths.tagPath($0) }
@@ -199,10 +198,52 @@ final class SmartCollectionStore: ObservableObject {
         return out
     }
 
-    /// Whether each file is there, eight at a time off the main thread — a
+    /// When this store started, so the disk is left alone while the app is
+    /// opening and the first video is loading.
+    private let startedAt = Date()
+    private var warming: Task<Void, Never>?
+    /// Videos whose date has already been asked for, answered or not — a file
+    /// that cannot be stat'ed must not be asked again on every refresh.
+    private var datesAsked: Set<String> = []
+    /// How long after launch before any stat is asked for.
+    static let quietStart: Double = 15
+    /// Stats in flight at once: a trickle a share can serve beside playback.
+    nonisolated static let trickle = 2
+
+    /// Fetch the dates and existence the stat rules need, gently, and re-answer
+    /// once they are in. One warm at a time; a warm already running covers the
+    /// next request. Existence is re-asked at most every two minutes.
+    private func warmDisk(_ universe: [String], dates: Bool, files: Bool) {
+        guard warming == nil, let library else { return }
+        let unknownFiles = files ? universe.filter { existenceCache[$0] == nil } : []
+        let staleFiles = files && Date().timeIntervalSince(existenceCheckedAt) > 120
+        let coldDates = dates
+            ? universe.filter { !datesAsked.contains($0) && library.addedOn(Paths.tagPath($0)) == 0 } : []
+        guard !coldDates.isEmpty || !unknownFiles.isEmpty || staleFiles else { return }
+        datesAsked.formUnion(coldDates)
+        warming = Task { [weak self] in
+            defer { self?.warming = nil }
+            let wait = Self.quietStart - Date().timeIntervalSince(self?.startedAt ?? Date())
+            if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+            guard !Task.isCancelled, let self, let library = self.library else { return }
+            if !coldDates.isEmpty {
+                await library.warmStats(coldDates.map { Paths.tagPath($0) },
+                                        parallel: Self.trickle, priority: .background)
+            }
+            if staleFiles || !unknownFiles.isEmpty {
+                let fresh = await Self.existence(of: staleFiles ? universe : unknownFiles)
+                self.existenceCache.merge(fresh) { _, new in new }
+                if staleFiles { self.existenceCheckedAt = Date() }
+            }
+            guard !Task.isCancelled else { return }
+            self.scheduleRefresh(after: 0)
+        }
+    }
+
+    /// Whether each file is there, a trickle at a time off the main thread — a
     /// share asleep answers slowly, and the window must not wait on it.
     nonisolated static func existence(of keys: [String]) async -> [String: Bool] {
-        await Task.detached(priority: .utility) {
+        await Task.detached(priority: .background) {
             var out: [String: Bool] = [:]
             await withTaskGroup(of: (String, Bool).self) { group in
                 var next = keys.makeIterator()
@@ -210,7 +251,7 @@ final class SmartCollectionStore: ObservableObject {
                     guard let key = next.next() else { return }
                     group.addTask { (key, FileManager.default.fileExists(atPath: Paths.tagPath(key))) }
                 }
-                for _ in 0..<8 { add() }
+                for _ in 0..<trickle { add() }
                 while let (key, exists) = await group.next() {
                     out[key] = exists
                     add()
