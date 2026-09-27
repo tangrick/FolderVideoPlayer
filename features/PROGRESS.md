@@ -15,7 +15,20 @@ sh Tests/run_transcript_edit.sh       # just the transcript editor/export tests 
 # app build (verifies the SwiftUI views compile)
 xcodebuild -project FolderVideoPlayer.xcodeproj -scheme FolderVideoPlayer \
   -configuration Debug -derivedDataPath build/dd CODE_SIGNING_ALLOWED=NO build
+
+# release (see docs/releasing.md): tests, Developer ID archive, DMG, notarize, staple
+scripts/release.sh                    # → dist/FolderVideoPlayer-v<version>.dmg
+
+# a test copy beside the installed app (separate bundle id; same library)
+xcodebuild -project FolderVideoPlayer.xcodeproj -scheme FolderVideoPlayer -configuration Release \
+  -derivedDataPath build/dd-test CODE_SIGN_IDENTITY="-" CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="" \
+  PRODUCT_BUNDLE_IDENTIFIER=com.tangrick.foldervideoplayer.dev build
 ```
+
+Where the user's library actually is: `~/.fvp-engine` has a `support=` line, so
+every bundled copy of the app (installed or test) reads and writes the library
+at that path, not `~/Library/Application Support/FolderVideoPlayer`. Test
+binaries ignore that file.
 
 Conventions discovered (follow them):
 
@@ -30,20 +43,39 @@ Conventions discovered (follow them):
 - Per-profile transcript storage is SQLite: `EvidenceStore` (schema-versioned,
   backup-before-migrate), wrapped for the app by `EvidenceJournal`.
 - Transcript rows are keyed by the video's **absolute path** (not the tag key).
+- Commits use `tangrick <40586271+tangrick@users.noreply.github.com>` (set in
+  this checkout's and the website checkout's git config). Never a personal
+  address — both repos are public, and their histories were rewritten once to
+  remove one.
+- Background work must never flood a network share: stat/scan in the
+  background as a trickle (2 at a time, `.background` priority), and never sort
+  or scan the whole library on the main thread (see the 1.1.21 launch-stall fix).
+
+## Releases
+
+| Version | Date | What | Commit |
+|---|---|---|---|
+| 1.1.21 | 2026-09-27 | Priorities 1–8, the label refinement, test feedback fixes, launch-stall fixes | `7234402` |
+| 1.1.22 | 2026-09-27 | File facts sync between Macs (`facts.json` on the share) | `51d7e8d` |
+
+Each is a notarized DMG on the GitHub release (`v<version>`), which is also what
+the app's Check for Updates reads, and the website's download buttons
+(`~/foldervideoplayer-site`, `./deploy.sh`) point at it.
 
 ## Status overview
 
 | # | Feature | Status |
 |---|---------|--------|
-| 1 | Transcript editor and export | done (model + tests + UI builds); UI not yet exercised by hand |
-| 2 | Multi-tag selection from library sidebar | done (model + tests + UI builds); UI not yet exercised by hand |
-| 3 | Share and prepare video | done (model + real-export tests + UI builds); UI not yet exercised by hand |
-| — | My Tags / File Facts labels (optional refinement) | done (sidebar: "My Tags", "File Facts" heading + tooltip) |
-| 4 | Smart Collections | done (model + tests + UI builds); UI not yet exercised by hand |
-| 5 | Watch state and dashboard | done (model + tests + UI builds); UI not yet exercised by hand |
-| 6 | Moments, bookmarks, clip export | done (model + tests + UI builds); UI not yet exercised by hand |
-| 7 | Subtitle and audio track controls | done (model + tests + engine probe + UI builds); UI not yet exercised by hand |
-| 8 | Opt-in background maintenance | done (planner + tests + worker + UI builds); worker not yet exercised end-to-end |
+| 1 | Transcript editor and export | released 1.1.21; editing moved into the transcript panel after user testing |
+| 2 | Multi-tag selection from library sidebar | released 1.1.21; not yet exercised by hand |
+| 3 | Share and prepare video | released 1.1.21 (real-export tests); UI not yet exercised by hand |
+| — | My Tags / File Facts labels (optional refinement) | released 1.1.21 |
+| 4 | Smart Collections | released 1.1.21; user-tested (always-visible section, File fact rule, launch-stall fix) |
+| 5 | Watch state and dashboard | released 1.1.21; not yet exercised by hand |
+| 6 | Moments, bookmarks, clip export | released 1.1.21; not yet exercised by hand |
+| 7 | Subtitle and audio track controls | released 1.1.21 (engine probe on a real multi-track file); UI not yet exercised by hand |
+| 8 | Opt-in background maintenance | released 1.1.21; worker not yet exercised end-to-end |
+| — | File facts sync between Macs (user request) | released 1.1.22; not yet run between two real Macs |
 | 9 | Additional-format playback (VLCKit/libmpv) | KIV — on hold by the user's decision (2026-09-27); do not start without asking |
 
 ## Priority 1 — Transcript editor and export
@@ -232,7 +264,19 @@ in places (`PlaybackController.engine`, `VideoSurface(player:)`,
 - Share sync (`SharedExtras.syncTranscripts`) only sends a transcript for a
   video the share does not yet have ("transcripts only accumulate"), so a
   correction made after the first publish does not propagate to other Macs.
-  Left unchanged in P1; changing it needs a merge rule.
+  Left unchanged in P1; changing it needs a merge rule (file facts, 1.1.22,
+  show one: three-way per video against the last sync).
+- Still per Mac, not shared through the NAS: watch history, moments, smart
+  collections. The user has not yet said whether they should sync.
+- A file-facts first meeting where BOTH Macs hold different readings for a
+  video converges to one of them after a couple of syncs (by design: this
+  Mac's own stands on the first sync, then the three-way rule applies).
+- PR #1's page on GitHub still caches its original commits (with the old
+  personal email) until GitHub Support purges them; `main` itself is clean.
+- The login Keychain holds two identical Developer ID certificates;
+  `scripts/release.sh` copes by signing by SHA-1, other tools may not.
+- The clean-account walkthrough (`docs/clean-start-checklist.md`) has not been
+  done for 1.1.21 or 1.1.22.
 
 ## Session log
 
@@ -246,8 +290,13 @@ in places (`PlaybackController.engine`, `VideoSurface(player:)`,
 
 - 2026-09-27 — 1.1.22: file facts now sync between Macs through the profile's share folder (`facts.json`, `SharedExtras.syncFacts`/`mergeFacts`, three-way per video; `Library.takeSharedFacts` applies only to videos unchanged during the sync; `factsDirty` schedules a sync after a scan or correction; `SharedExtras.State` decodes older files). Tests in `test_shared_extras.swift` and `test_smart_collections.swift`. Verified before: on the real NAS, facts for 3,505 videos were not shared at all.
 
+- 2026-09-27 — Published 1.1.21 and 1.1.22: notarized DMGs as GitHub releases (Check for Updates offers them) and the website's download buttons deployed. Full `Tests/run.sh` before 1.1.22: 2,806 checks, exit 0. Both public repos' histories rewritten to the noreply identity (app repo: the 6 feature-branch commits; website repo: all 56 author/committer entries) and force-pushed with `--force-with-lease`.
+
 ## Next steps for whoever continues
 
 1. P9 is on hold (KIV) — skip it unless the user reopens it.
-2. Hand-test each feature in a dev build (see "Manual UI pass" items above), fixing layout issues found.
-3. Optional follow-ups listed under each priority ("Later"/"Maybe later").
+2. Run 1.1.22 on two real Macs sharing the NAS and confirm File Facts arrive (the first run on the main Mac writes `facts.json` for ~3,500 videos of the main profile).
+3. Hand-test the features not yet exercised (status table above), fixing what is found.
+4. The clean-account walkthrough for the current release.
+5. Ask whether watch history, moments and smart collections should sync between Macs.
+6. Optional follow-ups listed under each priority ("Later"/"Maybe later").
