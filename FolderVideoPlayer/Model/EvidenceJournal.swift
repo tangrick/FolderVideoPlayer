@@ -125,6 +125,46 @@ final class EvidenceJournal: ObservableObject {
         return (try? store.transcript(for: path)) ?? []
     }
 
+    // MARK: - hand corrections
+
+    /// Bumped whenever a transcript is corrected, restored or moved, so the
+    /// panel and the subtitle overlay re-read — a correction can leave the line
+    /// count unchanged, and the count is what a transcription run announces.
+    @Published private(set) var transcriptEdits = 0
+
+    /// Whether this video's transcript has been corrected by hand.
+    func hasUserEdits(_ path: String) -> Bool {
+        (try? store?.hasUserEdits(path)) ?? false
+    }
+
+    /// Save a corrected transcript as the current one. Throws, writing nothing,
+    /// when a line is not storable or no profile is open — the editor shows why
+    /// and keeps the draft.
+    func saveEdited(_ lines: [TranscriptLine], path: String, language: String) throws {
+        guard let store else { throw EvidenceError.storeUnreadable("no profile is open") }
+        try store.saveEditedTranscript(lines, path: path, language: language)
+        refreshTranscribed()
+        transcriptEdits += 1
+    }
+
+    /// Put the machine's lines back. False when there were no corrections.
+    @discardableResult
+    func restoreOriginal(_ path: String) throws -> Bool {
+        guard let store else { throw EvidenceError.storeUnreadable("no profile is open") }
+        let restored = try store.restoreOriginalTranscript(for: path)
+        if restored { transcriptEdits += 1 }
+        return restored
+    }
+
+    /// Carry a transcript to a moved file's new place. Silent by design: the
+    /// moved-file repair is about tags first, and a transcript that cannot move
+    /// is still there under the old path to be moved again.
+    func moveTranscript(from oldPath: String, to newPath: String) {
+        guard let store, (try? store.moveTranscript(from: oldPath, to: newPath)) == true else { return }
+        refreshTranscribed()
+        transcriptEdits += 1
+    }
+
     /// Lines whose words match, anywhere in the profile. A query the store
     /// cannot understand returns nothing rather than everything.
     func transcriptMatches(_ query: String, limit: Int = 50) -> [TranscriptLine] {

@@ -71,6 +71,10 @@ struct FolderVideoPlayerApp: App {
     /// Owned here so the pass that writes a claim and the panel that shows it are
     /// talking about the same evidence.
     @StateObject private var journal = EvidenceJournal()
+    /// Saved library questions and their live answers, one set per profile.
+    @StateObject private var smart = SmartCollectionStore()
+    /// Bookmarks in videos, one book per profile.
+    @StateObject private var moments = MomentStore()
 
     var body: some Scene {
         Window("FolderVideoPlayer", id: "player") {
@@ -83,6 +87,8 @@ struct FolderVideoPlayerApp: App {
                 .environmentObject(suggestions)
                 .environmentObject(faceStore)
                 .environmentObject(journal)
+                .environmentObject(smart)
+                .environmentObject(moments)
                 .environmentObject(app.rotation)
                 .frame(minWidth: 680, minHeight: 420)
                 .onAppear {
@@ -101,11 +107,27 @@ struct FolderVideoPlayerApp: App {
                     suggestions.onVerdict = { path, tag, verdict in
                         journal.decide(verdict, for: path, label: tag)
                     }
+                    // A moved file's transcript follows it, through the same
+                    // repair that carries its tags.
+                    library.pathMoved = { old, new in
+                        journal.moveTranscript(from: old, to: new)
+                        moments.move(from: old, to: new)
+                    }
+                    moments.reload(profile: Paths.activeProfile)
+                    app.maintenance.attach(app: app, library: library, media: media)
+                    // Smart collections answer from the live stores, and a
+                    // collection open as the playlist re-asks when they change.
+                    smart.attach(library: library, analysis: analysis, journal: journal)
+                    app.playback?.collectionMembers = { [weak smart] id in smart?.members[id] }
+                    smart.onMembersChanged = { [weak app] in
+                        guard let playback = app?.playback, playback.smartCollection != nil else { return }
+                        playback.refreshMembership()
+                    }
                     // Every profile's own AI state moves with the profile, so
                     // the stores are told where to read once all of them exist.
                     app.observeProfileChanges(analysis: analysis, engine: engine,
                                               suggestions: suggestions, faceStore: faceStore,
-                                              journal: journal)
+                                              journal: journal, smart: smart, moments: moments)
                     delegate.attach(app)
                 }
         }
@@ -167,6 +189,46 @@ struct FolderVideoPlayerApp: App {
                 .environmentObject(app)
                 .environmentObject(engine)
         }
+
+        // Correcting a transcript: a window beside the player, so the video
+        // stays in view while times are checked against it.
+        Window("Edit Transcript", id: "transcript-editor") {
+            TranscriptEditorWindow()
+                .environmentObject(library)
+                .environmentObject(app)
+                .environmentObject(journal)
+        }
+        .defaultSize(width: 820, height: 600)
+
+        // Prepare for Sharing: new copies, never a change to the original.
+        Window("Prepare for Sharing", id: "share-prepare") {
+            SharePrepareWindow()
+                .environmentObject(library)
+                .environmentObject(app)
+                .environmentObject(journal)
+        }
+        .defaultSize(width: 560, height: 620)
+
+        // The library at a glance: each section opens as a playlist.
+        Window("Library Overview", id: "overview") {
+            LibraryOverviewWindow()
+                .environmentObject(library)
+                .environmentObject(app)
+                .environmentObject(analysis)
+                .environmentObject(suggestions)
+                .environmentObject(journal)
+        }
+        .defaultSize(width: 760, height: 560)
+
+        // A smart collection's rules, beside the library that answers them.
+        Window("Smart Collection", id: "smart-collection") {
+            SmartCollectionEditor()
+                .environmentObject(library)
+                .environmentObject(app)
+                .environmentObject(smart)
+                .environmentObject(faceStore)
+        }
+        .defaultSize(width: 620, height: 520)
 
         Window("Help", id: "help") {
             HelpWindow(app: app)
@@ -244,6 +306,10 @@ final class AppModel: ObservableObject {
     /// Each video's on-screen turn. Held here so the menus, the bar and the
     /// picture all read the one store.
     let rotation = VideoRotation()
+
+    /// Opt-in upkeep of chosen folders. Held here, like the rotation, so the
+    /// sidebar, Settings and the menus all reach the one worker.
+    let maintenance = MaintenanceWorker()
 
     /// The playlist's AI ▸ Transcribe These. Carries the paths, in list order.
     /// Still never automatic: this is a run the user asked for, like Classify.
@@ -404,7 +470,9 @@ final class AppModel: ObservableObject {
     /// one directly cannot have its own file swapped out from under it.
     func observeProfileChanges(analysis: AnalysisStore, engine: AnalysisEngine,
                                suggestions: SuggestionStore, faceStore: FaceStore,
-                               journal: EvidenceJournal? = nil) {
+                               journal: EvidenceJournal? = nil,
+                               smart: SmartCollectionStore? = nil,
+                               moments: MomentStore? = nil) {
         guard profileObserver == nil else { return }
         profileObserver = NotificationCenter.default.addObserver(
             forName: .fvpProfileChanged, object: nil, queue: .main) { note in
@@ -419,6 +487,10 @@ final class AppModel: ObservableObject {
                 // and the store moves with the profile for the same reason the
                 // verdicts do.
                 journal?.reload(profile: slug)
+                // A profile's saved questions are its own; so are the answers.
+                smart?.reload(profile: slug)
+                moments?.reload(profile: slug)
+                self?.maintenance.reload(profile: slug)
                 engine.resetForProfile()
                 self?.attachJobs(profile: slug)
             }
@@ -527,6 +599,25 @@ final class AppModel: ObservableObject {
     /// The transcript strip. Shares the bottom slot with the tag panel, so the
     /// two are never open at once — the same space cannot show both.
     @Published var showTranscriptPanel = false
+    /// The video the transcript editor window is asked to edit. The window
+    /// keeps its own copy, so a new request never drops unsaved edits.
+    @Published var transcriptEditTarget: String?
+    /// The videos the Prepare for Sharing window is asked about.
+    @Published var shareTargets: [String] = []
+    /// A range to trim the next Prepare for Sharing to — a moment's Export Clip.
+    @Published var shareTrim: ClosedRange<Double>?
+    /// The moments strip. Shares the bottom slot with the tag and transcript
+    /// panels.
+    @Published var showMomentsPanel = false
+    /// ⌘B, from the Playback menu: mark the playhead. A notification because
+    /// the menu has the app model, not the moment store.
+    static let addMomentNotification = Notification.Name("FolderVideoPlayer.addMoment")
+    /// The smart collection the editor window is asked to edit; nil with
+    /// `smartEditorOpen` set means a new one.
+    @Published var smartEditTarget: UUID?
+    /// A starting point for a new collection — "Save as Smart Collection" from a
+    /// combined playlist hands its tags over.
+    @Published var smartEditSeed: SmartCollection?
     @Published var selection: Set<String> = []
     /// Where the last plain click landed. A shift click selects everything
     /// between it and the row clicked, the way a Finder list does.
@@ -602,6 +693,8 @@ final class AppModel: ObservableObject {
         }
         // An alert, not `jobNotice`: nothing in the player window draws that.
         player.onConversionFinished = { [weak self] line in self?.say("Converting finished", line) }
+        // A share service that refuses a file says so, in the same alert.
+        SharePresenter.shared.report = { [weak self] title, detail in self?.say(title, detail) }
         duplicates = DuplicateFinder(library: library)
         ready = true
         // What was playing comes back first. The share traffic happens behind
@@ -714,6 +807,14 @@ final class AppModel: ObservableObject {
         movedScan.scopeLabel = paths.count == 1
             ? (paths[0] as NSString).lastPathComponent
             : "\(paths.count) videos"
+    }
+
+    /// Aim at every tagged video (the library overview), and wait.
+    func findMovedEverywhere() {
+        movedScan.reset()
+        movedScan.scopeRoot = nil
+        movedScan.scopePaths = nil
+        movedScan.scopeLabel = nil
     }
 
     /// Aim at one folder (folder context menus), and wait.

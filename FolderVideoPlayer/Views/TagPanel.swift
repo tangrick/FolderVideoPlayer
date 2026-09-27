@@ -10,6 +10,7 @@ struct TagPanel: View {
     @EnvironmentObject var suggestions: SuggestionStore
     @EnvironmentObject var faceStore: FaceStore
     @EnvironmentObject var journal: EvidenceJournal
+    @EnvironmentObject var moments: MomentStore
     @State private var typed = ""
     @State private var showingAddFace = false
     /// Which person chip the cursor is over — reveals its yes/no buttons.
@@ -828,6 +829,13 @@ struct TagPanel: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(Color.secondary)
                     .help("Where the app saw “\(s.tag)” — click to jump there")
+                    .contextMenu {
+                        Button("Save as Moment") {
+                            moments.add(path: path, at: span.start,
+                                        end: span.end > span.start ? span.end : nil,
+                                        title: s.tag, source: .evidence)
+                        }
+                    }
                 }
                 if spans.count > shown.count {
                     Text("+\(spans.count - shown.count)")

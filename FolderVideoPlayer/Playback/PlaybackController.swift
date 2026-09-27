@@ -164,6 +164,7 @@ final class PlaybackController: ObservableObject {
             }
         }
         engine.onFailed = { [weak self] why in self?.reportTrouble(why) }
+        engine.onTracks = { [weak self] in self?.applyTracks() }
         progressTimer = Timer.scheduledTimer(withTimeInterval: Tuning.progressTick,
                                              repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.recordProgress() }
@@ -205,11 +206,251 @@ final class PlaybackController: ObservableObject {
     /// only ever a tag the two answer identically, so nothing about the old
     /// behaviour changes.
     func playTag(_ tag: String, resume: String? = nil) {
+        tagQuery = nil
+        smartCollection = nil
+        namedList = nil
         tagName = tag
         start(library.pathsCarrying(tag), mode: .tag, root: nil, resume: resume)
         // Plays what this Mac holds now; a change another device made shows
         // in the tags as soon as the check below has read it.
         Task { [library] in await library.catchUpWithOtherDevices() }
+    }
+
+    // MARK: - subtitles and audio
+
+    /// What the user picked for subtitles on this video, after checking it
+    /// against what the file has (see `TrackPlan.resolve`).
+    @Published private(set) var subtitleChoice: SubtitleChoice = .automatic
+    /// Where the words on screen come from right now.
+    @Published private(set) var subtitleSource: SubtitleSource = .none
+    /// Subtitle files found beside the playing video.
+    @Published private(set) var sidecars: [String] = []
+    /// A subtitle file's cues, when one is showing.
+    @Published private(set) var sidecarCues: [SubtitleCue] = []
+    /// Why a choice could not be honoured, or a subtitle file not read. Shown
+    /// in the menu; never stops playback.
+    @Published private(set) var trackNote: String?
+    /// Whether a video has a transcript. Set by the app, which holds the journal.
+    var hasTranscript: ((String) -> Bool)?
+    private var trackTask: Task<Void, Never>?
+    private static let subtitleKey = "subtitleChoices"
+    private static let audioKey = "audioChoices"
+
+    /// A new video: forget the last one's tracks and look beside it for
+    /// subtitle files — off the main thread, since it is a folder listing and
+    /// the folder may be on a share.
+    private func prepareTracks(for path: String) {
+        trackTask?.cancel()
+        sidecars = []
+        sidecarCues = []
+        trackNote = nil
+        subtitleSource = .none
+        let folder = (path as NSString).deletingLastPathComponent
+        trackTask = Task { [weak self] in
+            let names = await Task.detached(priority: .utility) {
+                (try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? []
+            }.value
+            guard let self, !Task.isCancelled, self.currentPath == path else { return }
+            self.sidecars = SubtitleFile.sidecars(for: path, in: names)
+            self.applyTracks()
+        }
+        applyTracks()
+    }
+
+    /// Put the remembered (or automatic) subtitle and audio choice into effect
+    /// for the playing video. Called as the pieces arrive — the file's own
+    /// tracks, the listing beside it — so it is safe to call again.
+    private func applyTracks() {
+        guard let path = currentPath else { return }
+        let key = Paths.tagKey(path)
+        let savedText = (UserDefaults.standard.dictionary(forKey: Self.subtitleKey) as? [String: String])?[key]
+        let resolved = TrackPlan.resolve(saved: savedText.flatMap(SubtitleChoice.init(stored:)),
+                                         embedded: engine.subtitleOptions, sidecars: sidecars,
+                                         hasTranscript: hasTranscript?(path) ?? false)
+        subtitleChoice = resolved.choice
+        trackNote = resolved.note
+        let source = TrackPlan.source(for: resolved.choice, embedded: engine.subtitleOptions,
+                                      sidecars: sidecars, hasTranscript: hasTranscript?(path) ?? false)
+        switch source {
+        case .embedded(let id):
+            if let id { engine.selectEmbeddedSubtitle(id) } else { engine.selectSubtitlesAutomatically() }
+            sidecarCues = []
+        case .sidecar(let name):
+            engine.selectEmbeddedSubtitle(nil)
+            loadSidecar(name, for: path)
+        case .transcript, .none:
+            engine.selectEmbeddedSubtitle(nil)
+            sidecarCues = []
+        }
+        subtitleSource = source
+        if let audio = (UserDefaults.standard.dictionary(forKey: Self.audioKey) as? [String: String])?[key],
+           engine.audioOptions.contains(where: { $0.id == audio }) {
+            engine.selectAudio(audio)
+        }
+    }
+
+    /// Read and parse a subtitle file off the main thread. A file that cannot
+    /// be read is reported and shows nothing; the video plays on regardless.
+    private func loadSidecar(_ name: String, for path: String) {
+        let file = name.hasPrefix("/") ? name
+            : ((path as NSString).deletingLastPathComponent as NSString).appendingPathComponent(name)
+        Task { [weak self] in
+            let result: Result<[SubtitleCue], Error> = await Task.detached(priority: .userInitiated) {
+                guard let data = FileManager.default.contents(atPath: file) else {
+                    return .failure(SubtitleFile.Failure.unreadable)
+                }
+                return Result { try SubtitleFile.parse(data: data, extension: (file as NSString).pathExtension) }
+            }.value
+            guard let self, self.currentPath == path, self.subtitleSource == .sidecar(name) else { return }
+            switch result {
+            case .success(let cues):
+                self.sidecarCues = cues
+            case .failure(let error):
+                self.sidecarCues = []
+                self.trackNote = "Could not show “\((file as NSString).lastPathComponent)”: \(error.localizedDescription)."
+            }
+        }
+    }
+
+    /// The user picked subtitles for this video. Remembered for this video
+    /// only — a language chosen here is never pushed onto another file.
+    func chooseSubtitles(_ choice: SubtitleChoice) {
+        guard let path = currentPath else { return }
+        var saved = UserDefaults.standard.dictionary(forKey: Self.subtitleKey) as? [String: String] ?? [:]
+        if choice == .automatic { saved.removeValue(forKey: Paths.tagKey(path)) }
+        else { saved[Paths.tagKey(path)] = choice.stored }
+        UserDefaults.standard.set(saved, forKey: Self.subtitleKey)
+        applyTracks()
+    }
+
+    func chooseAudio(_ id: String) {
+        guard let path = currentPath else { return }
+        var saved = UserDefaults.standard.dictionary(forKey: Self.audioKey) as? [String: String] ?? [:]
+        saved[Paths.tagKey(path)] = id
+        UserDefaults.standard.set(saved, forKey: Self.audioKey)
+        engine.selectAudio(id)
+    }
+
+    /// The transcript was made or changed: Automatic may now mean it.
+    func transcriptAvailabilityChanged() { applyTracks() }
+
+    // MARK: - several names at once
+
+    /// Several library names combined — ⌘-click in the library panel. Nil for
+    /// every other kind of playlist, a single-tag one included. While it is
+    /// set the playlist is a `.tag` playlist with no `tagName`, so everything
+    /// that is about ONE tag (look-alikes, training) stands aside.
+    @Published private(set) var tagQuery: TagQuery?
+
+    /// The smart collection this playlist shows, if it is one. Like a query, it
+    /// is a `.tag` playlist with no `tagName`, never written as the session.
+    struct OpenCollection: Equatable { let id: UUID; var name: String }
+    @Published private(set) var smartCollection: OpenCollection?
+    /// A collection's members as the store last worked them out. Set by the app.
+    var collectionMembers: ((UUID) -> [String]?)?
+
+    /// Open a smart collection as a playlist — playable, filterable and sortable
+    /// like any other.
+    func playCollection(_ id: UUID, name: String) {
+        let members = collectionMembers?(id) ?? []
+        tagName = nil
+        tagQuery = nil
+        namedList = nil
+        start(members, mode: .tag, root: nil, resume: nil)
+        smartCollection = OpenCollection(id: id, name: name)
+        if members.isEmpty { trouble = "No videos match “\(name)” right now." }
+    }
+
+    /// A fixed list opened from the library overview — Continue Watching,
+    /// Unwatched… Played like any tag playlist; never written as the session.
+    struct NamedList: Equatable { let title: String; let members: [String] }
+    @Published private(set) var namedList: NamedList?
+
+    func playList(_ title: String, _ paths: [String]) {
+        tagName = nil
+        tagQuery = nil
+        smartCollection = nil
+        start(paths, mode: .tag, root: nil, resume: nil)
+        namedList = NamedList(title: title, members: paths)
+        if paths.isEmpty { trouble = "Nothing in “\(title)” right now." }
+    }
+
+    /// The collection was renamed or deleted in its editor.
+    func collectionChanged(_ id: UUID, name: String?) {
+        guard smartCollection?.id == id else { return }
+        if let name { smartCollection?.name = name } else {
+            smartCollection = nil
+            if !resumeLastSession() { closePlaylist() }
+        }
+    }
+
+    /// Add a name to the query, or take it out. The first ⌘-click on a tag
+    /// playlist carries the tag already open into the query, so ⌘-clicking a
+    /// second tag reads as "this one too". The last name out ends the query.
+    func toggleQueryName(_ name: String) {
+        var query = tagQuery ?? TagQuery()
+        if tagQuery == nil, mode == .tag, let open = tagName,
+           open.caseInsensitiveCompare(name) != .orderedSame {
+            query.add(open)
+        }
+        query.toggle(name)
+        guard !query.isEmpty else { return clearTagQuery() }
+        playQuery(query)
+    }
+
+    func setQueryMatch(_ match: TagQuery.Match) {
+        guard var query = tagQuery, query.match != match else { return }
+        query.match = match
+        playQuery(query)
+    }
+
+    /// Back to ordinary navigation: the folder or tag the last session names —
+    /// a query is never written as the session — or an empty window.
+    func clearTagQuery() {
+        guard tagQuery != nil else { return }
+        tagQuery = nil
+        if !resumeLastSession() { closePlaylist() }
+    }
+
+    /// Open the query's playlist, keeping the playing video playing when it is
+    /// still a member: refining a query is looking, not starting over.
+    private func playQuery(_ query: TagQuery) {
+        let playing = mode == .tag ? currentPath : nil
+        let wasOpen = tagQuery != nil
+        tagName = nil
+        smartCollection = nil
+        namedList = nil
+        tagQuery = query
+        let members = library.paths(matching: query)
+        if wasOpen || playing != nil {
+            playlist = library.sorted(library.hiddenFilter.apply(to: members))
+            if let playing, let found = playlist.firstIndex(of: playing) {
+                index = found
+                rebuildRows()
+                return
+            }
+        }
+        start(members, mode: .tag, root: nil, resume: nil)
+        // `start` clears the query for any mode but `.tag`; it is `.tag` here,
+        // but say so rather than rely on it.
+        tagQuery = query
+    }
+
+    /// What a tag playlist is made of now: the query's members, or the one
+    /// tag's. Nil when neither is set. A query first drops names nothing
+    /// carries any more (renamed or deleted), so no constraint is invisible.
+    private func tagMembers() -> [String]? {
+        if let list = namedList { return list.members }
+        if let open = smartCollection {
+            return collectionMembers?(open.id) ?? []
+        }
+        if var query = tagQuery {
+            query.prune { !library.pathsCarrying($0).isEmpty }
+            if query.isEmpty { tagQuery = nil; return [] }
+            if query != tagQuery { tagQuery = query }
+            return library.paths(matching: query)
+        }
+        return tagName.map { library.pathsCarrying($0) }
     }
 
     /// Play every video where `query` is said. `mentions` is each video's
@@ -290,7 +531,7 @@ final class PlaybackController: ObservableObject {
         playlist = library.sorted(filter.apply(to: items))
         self.mode = mode
         self.root = root
-        if mode != .tag { tagName = nil }
+        if mode != .tag { tagName = nil; tagQuery = nil; smartCollection = nil; namedList = nil }
         if mode != .said {
             saidQuery = nil
             saidMentions = [:]
@@ -337,6 +578,9 @@ final class PlaybackController: ObservableObject {
         mode = .folder
         root = nil
         tagName = nil
+        tagQuery = nil
+        smartCollection = nil
+        namedList = nil
         saidQuery = nil
         saidMentions = [:]
         nameFilter = ""
@@ -405,6 +649,7 @@ final class PlaybackController: ObservableObject {
         // In a search, a video starts where the words are first said.
         let saidStart = mode == .said ? saidMentions[path]?.first : nil
         engine.load(URL(fileURLWithPath: path), startAt: saidStart ?? library.resumePoint(path))
+        prepareTracks(for: path)
         engine.play()
         head.playing = true
         // Auto duplicate scanning is switched off: the index no longer
@@ -469,6 +714,7 @@ final class PlaybackController: ObservableObject {
         engine.volume = library.volume
         conversionOffer = nil
         engine.load(URL(fileURLWithPath: path), startAt: library.resumePoint(path))
+        prepareTracks(for: path)
         engine.play()
         head.playing = true
         // Deliberately no saveSession(): the session must keep describing
@@ -545,6 +791,11 @@ final class PlaybackController: ObservableObject {
     }
 
     private func itemFinished() {
+        // Played to the end is finished, whatever the last five-second sample
+        // happened to catch — a short clip can end between two of them.
+        if previewPath == nil, let path = currentPath, duration > 0 {
+            library.note(position: duration, total: duration, for: path)
+        }
         if tagPanelOpen {
             // Hold here rather than moving on under an open tag panel.
             heldAdvance = true
@@ -717,6 +968,7 @@ final class PlaybackController: ObservableObject {
         guard wasOnScreen else { return }
         trouble = nil
         engine.load(URL(fileURLWithPath: new), startAt: library.resumePoint(new))
+        prepareTracks(for: new)
         engine.play()
         head.playing = true
         saveSession()
@@ -796,14 +1048,15 @@ final class PlaybackController: ObservableObject {
 
     func notePosition() {
         guard let path = currentPath, position > 0 else { return }
-        library.note(position: position, total: duration, for: path)
+        library.note(position: position, total: duration, for: path, watching: previewPath == nil)
     }
 
     func saveSession() {
         // A search is a look through the library, not a place to come back
         // to: the session keeps naming the folder or tag it was opened from,
         // which is also what `leaveSaid` returns to.
-        guard mode != .said, let path = currentPath else { return }
+        guard mode != .said, tagQuery == nil, smartCollection == nil, namedList == nil,
+              let path = currentPath else { return }
         library.session = Session(mode: mode.rawValue, root: root, path: path,
                                   tag: tagName)
         library.save()
@@ -828,8 +1081,8 @@ final class PlaybackController: ObservableObject {
         let currentPath = index < playlist.count ? playlist[index] : nil
         switch mode {
         case .tag:
-            guard let tag = tagName else { return }
-            playlist = library.pathsCarrying(tag)
+            guard let members = tagMembers() else { return }
+            playlist = library.hiddenFilter.apply(to: members)
         case .favorites:
             // Retired mode; kept exhaustive, never live.
             break
@@ -859,8 +1112,8 @@ final class PlaybackController: ObservableObject {
         let playing = index < playlist.count ? playlist[index] : nil
         switch mode {
         case .tag:
-            guard let tag = tagName else { return rebuildRows() }
-            playlist = library.sorted(library.pathsCarrying(tag))
+            guard let members = tagMembers() else { return rebuildRows() }
+            playlist = library.sorted(library.hiddenFilter.apply(to: members))
         case .favorites:
             break
         case .hidden:
@@ -962,8 +1215,8 @@ final class PlaybackController: ObservableObject {
                 self.settle(on: playingNow)
             }
         case .tag:
-            guard let tag = tagName else { return }
-            playlist = library.pathsCarrying(tag)
+            guard let members = tagMembers() else { return }
+            playlist = library.hiddenFilter.apply(to: members)
             settle(on: playingNow)
         case .favorites:
             break
@@ -1056,7 +1309,7 @@ final class PlaybackController: ObservableObject {
         let name: String
         switch mode {
         case .folder: name = root.map { ($0 as NSString).lastPathComponent } ?? "FolderVideoPlayer"
-        case .tag: name = tagName ?? "Tag"
+        case .tag: name = namedList?.title ?? smartCollection?.name ?? tagQuery?.label ?? tagName ?? "Tag"
         case .favorites: name = "Favorites"
         case .hidden: name = "Hidden"
         case .said: name = "Said: \u{201C}\(saidQuery ?? "")\u{201D}"

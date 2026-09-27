@@ -2129,6 +2129,7 @@ struct VideoRow: View {
                         if let problem = playback.problems[path] {
                             FileBadge(problem: problem)
                         }
+                        WatchMark(state: library.watchState(path))
                         // Stars, not the favorite mark: the rating IS the
                         // headline judgement now. A video carries a favorite
                         // still shows it as a chip below, with its other tags.
@@ -2334,6 +2335,27 @@ struct RowMenu: View {
         Button("Copy Path") {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(path, forType: .string)
+        }
+        Divider()
+        // Watched is the user's to say, for one video or a selection.
+        if targets.allSatisfy({ library.watchState($0) == .watched }) {
+            Button(targets.count > 1 ? "Mark \(targets.count) Unwatched" : "Mark Unwatched") {
+                library.markWatched(targets, false)
+            }
+        } else {
+            Button(targets.count > 1 ? "Mark \(targets.count) Watched" : "Mark Watched") {
+                library.markWatched(targets, true)
+            }
+        }
+        Divider()
+        // Sharing: the file itself through the system's share picker, or a new
+        // copy made for it. Neither touches the original.
+        Button(targets.count > 1 ? "Share \(targets.count) Videos…" : "Share…") {
+            SharePresenter.shared.share(targets)
+        }
+        Button("Prepare for Sharing…") {
+            app.shareTargets = targets
+            openWindow(id: "share-prepare")
         }
         Divider()
         Button("Rename…") { app.renameFile(path) }
@@ -2671,6 +2693,32 @@ struct ClassifyRemark: View {
         case .failed: return "failed"
         case .done: return "done"
         default: return ""
+        }
+    }
+}
+
+/// Where a video stands with the viewer: half a circle part-way through, a
+/// faint tick once finished. Unwatched draws nothing — in a folder nobody has
+/// played yet, a mark on every row would say nothing at all.
+struct WatchMark: View {
+    let state: WatchLog.State
+
+    var body: some View {
+        switch state {
+        case .unwatched:
+            EmptyView()
+        case .inProgress:
+            Image(systemName: "circle.lefthalf.filled")
+                .font(.caption2)
+                .foregroundStyle(Color.accentColor)
+                .help("In progress")
+                .accessibilityLabel("In progress")
+        case .watched:
+            Image(systemName: "checkmark")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .help("Watched")
+                .accessibilityLabel("Watched")
         }
     }
 }

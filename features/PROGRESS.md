@@ -1,0 +1,244 @@
+# Feature Backlog — Implementation Progress
+
+Working log for implementing `features/FEATURE_BACKLOG.md`. **Any agent picking
+this up: read this file first, then continue from the first unchecked item.**
+Update the checkboxes and the "Session log" as you go, so the next agent can
+resume from here too.
+
+## How to build and test
+
+```bash
+# model-layer tests (no Xcode project needed; builds build/tests/libFVPModel.a once)
+sh Tests/run.sh                       # full suite (slow; some stages skip without models)
+sh Tests/run_transcript_edit.sh       # just the transcript editor/export tests (added P1)
+
+# app build (verifies the SwiftUI views compile)
+xcodebuild -project FolderVideoPlayer.xcodeproj -scheme FolderVideoPlayer \
+  -configuration Debug -derivedDataPath build/dd CODE_SIGNING_ALLOWED=NO build
+```
+
+Conventions discovered (follow them):
+
+- The app target uses one synchronized source group: a new `.swift` file under
+  `FolderVideoPlayer/` is picked up by Xcode automatically — no pbxproj edit.
+- A new file in `FolderVideoPlayer/Model/` **must also be added to
+  `Tests/model_sources.sh`** or the whole test suite stops compiling.
+- Tests are plain scripts: `Tests/test_<name>.swift` using `@testable import
+  FVPModel` and a local `check(name, ok, detail)`; a `Tests/run_<name>.sh` runner
+  sourcing `harness.sh`; and a line in `Tests/run.sh`.
+- Comment style is long-form "why" prose; match it.
+- Per-profile transcript storage is SQLite: `EvidenceStore` (schema-versioned,
+  backup-before-migrate), wrapped for the app by `EvidenceJournal`.
+- Transcript rows are keyed by the video's **absolute path** (not the tag key).
+
+## Status overview
+
+| # | Feature | Status |
+|---|---------|--------|
+| 1 | Transcript editor and export | done (model + tests + UI builds); UI not yet exercised by hand |
+| 2 | Multi-tag selection from library sidebar | done (model + tests + UI builds); UI not yet exercised by hand |
+| 3 | Share and prepare video | done (model + real-export tests + UI builds); UI not yet exercised by hand |
+| — | My Tags / File Facts labels (optional refinement) | done (sidebar: "My Tags", "File Facts" heading + tooltip) |
+| 4 | Smart Collections | done (model + tests + UI builds); UI not yet exercised by hand |
+| 5 | Watch state and dashboard | done (model + tests + UI builds); UI not yet exercised by hand |
+| 6 | Moments, bookmarks, clip export | done (model + tests + UI builds); UI not yet exercised by hand |
+| 7 | Subtitle and audio track controls | done (model + tests + engine probe + UI builds); UI not yet exercised by hand |
+| 8 | Opt-in background maintenance | done (planner + tests + worker + UI builds); worker not yet exercised end-to-end |
+| 9 | Additional-format playback (VLCKit/libmpv) | KIV — on hold by the user's decision (2026-09-27); do not start without asking |
+
+## Priority 1 — Transcript editor and export
+
+Design:
+
+- The `transcript` table stays the **current** (possibly corrected) revision,
+  so search, subtitle overlay and share sync read the corrections with no change.
+- New table `transcript_original` (schema v2 migration, backed up first) holds
+  the machine lines, copied there on the first saved edit. Its presence for a
+  path means "this transcript has user edits". Restore = copy back + drop it.
+- Pure model `TranscriptDraft` (new `Model/TranscriptEdit.swift`): edit ops,
+  undo/redo snapshots, validation (invalid → error, overlap/gap → warning, never
+  auto-rewritten).
+- Pure `TranscriptExport` (new `Model/TranscriptExport.swift`): txt/srt/vtt/csv/json.
+- Moved-file repair: `EvidenceStore.moveTranscript(from:to:)`, invoked through
+  a `Library` hook from `moveTags`.
+
+Tasks:
+
+- [x] Model: `TranscriptDraft` edit operations + undo/redo + validation (`Model/TranscriptEdit.swift`)
+- [x] Model: `TranscriptExport` (txt, srt, vtt, csv, json) (`Model/TranscriptExport.swift`)
+- [x] Store: additive `transcript_original` table (NOT a schema bump, so older builds still open the file); `saveEditedTranscript`, `restoreOriginalTranscript`, `hasUserEdits`, `editedTranscriptPaths`, `originalTranscript`, `moveTranscript`. `deleteTranscript` (re-transcription) also drops the kept original.
+- [x] Journal: `hasUserEdits`, `saveEdited`, `restoreOriginal`, `moveTranscript`, `@Published transcriptEdits` counter (panel + subtitle overlay reload on it)
+- [x] Moved-file repair carries transcripts: `Library.pathMoved` hook called from `moveTags`, wired to the journal in `FolderVideoPlayerApp`
+- [x] Retranscribe asks "Keep My Edits / Replace" (`PlayerWindow.transcribe`); batch already skips videos that have transcripts
+- [x] Tests: `Tests/test_transcript_edit.swift` + `run_transcript_edit.sh` + line in `run.sh` (all pass)
+- [x] UI: `Views/TranscriptEditorWindow.swift` — Window id `transcript-editor`, target `AppModel.transcriptEditTarget`
+- [x] UI: Export menu (panel + editor) via `TranscriptExporter` (NSSavePanel confirms overwrite)
+- [x] Menus: View ▸ Edit Transcript…; panel has Edit… and Export
+- [x] README bullet
+- [ ] Manual UI pass (couldn't automate: the user's own FolderVideoPlayer instances share the bundle id). Scratch fixture recipe: `ffmpeg -f lavfi -i testsrc=duration=30 ... demo.mp4`, seed lines with an `EvidenceStore` script under `FVP_SUPPORT`, then `open -n --env FVP_SUPPORT=<dir> build/dd/.../FolderVideoPlayer.app demo.mp4`
+- [ ] (optional) Help window mention
+
+Known limitations of P1:
+- Closing the editor window with unsaved edits does not prompt (SwiftUI `Window` has no close veto here); edits survive while the app runs only if SwiftUI keeps the view state.
+- Undo of a moved-file repair does not move the transcript back.
+
+## Priority 2 — Multi-tag selection from the sidebar
+
+Design: no new `PlayMode`. A combined playlist is a `.tag` playlist with
+`tagName == nil` and `PlaybackController.tagQuery` set, so every single-tag
+feature (look-alikes, training, bulk accept) stands aside automatically. A query
+is never saved as the session (like `.said`); Clear returns to the session.
+
+- [x] Model `Model/TagQuery.swift` (names, Any/All, toggle, case-insensitive, prune, label, pure `combine`)
+- [x] `Library.paths(matching:)` — each name via `pathsCarrying` (tags, stars, people, file facts; hidden excluded)
+- [x] Controller: `tagQuery`, `toggleQueryName`, `setQueryMatch`, `clearTagQuery`, `tagMembers()` (prunes vanished names) used by `refreshAfterTagRepair` / `refreshMembership` / `refreshAfterFileChanges`; `start()`, `playTag`, `closePlaylist` (profile switch) clear it; `saveSession` skips it; `sessionLabel` uses `query.label`
+- [x] Sidebar (`LibrarySidebar` in `Views/PlayerWindow.swift`): `pick()` reads ⌘ at click; `row(... queried:)` tick + outline + `.isSelected` trait; "Add to/Remove from Combined Playlist" in every row's context menu (keyboard/VoiceOver path); `queryBand` with chips, Any/All picker, count, Clear
+- [x] Tests `Tests/test_tag_query.swift` + runner + `run.sh` line (all pass)
+- [x] README bullet
+- [ ] Manual UI pass
+- [ ] Later (backlog): Exclude action; save query as Smart Collection (see P4)
+
+## Priority 3 — Share and prepare video
+
+Design: FFmpeg is NOT bundled (clean-start Macs lack it), so copies are made
+with `AVAssetExportSession` for AVFoundation-readable sources (passthrough =
+remux, or 1080/720/540 presets); FFmpeg (`PlayableCopy.findTools`) only for
+MKV/AVI/WebM/FLV, else the plan says why. ZIP is `/usr/bin/zip -0` (stored)
+over a staging dir of symlinks.
+
+- [x] Model `Model/SharePrep.swift` (pure): `SharePreset`, `ShareSource`, `ShareEngine`, `SharePrep.engine(...)` (remux preferred when it satisfies the preset), FFmpeg args (trim via `-ss`/`-t`), `suggestedName`, `uniqueName`, `packageEntries`, `estimatedBytes`, `hasRoom`
+- [x] Model `Model/ShareExport.swift`: `inspect`, `make` (partial file → atomic publish, cleanup on cancel/failure, free-space check, refuse existing unless `replacing`), `zip`
+- [x] Tests `Tests/test_share_prep.swift` (+ runner, `run.sh`): plan checks always; real remux/trim/720p/MKV→MP4/cancel/collision/ZIP + original SHA-256 unchanged when FFmpeg is installed (38 checks pass)
+- [x] UI `Views/ShareSupport.swift`: `SharePresenter` (NSSharingServicePicker at pointer; reports service refusals via `app.say`)
+- [x] UI `Views/SharePrepareWindow.swift` (Window id `share-prepare`, targets `AppModel.shareTargets`): quality presets with per-file engine summary + estimate, trim (single video; playhead buttons), transcript sidecar .srt/.vtt (trim-shifted), ZIP package (incl. "files as they are"), progress + Cancel, results with Show in Finder / Share…; hidden+locked shows a placeholder
+- [x] Entry points: playlist row menu "Share…" / "Prepare for Sharing…"; Edit menu (beside Reveal/Trash) "Share…" / "Prepare for Sharing…"
+- [x] README bullet
+- [ ] Manual UI pass
+- [ ] Later: burn captions into the copy
+
+## Priority 4 — Smart Collections
+
+Design: only the question is stored (`profiles/<name>.fvpprofile/smart-collections.json`,
+`SmartCollectionFile` v1). Rules are a flat struct (`type`, `op`, `text`, `stars`,
+`from`, `to`) so an unknown kind from a newer build loads, is kept on save,
+matches nothing and is described. Universe = every video the profile KNOWS
+(tags, facts, watch log, resume positions, analysis records, transcripts) —
+there is no catalogue of every file on every share; the editor says so.
+Stat-needing rules (date added, file state) are prefetched off the main thread
+(`Library.warmStats`; existence cached 2 min).
+
+- [x] Model `Model/SmartCollections.swift`: `SmartCollection`, `SmartRule` (+ `Kind`, `Op`, `fresh`, `values`), `SmartAnalysis`/`SmartVerdict`/`SmartFileState`, `SmartContext`, `SmartEvaluator.members/holds/problem`, `SmartCollectionFile`
+- [x] `Library.knownVideoKeys`, `recordedDate(key:)` (from Date facts), `smartContext(adding:)`
+- [x] Store `Model/SmartCollectionStore.swift` (MainActor): load per profile, save/duplicate/rename/delete, `problems(in:)`, debounced `refresh()` on library/analysis/transcript changes, `evaluate(_:)` for editor previews
+- [x] Controller: `smartCollection`, `playCollection`, `collectionChanged`, members via `collectionMembers` closure; cleared by `start`/`playTag`/query/`closePlaylist`; not saved as session
+- [x] App wiring: `@StateObject smart`, env object, attach, profile-change reload, `Window("Smart Collection", id: "smart-collection")`, `AppModel.smartEditTarget/smartEditSeed`
+- [x] Sidebar "Smart Collections" section (counts, context menu Play/Edit/Duplicate/Rename/Delete, New…); combined-playlist band gains "Save…" (query → collection)
+- [x] Editor `Views/SmartCollectionEditor.swift` (name, all/any, rule rows with kind/op/value, per-rule problem text, live match count, Delete)
+- [x] Tests `Tests/test_smart_collections.swift` (64 checks incl. watch state) + runner + `run.sh`
+- [x] README bullet
+- [ ] Manual UI pass
+
+## Priority 5 — Watch state and dashboard
+
+- [x] Model `Model/WatchLog.swift` (per profile `watch.json`, keyed by tag key): opening threshold min(30 s, 25%), completion = last min(30 s, 10%); `notePlayback` → none/refreshed/stateChanged; `mark`; `move`; `forget`; lenient load
+- [x] Library: `watch` (unpublished) + `@Published watchRevision`; loaded/saved in `setProfileInForce`, `switchProfile`, `closeProfile`, `reopenClosed`; `note(... watching:)` (previews excluded); `itemFinished` notes completion; `watchState`, `lastPlayed`, `markWatched` (unwatched clears resume point); carried by `moveTags`, dropped by `forgetPath`
+- [x] Mark Watched / Mark Unwatched in row menu (toggles by state) + Edit menu (multi-selection)
+- [x] `WatchMark` on playlist list rows (half circle = in progress, faint tick = watched; unwatched draws nothing on purpose)
+- [x] Dashboard as `Window("Library Overview", id: "overview")` (`Views/LibraryOverviewWindow.swift`, View ▸ Library Overview ⌘0): model `Model/LibraryOverview.swift` (pure `build(Input)`), cards open `PlaybackController.playList(title, paths)` (new `namedList`, never saved as session); Housekeeping buttons open Find Missing Files (`AppModel.findMovedEverywhere`) and Find Duplicates (shows recoverable bytes when a scan exists)
+- [x] Tests `Tests/test_library_overview.swift` + runner + `run.sh`
+- [x] README
+- [ ] Manual UI pass
+- [ ] Maybe later: an "Overview" row in the library sidebar; tile view (icon grid) watch mark
+- (playCount deliberately not added — no predictable definition yet)
+
+## Priority 6 — Moments, bookmarks and clip export
+
+Design: `MomentStore` (MainActor ObservableObject, per profile
+`profiles/<name>.fvpprofile/moments.json`, `MomentBook` v1) reloaded on profile
+change like the other per-profile stores; moved files carried through the
+`Library.pathMoved` hook (now calls journal + moments). Clip export REUSES
+Prepare for Sharing: `AppModel.shareTrim` + `shareTargets` → the window takes
+the range once (`takeTrim`), so remux-first, progress, cancel, atomic publish
+and collision handling are shared.
+
+- [x] Model `Model/Moments.swift`: `Moment` (start, optional end, title, note, created/modified, source manual/transcript/evidence, `problem` validation, `defaultTitle`), `momentClock`, `MomentBook` (sorted per video, upsert keeps createdAt, delete, move, forget, lenient load, save), `MomentStore` (add/update/delete/undoDelete/move, `lastDeleted`)
+- [x] App: `@StateObject moments`, env object, reload on appear + profile change, `pathMoved` carries them
+- [x] UI `Views/MomentsPanel.swift`: panel in the bottom slot (`AppModel.showMomentsPanel`, transport "Moments" button; the three panels are mutually exclusive), rows with seek, in-place title/note, range (end at playhead / clear), start at playhead, Export Clip…, Delete + Undo Delete; `MomentMarkers` ticks + range bars over the scrubber (click to seek)
+- [x] Add Moment: Playback ▸ Add Moment ⌘B (via `AppModel.addMomentNotification`) and the panel button
+- [x] "Save as Moment" on transcript lines (ranged, source transcript) and on AI evidence time chips in the tag panel (source evidence)
+- [x] Tests `Tests/test_moments.swift` + `Tests/run_moments.sh` written
+- [x] Registered in `Tests/model_sources.sh` + `Tests/run.sh`; all pass
+- [x] README
+- [ ] Manual UI pass
+
+## Priority 7 — Subtitle and audio track controls
+
+Design: embedded tracks via `AVMediaSelectionGroup` (`.audible`, `.legible`) on
+the current item — `select(_:in:)` switches without reload/seek, and
+`AVPlayerView` draws embedded subtitles in window and full screen alike.
+Subtitle files and the transcript are drawn by the existing `SubtitleOverlay`,
+now driven by `PlaybackController.subtitleSource`. Per-video choices in
+UserDefaults (`subtitleChoices`, `audioChoices`, keyed by tag key — display
+preferences like `VideoRotation`). Automatic = embedded (system caption prefs)
+if the file has subtitle tracks, else first sidecar, else transcript, else none.
+NOTE: that means a file with embedded tracks no longer shows the transcript by
+default — pick "Transcript" in the menu.
+
+- [x] Model `Model/MediaTracks.swift`: `SubtitleCue`, `TrackOption`, `SubtitleChoice` (+ stored form), `SubtitleSource`, `SubtitleFile` (SRT/VTT parse: BOM, CRLF, CP1252, markup/entities, NOTE/STYLE/REGION, strict timing with line numbers; `sidecars(for:in:)` incl. `name.lang.srt`; `label`), `TrackPlan.resolve/source/cue`
+- [x] Engine: `PlayerEngine` protocol gains track API; `AVPlayerEngine` loads groups per item (forced-only variants hidden), `selectAudio`, `selectEmbeddedSubtitle`, `selectSubtitlesAutomatically`, `onTracks`. Verified with a scratch probe on an ffmpeg-made MP4 (2 audio + 2 mov_text tracks).
+- [x] Controller: `prepareTracks(for:)` after every `engine.load` (folder listing off-main), `applyTracks()`, `loadSidecar` (off-main parse; failure → `trackNote`, playback unaffected), `chooseSubtitles`, `chooseAudio`, `hasTranscript` closure, `transcriptAvailabilityChanged`
+- [x] UI: `TrackMenu` in the transport bar (Off/Automatic/embedded/sidecars/Transcript/Choose Subtitle File…; Audio section explains when there is only one; note shown); overlay switches source
+- [x] Tests `Tests/test_media_tracks.swift` + runner + `run.sh` (incl. exporter round trip)
+- [x] README
+- [ ] Manual UI pass
+
+## Priority 8 — Opt-in background maintenance
+
+Design: per profile `profiles/<name>.fvpprofile/maintenance.json`
+(`MaintenanceFile` v1: settings, per-folder snapshot `relpath → size`,
+lastScan, queue, failed). Only PINNED folders can be opted in. Default work is
+posters + dates only; AI kinds are opt-in and skip themselves when the model
+is not installed. Classification goes through `AppModel.classify` → the job
+ledger; tag suggestions and transcripts go through their existing
+notifications (`suggestTagsNotification`, `transcribeNotification`) and the
+worker waits on `suggestingPath` / `transcribingPath`. A move the scan is sure
+of (unique name+size) calls `library.moveTags` (which also carries facts,
+transcript, moments, watch state).
+
+- [x] Model `Model/Maintenance.swift`: `MaintenanceWork`, `MaintenanceSettings` (folders, work, pauseWhilePlaying, pauseOnBattery, schedule anytime/overnight, concurrency 1–4, rescanMinutes), `MaintenanceItem`, `MaintenanceFile`, `MaintenancePlanner` (diff with safe moves, enqueue skipping hidden + widening, drop, move, pauseReason, afterFailure (3 attempts), isDue, snapshot)
+- [x] Worker `Playback/MaintenanceWorker.swift` (app target only — uses AppModel): loop (pause → scan due folders with a 60 s unreachable timeout, off-main walk → work queue), light work in parallel up to `concurrency`, AI work one video at a time, `.later` when the engine is busy with something asked for, missing/hidden files dropped, IOKit battery check, status line text
+- [x] App: `AppModel.maintenance`, attached on appear, reloaded on profile change
+- [x] UI: Settings tab "Background" (`MaintenanceSettingsView`, `SettingsTab.background`), pinned-folder context menu toggle (Unpin also opts out), `MaintenanceStatusLine` under the library sidebar (click → settings)
+- [x] Tests `Tests/test_maintenance.swift` + runner + `run.sh`
+- [x] README
+- [ ] Exercise end-to-end in the app (opt in a scratch folder, add/move/remove files, watch the status line)
+
+## Priority 9 — Direct playback of additional formats
+
+**KIV (kept in view) — the user put this on hold on 2026-09-27. Do not start it without asking.**
+
+Not started: needs a decision on the second engine (VLCKit vs libmpv —
+licensing (LGPL/GPL), binary size, signing/notarisation, SwiftPM vs vendored
+framework). The `PlayerEngine` protocol now also carries the track API (P7),
+so a second engine must implement `audioOptions`, `subtitleOptions`,
+`onTracks`, `selectAudio`, `selectEmbeddedSubtitle`,
+`selectSubtitlesAutomatically`. Views still reach `AVPlayerEngine` concretely
+in places (`PlaybackController.engine`, `VideoSurface(player:)`,
+`TrackMenu(engine:)`) — those need an engine-agnostic seam first.
+
+## Known gaps / decisions to revisit
+
+- Share sync (`SharedExtras.syncTranscripts`) only sends a transcript for a
+  video the share does not yet have ("transcripts only accumulate"), so a
+  correction made after the first publish does not propagate to other Macs.
+  Left unchanged in P1; changing it needs a merge rule.
+
+## Session log
+
+- 2026-09-27 — Session 1: surveyed codebase, baseline Debug build OK, wrote this plan. Implemented P1–P8 (+ the My Tags / File Facts label refinement). Final full `sh Tests/run.sh`: 2,782 checks, exit 0 (model-dependent stages skip without downloaded models). App Debug build succeeds with no new warnings. NOT done: any hand-driven UI pass (the user's own FolderVideoPlayer instances share the bundle id; a dev copy can be built with `PRODUCT_BUNDLE_IDENTIFIER=com.tangrick.foldervideoplayer.dev` into `build/dd-dev`, but screen control was declined), P9 (awaiting an engine decision). Nothing committed — all work is uncommitted in the working tree.
+
+## Next steps for whoever continues
+
+1. P9 is on hold (KIV) — skip it unless the user reopens it.
+2. Hand-test each feature in a dev build (see "Manual UI pass" items above), fixing layout issues found.
+3. Optional follow-ups listed under each priority ("Later"/"Maybe later").

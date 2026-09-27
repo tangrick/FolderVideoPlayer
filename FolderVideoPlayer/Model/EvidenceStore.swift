@@ -90,6 +90,7 @@ final class EvidenceStore: EvidenceRepository {
         }
 
         searchMode = try ensureTranscriptIndex()
+        try ensureOriginalTranscripts()
     }
 
     private func open() throws {
@@ -583,9 +584,25 @@ final class EvidenceStore: EvidenceRepository {
     /// behind would let a search return lines that no longer exist — and
     /// preparing against a missing table would fail the whole delete (the
     /// same reason the insert guards it).
+    ///
+    /// A re-run also drops the machine lines kept behind a hand-corrected
+    /// transcript: the new pass IS the new original, and a Restore that went
+    /// back past it would restore a transcript nobody asked for.
     @discardableResult
     func deleteTranscript(for path: String) throws -> Int {
         lock.lock(); defer { lock.unlock() }
+        let removed = try deleteCurrentLines(for: path)
+        let originals = try prepare("DELETE FROM transcript_original WHERE profile = ? AND path = ?")
+        defer { sqlite3_finalize(originals) }
+        bindText(originals, 1, profile)
+        bindText(originals, 2, path)
+        try step(originals)
+        return removed
+    }
+
+    /// The current lines for one video and their search rows. Caller holds the
+    /// lock.
+    private func deleteCurrentLines(for path: String) throws -> Int {
         if searchMode == .fts5 {
             let index = try prepare("DELETE FROM transcript_fts WHERE rowid IN"
                 + " (SELECT rowid FROM transcript WHERE profile = ? AND path = ?)")
@@ -610,45 +627,228 @@ final class EvidenceStore: EvidenceRepository {
         lock.lock(); defer { lock.unlock() }
         try exec("BEGIN IMMEDIATE")
         do {
-            let statement = try prepare("INSERT INTO transcript"
-                + " (profile, path, start_s, end_s, text, language, source) VALUES (?,?,?,?,?,?,?)")
-            defer { sqlite3_finalize(statement) }
-            // The index is only prepared when this store HAS one: preparing it
-            // against a missing table would fail the whole write.
-            var index: OpaquePointer?
-            if searchMode == .fts5 {
-                index = try prepare("INSERT INTO transcript_fts(rowid, text) VALUES (?, ?)")
-            }
-            defer { if index != nil { sqlite3_finalize(index) } }
-
-            var written = 0
-            for line in lines {
-                bindText(statement, 1, profile)
-                bindText(statement, 2, path)
-                sqlite3_bind_double(statement, 3, line.start)
-                sqlite3_bind_double(statement, 4, line.end)
-                bindText(statement, 5, line.text)
-                bindText(statement, 6, line.language.isEmpty ? language : line.language)
-                bindText(statement, 7, line.source)
-                try step(statement)
-                let rowid = sqlite3_last_insert_rowid(db)
-                sqlite3_reset(statement)
-                sqlite3_clear_bindings(statement)
-                if index != nil {
-                    sqlite3_bind_int64(index, 1, rowid)
-                    bindText(index, 2, line.text)
-                    try step(index)
-                    sqlite3_reset(index)
-                    sqlite3_clear_bindings(index)
-                }
-                written += 1
-            }
+            let written = try writeLines(lines, path: path, language: language)
             try exec("COMMIT")
             return written
         } catch {
             try? exec("ROLLBACK")
             throw error
         }
+    }
+
+    /// Insert lines and their search rows. Caller holds the lock and the
+    /// transaction.
+    private func writeLines(_ lines: [TranscriptLine], path: String, language: String) throws -> Int {
+        let statement = try prepare("INSERT INTO transcript"
+            + " (profile, path, start_s, end_s, text, language, source) VALUES (?,?,?,?,?,?,?)")
+        defer { sqlite3_finalize(statement) }
+        // The index is only prepared when this store HAS one: preparing it
+        // against a missing table would fail the whole write.
+        var index: OpaquePointer?
+        if searchMode == .fts5 {
+            index = try prepare("INSERT INTO transcript_fts(rowid, text) VALUES (?, ?)")
+        }
+        defer { if index != nil { sqlite3_finalize(index) } }
+
+        var written = 0
+        for line in lines {
+            bindText(statement, 1, profile)
+            bindText(statement, 2, path)
+            sqlite3_bind_double(statement, 3, line.start)
+            sqlite3_bind_double(statement, 4, line.end)
+            bindText(statement, 5, line.text)
+            bindText(statement, 6, line.language.isEmpty ? language : line.language)
+            bindText(statement, 7, line.source)
+            try step(statement)
+            let rowid = sqlite3_last_insert_rowid(db)
+            sqlite3_reset(statement)
+            sqlite3_clear_bindings(statement)
+            if index != nil {
+                sqlite3_bind_int64(index, 1, rowid)
+                bindText(index, 2, line.text)
+                try step(index)
+                sqlite3_reset(index)
+                sqlite3_clear_bindings(index)
+            }
+            written += 1
+        }
+        return written
+    }
+
+    // MARK: - hand-corrected transcripts
+
+    /// Where the machine's own lines wait while a hand-corrected transcript is
+    /// the current one. Added beside schema 1 rather than as schema 2, on
+    /// purpose: an older build opening this file still sees a store it
+    /// understands (it ignores a table it never asks about) instead of refusing
+    /// it as newer and losing every transcript it could have read.
+    ///
+    /// The `transcript` table stays the CURRENT revision, corrected or not, so
+    /// search, the subtitle overlay and the share sync read corrections without
+    /// knowing corrections exist. A row here for a video means "this video's
+    /// transcript has been edited, and this is what it said before".
+    private func ensureOriginalTranscripts() throws {
+        try exec("""
+            CREATE TABLE IF NOT EXISTS transcript_original (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile TEXT NOT NULL,
+                path TEXT NOT NULL,
+                start_s REAL NOT NULL,
+                end_s REAL NOT NULL,
+                text TEXT NOT NULL,
+                language TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS transcript_original_by_path
+                ON transcript_original(profile, path, start_s);
+            """)
+    }
+
+    /// Replace one video's transcript with a hand-corrected one, in one
+    /// transaction. The first time, the lines being replaced are kept as the
+    /// original; after that the original is left alone, so Restore always goes
+    /// back to what the machine heard rather than to the previous edit.
+    ///
+    /// Every line is validated before anything is written: a correction that
+    /// cannot be stored whole is not stored at all.
+    @discardableResult
+    func saveEditedTranscript(_ lines: [TranscriptLine], path: String, language: String) throws -> Int {
+        guard !lines.isEmpty else { throw EvidenceError.emptyTranscriptLine }
+        for line in lines { try line.validate() }
+        lock.lock(); defer { lock.unlock() }
+        try exec("BEGIN IMMEDIATE")
+        do {
+            if try !hasOriginal(path) {
+                let keep = try prepare("""
+                    INSERT INTO transcript_original (profile, path, start_s, end_s, text, language, source)
+                    SELECT profile, path, start_s, end_s, text, language, source FROM transcript
+                    WHERE profile = ? AND path = ? ORDER BY start_s, id
+                    """)
+                defer { sqlite3_finalize(keep) }
+                bindText(keep, 1, profile)
+                bindText(keep, 2, path)
+                try step(keep)
+            }
+            _ = try deleteCurrentLines(for: path)
+            let written = try writeLines(lines, path: path, language: language)
+            try exec("COMMIT")
+            return written
+        } catch {
+            try? exec("ROLLBACK")
+            throw error
+        }
+    }
+
+    /// Whether this video's transcript has been corrected by hand.
+    func hasUserEdits(_ path: String) throws -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return try hasOriginal(path)
+    }
+
+    /// Every video with a hand-corrected transcript, in one query.
+    func editedTranscriptPaths() throws -> Set<String> {
+        lock.lock(); defer { lock.unlock() }
+        let statement = try prepare("SELECT DISTINCT path FROM transcript_original WHERE profile = ?")
+        defer { sqlite3_finalize(statement) }
+        bindText(statement, 1, profile)
+        var found = Set<String>()
+        while try step(statement) == SQLITE_ROW {
+            if let text = sqlite3_column_text(statement, 0) { found.insert(String(cString: text)) }
+        }
+        return found
+    }
+
+    /// Put the machine's lines back and forget the corrections, in one
+    /// transaction. False, changing nothing, when there were no corrections.
+    @discardableResult
+    func restoreOriginalTranscript(for path: String) throws -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard try hasOriginal(path) else { return false }
+        try exec("BEGIN IMMEDIATE")
+        do {
+            _ = try deleteCurrentLines(for: path)
+            let back = try prepare("""
+                INSERT INTO transcript (profile, path, start_s, end_s, text, language, source)
+                SELECT profile, path, start_s, end_s, text, language, source FROM transcript_original
+                WHERE profile = ? AND path = ? ORDER BY start_s, id
+                """)
+            defer { sqlite3_finalize(back) }
+            bindText(back, 1, profile)
+            bindText(back, 2, path)
+            try step(back)
+            if searchMode == .fts5 {
+                let index = try prepare("INSERT INTO transcript_fts(rowid, text)"
+                    + " SELECT id, text FROM transcript WHERE profile = ? AND path = ?")
+                defer { sqlite3_finalize(index) }
+                bindText(index, 1, profile)
+                bindText(index, 2, path)
+                try step(index)
+            }
+            let drop = try prepare("DELETE FROM transcript_original WHERE profile = ? AND path = ?")
+            defer { sqlite3_finalize(drop) }
+            bindText(drop, 1, profile)
+            bindText(drop, 2, path)
+            try step(drop)
+            try exec("COMMIT")
+            return true
+        } catch {
+            try? exec("ROLLBACK")
+            throw error
+        }
+    }
+
+    /// Re-point a video's transcript, corrections and original both, at the
+    /// file's new place — the moved-file repair. A destination that already has
+    /// a transcript keeps its own and nothing moves: two transcripts for one
+    /// file would interleave, and the one already there was made from that file.
+    @discardableResult
+    func moveTranscript(from oldPath: String, to newPath: String) throws -> Bool {
+        guard oldPath != newPath else { return false }
+        lock.lock(); defer { lock.unlock() }
+        let occupied = try prepare("SELECT 1 FROM transcript WHERE profile = ? AND path = ? LIMIT 1")
+        defer { sqlite3_finalize(occupied) }
+        bindText(occupied, 1, profile)
+        bindText(occupied, 2, newPath)
+        guard try step(occupied) != SQLITE_ROW else { return false }
+
+        try exec("BEGIN IMMEDIATE")
+        do {
+            var moved = 0
+            for table in ["transcript", "transcript_original"] {
+                let statement = try prepare("UPDATE \(table) SET path = ? WHERE profile = ? AND path = ?")
+                defer { sqlite3_finalize(statement) }
+                bindText(statement, 1, newPath)
+                bindText(statement, 2, profile)
+                bindText(statement, 3, oldPath)
+                try step(statement)
+                moved += Int(sqlite3_changes(db))
+            }
+            try exec("COMMIT")
+            return moved > 0
+        } catch {
+            try? exec("ROLLBACK")
+            throw error
+        }
+    }
+
+    /// The machine's own lines for a corrected video; empty when it has none.
+    func originalTranscript(for path: String) throws -> [TranscriptLine] {
+        lock.lock(); defer { lock.unlock() }
+        let statement = try prepare("SELECT id, path, start_s, end_s, text, language, source "
+            + "FROM transcript_original WHERE profile = ? AND path = ? ORDER BY start_s, id")
+        defer { sqlite3_finalize(statement) }
+        bindText(statement, 1, profile)
+        bindText(statement, 2, path)
+        return try lines(statement)
+    }
+
+    /// Caller holds the lock.
+    private func hasOriginal(_ path: String) throws -> Bool {
+        let statement = try prepare("SELECT 1 FROM transcript_original WHERE profile = ? AND path = ? LIMIT 1")
+        defer { sqlite3_finalize(statement) }
+        bindText(statement, 1, profile)
+        bindText(statement, 2, path)
+        return try step(statement) == SQLITE_ROW
     }
 
     /// Search the transcript. Two modes, because one does not fit both languages
