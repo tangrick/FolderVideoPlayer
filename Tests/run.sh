@@ -109,6 +109,35 @@ sh "$here/run_evidence_store.sh"
 sh "$here/run_evidence_proposal.sh"
 sh "$here/run_evidence_journal.sh"
 
+# The transcript editor and its exports: corrections kept beside the machine's
+# lines, restored on request, carried by a moved-file repair, exported alike.
+sh "$here/run_transcript_edit.sh"
+
+# The library panel's ⌘-click query: Any/All across tags, stars, people and
+# readings, hidden videos left out, renamed or deleted names pruned.
+sh "$here/run_tag_query.sh"
+
+# Share and Prepare Video: presets, names, estimates, packages; real copies and a
+# ZIP when FFmpeg is installed, with the original checked byte-for-byte after.
+sh "$here/run_share_prep.sh"
+
+# Watch state (unwatched / in progress / watched) and smart collections: every
+# rule kind, All/Any, hidden videos, profiles, and forward-compatible storage.
+sh "$here/run_smart_collections.sh"
+
+# The library overview's sections, from plain values.
+sh "$here/run_library_overview.sh"
+
+# Moments: bookmarks and ranges in a video, per profile, carried by a move.
+sh "$here/run_moments.sh"
+
+# Subtitle files and track choices: SRT/VTT parsing, discovery, and a saved
+# choice never applied to a file that lacks it.
+sh "$here/run_media_tracks.sh"
+
+# Opt-in background upkeep: scan diffs, the queue, pausing, giving up, resuming.
+sh "$here/run_maintenance.sh"
+
 # T08's first slice: a video becomes the one signal a speech model takes, with
 # nothing installed — real AAC decoded, silence left silent, no-audio answered,
 # and a time window really honoured, because a long film is read in pieces.

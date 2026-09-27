@@ -81,6 +81,23 @@ MODEL_SOURCES=(
     # verified by the real app build and by Tests/check_speech_runtime.sh.
     "$model/Speech.swift"
     "$model/SpeechPass.swift"
+    # The transcript editor's draft and the exports (added Sep'26): pure model,
+    # no SQLite of their own. Same rule: a new Model/ file lands here.
+    "$model/TranscriptEdit.swift" "$model/TranscriptExport.swift"
+    # Several library names combined into one playlist (added Sep'26).
+    "$model/TagQuery.swift"
+    # Share and Prepare Video (added Sep'26): the plan, and the runner that
+    # makes copies and packages.
+    "$model/SharePrep.swift" "$model/ShareExport.swift"
+    # Watch state and smart collections (added Sep'26).
+    "$model/WatchLog.swift" "$model/SmartCollections.swift" "$model/SmartCollectionStore.swift"
+    "$model/LibraryOverview.swift"
+    # Moments (added Sep'26).
+    "$model/Moments.swift"
+    # Audio and subtitle tracks (added Sep'26).
+    "$model/MediaTracks.swift"
+    # Opt-in background upkeep (added Sep'26).
+    "$model/Maintenance.swift"
     # The hidden-videos credential and filter: no model, no frames, but the
     # library keys its hidden set by the same share-relative rule as tags.
     "$model/HiddenVideos.swift"

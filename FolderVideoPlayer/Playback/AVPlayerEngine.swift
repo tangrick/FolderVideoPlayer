@@ -15,6 +15,14 @@ final class AVPlayerEngine: NSObject, PlayerEngine, ObservableObject {
     var onTime: ((Double) -> Void)?
     var onFailed: ((String) -> Void)?
 
+    var onTracks: (() -> Void)?
+    @Published private(set) var audioOptions: [TrackOption] = []
+    @Published private(set) var subtitleOptions: [TrackOption] = []
+    @Published private(set) var selectedAudio: String?
+    @Published private(set) var selectedSubtitle: String?
+    private var audible: AVMediaSelectionGroup?
+    private var legible: AVMediaSelectionGroup?
+
     private var timeObserver: Any?
     private var watchers: Set<AnyCancellable> = []
     private var pendingStart: Double = 0
@@ -76,6 +84,7 @@ final class AVPlayerEngine: NSObject, PlayerEngine, ObservableObject {
     /// rectangle and no explanation — the thing this engine exists to avoid.
     func load(_ url: URL, startAt: Double) {
         watchers.removeAll()
+        clearTracks()
         pendingStart = startAt
         loadGeneration &+= 1
         let generation = loadGeneration
@@ -107,6 +116,7 @@ final class AVPlayerEngine: NSObject, PlayerEngine, ObservableObject {
     /// Hand the inspected item to the player and start watching it.
     private func attach(_ item: AVPlayerItem) {
         player.replaceCurrentItem(with: item)
+        loadTracks(of: item)
 
         // A resume point can only be honoured once the item knows how long it
         // is; seeking before that lands nowhere.
@@ -152,7 +162,84 @@ final class AVPlayerEngine: NSObject, PlayerEngine, ObservableObject {
         player.pause()
     }
 
+    // MARK: - tracks
+
+    private func clearTracks() {
+        audible = nil
+        legible = nil
+        audioOptions = []
+        subtitleOptions = []
+        selectedAudio = nil
+        selectedSubtitle = nil
+    }
+
+    /// Read the file's audio and subtitle groups off the main thread, then
+    /// publish them — for this item only, if another has not replaced it.
+    private func loadTracks(of item: AVPlayerItem) {
+        let asset = item.asset
+        Task { [weak self] in
+            let audible = try? await asset.loadMediaSelectionGroup(for: .audible)
+            let legible = try? await asset.loadMediaSelectionGroup(for: .legible)
+            guard let self, self.player.currentItem === item else { return }
+            self.audible = audible
+            self.legible = legible
+            self.audioOptions = Self.options(audible)
+            self.subtitleOptions = Self.options(legible)
+            self.readSelection()
+            self.onTracks?()
+        }
+    }
+
+    /// The group's options as a menu lists them. AVFoundation adds a "Forced"
+    /// variant beside each subtitle track (only the foreign-language lines);
+    /// those are what Automatic uses, not something to pick, so they are left
+    /// out — ids stay the option's index in the group either way.
+    private static func options(_ group: AVMediaSelectionGroup?) -> [TrackOption] {
+        guard let group else { return [] }
+        return group.options.enumerated().compactMap { i, option in
+            if option.hasMediaCharacteristic(.containsOnlyForcedSubtitles) { return nil }
+            return TrackOption(id: String(i), title: option.displayName,
+                               language: option.extendedLanguageTag ?? option.locale?.identifier)
+        }
+    }
+
+    private func readSelection() {
+        guard let item = player.currentItem else { return }
+        let selection = item.currentMediaSelection
+        func id(_ group: AVMediaSelectionGroup?) -> String? {
+            guard let group, let chosen = selection.selectedMediaOption(in: group),
+                  let i = group.options.firstIndex(of: chosen) else { return nil }
+            return String(i)
+        }
+        selectedAudio = id(audible)
+        selectedSubtitle = id(legible)
+    }
+
+    func selectAudio(_ id: String) {
+        guard let group = audible, let i = Int(id), group.options.indices.contains(i),
+              let item = player.currentItem else { return }
+        item.select(group.options[i], in: group)
+        readSelection()
+    }
+
+    func selectEmbeddedSubtitle(_ id: String?) {
+        guard let group = legible, let item = player.currentItem else { return }
+        if let id, let i = Int(id), group.options.indices.contains(i) {
+            item.select(group.options[i], in: group)
+        } else if group.allowsEmptySelection {
+            item.select(nil, in: group)
+        }
+        readSelection()
+    }
+
+    func selectSubtitlesAutomatically() {
+        guard let group = legible, let item = player.currentItem else { return }
+        item.selectMediaOptionAutomatically(in: group)
+        readSelection()
+    }
+
     func stop() {
+        clearTracks()
         wantsPlaying = false
         player.pause()
         // Bumped so a load still being inspected cannot hand its item over

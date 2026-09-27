@@ -52,6 +52,7 @@ struct PlayerScreen: View {
     @EnvironmentObject var suggestions: SuggestionStore
     @EnvironmentObject var rotation: VideoRotation
     @EnvironmentObject var journal: EvidenceJournal
+    @EnvironmentObject var moments: MomentStore
 
     /// The library sidebar is there whenever it is asked for — and always
     /// when there is nothing playing, because then it is the only thing to do.
@@ -264,6 +265,17 @@ struct PlayerScreen: View {
         // Transcribing: asked for from the video's row in the tag panel, never
         // on its own. Cancel reaches the model through the flag on the
         // transcriber, so it stops at the next window instead of at the end.
+        // A transcript made or corrected can change what Automatic shows.
+        .onChange(of: app.transcriptLines) { _, _ in playback.transcriptAvailabilityChanged() }
+        .onChange(of: journal.transcriptEdits) { _, _ in playback.transcriptAvailabilityChanged() }
+        .onAppear {
+            playback.hasTranscript = { [weak journal] path in journal?.transcribedPaths.contains(path) ?? false }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AppModel.addMomentNotification)) { _ in
+            guard library.profileOpen, let path = playback.currentPath else { return }
+            moments.add(path: path, at: playback.position)
+            app.jobNotice = "Moment added at \(momentClock(playback.position))."
+        }
         .onReceive(NotificationCenter.default.publisher(for: AppModel.transcribeNotification)) { note in
             guard let path = note.object as? String else { return }
             Task { await transcribe(path) }
@@ -383,6 +395,17 @@ struct PlayerScreen: View {
     private func transcribe(_ path: String) async {
         guard app.transcribingPath == nil, app.transcribeBatch == nil,
               let pack = speechModels() else { return }
+        // A transcript corrected by hand is the user's work: a new pass would
+        // replace it, so ask first, and keep it unless they say otherwise.
+        if journal.hasUserEdits(path) {
+            let alert = NSAlert()
+            alert.messageText = "Replace your corrected transcript?"
+            alert.informativeText = "This video's transcript has been edited by hand. Transcribing again replaces your corrections, and the original transcription, with a new one."
+            alert.addButton(withTitle: "Keep My Edits")
+            alert.addButton(withTitle: "Replace")
+            alert.buttons[1].hasDestructiveAction = true
+            guard alert.runModal() == .alertSecondButtonReturn else { return }
+        }
         let transcriber = WhisperKitTranscriber(modelsRoot: pack.folder, source: pack.adapter)
         app.transcribing = transcriber
         defer { app.transcribing = nil }
@@ -604,7 +627,8 @@ struct PlayerScreen: View {
                     .onTapGesture(count: 2) { app.toggleFullScreen() }
                     .onTapGesture { playback.togglePlayPause() }
                 if library.profileOpen {
-                    SubtitleOverlay(path: playback.currentPath, head: playback.head)
+                    SubtitleOverlay(path: playback.currentPath, head: playback.head,
+                                    source: playback.subtitleSource, cues: playback.sidecarCues)
                 }
             }
             if let offer = playback.conversionOffer, offer.path == playback.currentPath {
@@ -653,6 +677,14 @@ struct PlayerScreen: View {
                     closedProfileNotice
                 }
             }
+            if app.showMomentsPanel {
+                Divider()
+                if library.profileOpen {
+                    MomentsPanel(playback: playback)
+                } else {
+                    closedProfileNotice
+                }
+            }
             if app.showTranscriptPanel {
                 Divider()
                 // Transcripts live in the profile's store, so with no profile
@@ -678,6 +710,7 @@ struct PlayerScreen: View {
         .frame(height: panelHeight)
         .animation(.easeInOut(duration: 0.2), value: app.showTagPanel)
         .animation(.easeInOut(duration: 0.2), value: app.showTranscriptPanel)
+        .animation(.easeInOut(duration: 0.2), value: app.showMomentsPanel)
     }
 
     /// What the tag panel's place says when no profile is open. The player
@@ -813,6 +846,7 @@ struct LibrarySidebar: View {
     @EnvironmentObject var library: Library
     @EnvironmentObject var app: AppModel
     @EnvironmentObject var faceStore: FaceStore
+    @EnvironmentObject var smart: SmartCollectionStore
     @Environment(\.openWindow) private var openWindow
 
     @State private var counts: [String: Int] = [:]
@@ -823,6 +857,7 @@ struct LibrarySidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            queryBand
             ScrollView {
                 // The order NEVER changes, and the three navigation sections
                 // are always drawn — Pinned and Recent used to vanish when
@@ -838,6 +873,7 @@ struct LibrarySidebar: View {
                     open
                     pinned
                     recent
+                    smartCollections
                     stars
                     // Headings first: a filed tag is easier to find under its
                     // heading than in a long alphabetical run, and the run is
@@ -865,6 +901,7 @@ struct LibrarySidebar: View {
                     await faceStore.reload()
                 }
             }
+            MaintenanceStatusLine(worker: app.maintenance)
             Divider()
             HStack {
                 Button {
@@ -1059,7 +1096,13 @@ struct LibrarySidebar: View {
                         app.findMoved(inFolder: root)
                         openWindow(id: "moved")
                     }
-                    Button("Unpin") { library.unpin(folder: root) }
+                    Toggle("Keep Up to Date in Background", isOn: Binding(
+                        get: { app.maintenance.isMaintained(root) },
+                        set: { app.maintenance.setMaintained(root, $0) }))
+                    Button("Unpin") {
+                        app.maintenance.setMaintained(root, false)
+                        library.unpin(folder: root)
+                    }
                 }
                 .onDrag {
                     NSItemProvider(object: String(index) as NSString)
@@ -1171,10 +1214,11 @@ struct LibrarySidebar: View {
                 let count = library.countRated(stars)
                 if count > 0 {
                     row("\(String(repeating: "★", count: stars)) (\(count))",
-                        help: "Play every video rated \(stars) stars",
+                        help: "Play every video rated \(stars) stars. ⌘-click to combine with other rows.",
                         current: playback.mode == .tag
-                            && playback.tagName?.caseInsensitiveCompare(starTag(stars)) == .orderedSame) {
-                        playback.playTag(starTag(stars))
+                            && playback.tagName?.caseInsensitiveCompare(starTag(stars)) == .orderedSame,
+                        queried: queried(starTag(stars))) {
+                        pick(starTag(stars))
                     }
                     .contextMenu {
                         // Stars are tags, so a star row offers what any tag
@@ -1188,11 +1232,71 @@ struct LibrarySidebar: View {
         }
     }
 
+    // MARK: - smart collections
+
+    /// Saved library questions, each with how many videos answer it now.
+    /// Always drawn, like the navigation sections above, so it does not
+    /// appear and vanish; empty, it says how to make one.
+    @State private var smartOpen = true
+
+    private var smartCollections: some View {
+        section("Smart Collections", count: smart.collections.count, open: $smartOpen,
+                empty: "Save a question — “unwatched videos of Anna” — and it keeps itself up to date.") {
+            ForEach(smart.collections) { collection in
+                let count = smart.members[collection.id].map { "\($0.count)" } ?? "…"
+                row("\(collection.name) (\(count))",
+                    icon: "gearshape.2",
+                    help: smart.problems(in: collection).isEmpty
+                        ? "Play every video matching “\(collection.name)”"
+                        : "A rule in “\(collection.name)” needs attention — right-click to edit it",
+                    current: playback.smartCollection?.id == collection.id) {
+                    playback.playCollection(collection.id, name: collection.name)
+                }
+                .contextMenu {
+                    Button("Play “\(collection.name)”") {
+                        playback.playCollection(collection.id, name: collection.name)
+                    }
+                    Divider()
+                    Button("Edit…") { editSmart(collection.id) }
+                    Button("Duplicate") { _ = smart.duplicate(collection.id) }
+                    Button("Rename…") {
+                        guard let name = ask("Rename smart collection", "New name:", collection.name) else { return }
+                        smart.rename(collection.id, to: name)
+                        playback.collectionChanged(collection.id, name: smart.collection(collection.id)?.name)
+                    }
+                    Divider()
+                    Button("Delete…") {
+                        let alert = NSAlert()
+                        alert.messageText = "Delete “\(collection.name)”?"
+                        alert.informativeText = "Only the collection is deleted. Its videos, their tags and files are untouched."
+                        alert.addButton(withTitle: "Delete")
+                        alert.addButton(withTitle: "Cancel")
+                        alert.buttons[0].hasDestructiveAction = true
+                        guard alert.runModal() == .alertFirstButtonReturn else { return }
+                        smart.delete(collection.id)
+                        playback.collectionChanged(collection.id, name: nil)
+                    }
+                }
+            }
+            row("New Smart Collection…", icon: "plus",
+                help: "Save a question about the library that keeps itself up to date") {
+                editSmart(nil)
+            }
+        }
+    }
+
+    private func editSmart(_ id: UUID?, seed: SmartCollection? = nil) {
+        app.smartEditSeed = seed
+        app.smartEditTarget = id
+        openWindow(id: "smart-collection")
+    }
+
     /// The commands every tag row offers, wherever it appears. One definition
     /// so a tag in Countries can do exactly what a tag in Tags can do.
     @ViewBuilder
     private func tagMenu(_ tag: String) -> some View {
         Button("Play “\(tag)”") { playback.playTag(tag) }
+        combineButton(tag)
         Divider()
         Button("Train Tags from “\(tag)”") { app.trainTag(tag) }
         // Turn a tag into a real folder: its videos are gathered
@@ -1263,8 +1367,10 @@ struct LibrarySidebar: View {
                 ForEach(tags, id: \.self) { tag in
                     row("\(tag) (\(library.count(anyName: tag)))",
                         icon: icon,
-                        current: playback.mode == .tag && playback.tagName == tag) {
-                        playback.playTag(tag)
+                        help: "Play “\(tag)”. ⌘-click to combine with other rows.",
+                        current: playback.mode == .tag && playback.tagName == tag,
+                        queried: queried(tag)) {
+                        pick(tag)
                     }
                     .contextMenu { menu(tag) }
                 }
@@ -1281,12 +1387,14 @@ struct LibrarySidebar: View {
     }
 
     private var tagList: some View {
-        section("Tags") {
+        section("My Tags") {
             ForEach(tags, id: \.self) { tag in
                 row("\(tag) (\(library.count(of: tag)))",
                     icon: "tag",
-                    current: playback.mode == .tag && playback.tagName == tag) {
-                    playback.playTag(tag)
+                    help: "Play “\(tag)”. ⌘-click to combine with other rows.",
+                    current: playback.mode == .tag && playback.tagName == tag,
+                    queried: queried(tag)) {
+                    pick(tag)
                 }
                 .contextMenu { tagMenu(tag) }
             }
@@ -1304,6 +1412,14 @@ struct LibrarySidebar: View {
     /// the file any less 1080p. Correcting one means correcting the file.
     @ViewBuilder
     private var fileFactLists: some View {
+        if !fileFacts.isEmpty {
+            Text("File Facts")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6)
+                .help("Read from each file's own metadata — dates, camera, resolution, place. "
+                      + "They can be played and combined like tags, but not trained on or removed by hand.")
+        }
         ForEach(fileFacts, id: \.kind) { group in
             tagGroup(group.kind, tags: group.names,
                      icon: icon(forHeading: group.kind),
@@ -1317,6 +1433,7 @@ struct LibrarySidebar: View {
     @ViewBuilder
     private func factMenu(_ name: String) -> some View {
         Button("Play “\(name)”") { playback.playTag(name) }
+        combineButton(name)
         Divider()
         Button("Gather into Folder…") { app.gatherTag(name) }
         Divider()
@@ -1350,15 +1467,17 @@ struct LibrarySidebar: View {
                 row("\(person.name) (\(library.count(of: person.name)))",
                     icon: "person.crop.circle",
                     image: person.representative.flatMap(FaceStore.thumbnail),
-                    help: "Play every video with \(person.name) in it",
-                    current: playback.mode == .tag && playback.tagName == person.name) {
-                    playback.playTag(person.name)
+                    help: "Play every video with \(person.name) in it. ⌘-click to combine with other rows.",
+                    current: playback.mode == .tag && playback.tagName == person.name,
+                    queried: queried(person.name)) {
+                    pick(person.name)
                 }
                 // A person IS a tag, so the same commands apply. Removing
                 // takes the name off the videos; the person and their learned
                 // face stay in the People window, so it can be applied again.
                 .contextMenu {
                     Button("Play “\(person.name)”") { playback.playTag(person.name) }
+                    combineButton(person.name)
                     Divider()
                     Button("Train Tags from “\(person.name)”") { app.trainTag(person.name) }
                     Button("Gather into Folder…") { app.gatherTag(person.name) }
@@ -1392,7 +1511,8 @@ struct LibrarySidebar: View {
     @ViewBuilder
     private func row(_ title: String, icon: String? = nil, image: Image? = nil,
                      help: String? = nil,
-                     current: Bool = false, action: @escaping () -> Void) -> some View {
+                     current: Bool = false, queried: Bool = false,
+                     action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 6) {
                 // The icon slot exists only when there is something to put in
@@ -1415,17 +1535,100 @@ struct LibrarySidebar: View {
                 Text(title)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .fontWeight(current ? .semibold : .regular)
+                    .fontWeight(current || queried ? .semibold : .regular)
                 Spacer(minLength: 0)
+                // In the combined playlist: a tick, not the highlight a
+                // current row gets, so "picked" and "playing" read apart.
+                if queried {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(Color.accentColor)
+                        .accessibilityHidden(true)
+                }
             }
             .contentShape(.rect)
             .padding(.vertical, 3)
             .padding(.horizontal, 6)
             .background(current ? Color.accentColor.opacity(0.15) : .clear,
                         in: .rect(cornerRadius: 5))
+            .overlay {
+                if queried {
+                    RoundedRectangle(cornerRadius: 5)
+                        .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 1)
+                }
+            }
         }
         .buttonStyle(.plain)
         .help(help ?? title)
+        .accessibilityAddTraits(queried ? .isSelected : [])
+    }
+
+    // MARK: - several rows at once
+
+    /// A row click: open the one row, or — with ⌘ held — add it to (or take it
+    /// out of) the combined playlist. The modifier is read at the click, the
+    /// way Finder reads it, so a plain click keeps its old meaning exactly.
+    private func pick(_ name: String) {
+        if NSEvent.modifierFlags.contains(.command) {
+            playback.toggleQueryName(name)
+        } else {
+            playback.playTag(name)
+        }
+    }
+
+    private func queried(_ name: String) -> Bool {
+        playback.tagQuery?.contains(name) ?? false
+    }
+
+    /// The same as ⌘-click, reachable from the keyboard and VoiceOver.
+    @ViewBuilder
+    private func combineButton(_ name: String) -> some View {
+        Button(queried(name) ? "Remove from Combined Playlist" : "Add to Combined Playlist") {
+            playback.toggleQueryName(name)
+        }
+    }
+
+    /// The combined playlist's picks, as chips that can each be taken out, how
+    /// they combine, and the way back to one tag at a time.
+    @ViewBuilder
+    private var queryBand: some View {
+        if let query = playback.tagQuery {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text("Combined Playlist")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    Button("Save…") {
+                        let rules = query.names.map { SmartRule(kind: .tag, op: .includes, text: $0) }
+                        editSmart(nil, seed: SmartCollection(name: smart.uniqueName(query.label),
+                                                             match: query.match == .all ? .all : .any,
+                                                             rules: rules))
+                    }
+                    .controlSize(.small)
+                    .help("Save these picks as a smart collection that keeps itself up to date")
+                    Button("Clear") { playback.clearTagQuery() }
+                        .controlSize(.small)
+                        .help("Stop combining and go back to the folder or tag you had open")
+                }
+                Picker("Match", selection: Binding(get: { query.match },
+                                                   set: { playback.setQueryMatch($0) })) {
+                    ForEach(TagQuery.Match.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .help("Any: videos with at least one of these. All: only videos with every one.")
+                .accessibilityLabel("Match any or all of the picked rows")
+                FlowChips(names: query.names) { playback.toggleQueryName($0) }
+                Text("\(playback.playlist.count) video\(playback.playlist.count == 1 ? "" : "s") · ⌘-click rows to add or remove")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(8)
+            .background(Color.accentColor.opacity(0.08), in: .rect(cornerRadius: 8))
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
+        }
     }
 
     /// A plain section: a heading and its rows. Used by People, which is
@@ -1561,5 +1764,72 @@ private struct ConversionNotice: View {
         .padding(12)
         .background(.thinMaterial, in: .rect(cornerRadius: 8))
         .padding(.horizontal, 24)
+    }
+}
+
+/// Removable chips that wrap onto as many lines as they need.
+private struct FlowChips: View {
+    let names: [String]
+    let remove: (String) -> Void
+
+    var body: some View {
+        ChipFlow(spacing: 4) {
+            ForEach(names, id: \.self) { name in
+                Button { remove(name) } label: {
+                    HStack(spacing: 3) {
+                        Text(name).lineLimit(1)
+                        Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                    }
+                    .font(.caption)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Color.accentColor.opacity(0.2), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("Take “\(name)” out of the combined playlist")
+                .accessibilityLabel("Remove \(name)")
+            }
+        }
+    }
+}
+
+/// What background upkeep is doing, in one line under the library — only while
+/// some folder is kept up to date.
+private struct MaintenanceStatusLine: View {
+    @ObservedObject var worker: MaintenanceWorker
+    @Environment(\.openSettings) private var openSettings
+    @EnvironmentObject var app: AppModel
+
+    var body: some View {
+        if worker.status != .off {
+            Divider()
+            Button {
+                app.settingsTab = .background
+                openSettings()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: icon).foregroundStyle(.secondary)
+                    Text(worker.status.line)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .help("Background upkeep — click for its settings")
+        }
+    }
+
+    private var icon: String {
+        switch worker.status {
+        case .paused: return "pause.circle"
+        case .scanning, .working: return "arrow.triangle.2.circlepath"
+        default: return "checkmark.circle"
+        }
     }
 }

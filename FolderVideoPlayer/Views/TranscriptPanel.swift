@@ -13,10 +13,13 @@ import SwiftUI
 struct TranscriptPanel: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var journal: EvidenceJournal
+    @EnvironmentObject private var moments: MomentStore
+    @Environment(\.openWindow) private var openWindow
     let playback: PlaybackController
 
     @State private var typed = ""
     @State private var lines: [TranscriptLine] = []
+    @State private var edited = false
 
     private var path: String? { playback.currentPath }
     private var query: String { typed.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -44,6 +47,7 @@ struct TranscriptPanel: View {
         .padding(.horizontal, 14)
         .task(id: path) { reload() }
         .onChange(of: app.transcriptLines) { _, _ in reload() }
+        .onChange(of: journal.transcriptEdits) { _, _ in reload() }
     }
 
     private var header: some View {
@@ -58,9 +62,10 @@ struct TranscriptPanel: View {
                     .font(.callout).monospacedDigit()
                     .foregroundStyle(.secondary)
             } else if !lines.isEmpty {
-                Text("\(lines.count) lines")
+                Text(edited ? "\(lines.count) lines · corrected" : "\(lines.count) lines")
                     .font(.callout).monospacedDigit()
                     .foregroundStyle(.secondary)
+                    .help(edited ? "This transcript has been corrected by hand" : "")
             }
             // Transcribing is never automatic — 646 MB of model and minutes of
             // compute should not start because a video was double-clicked — so
@@ -75,6 +80,25 @@ struct TranscriptPanel: View {
                     .controlSize(.small)
                     .help("Stop transcribing. Nothing is written for half a transcript.")
                 } else {
+                    if !lines.isEmpty {
+                        Button("Edit…") {
+                            app.transcriptEditTarget = path
+                            openWindow(id: "transcript-editor")
+                        }
+                        .controlSize(.small)
+                        .help("Correct the words and times, split or merge lines, and export")
+                        Menu("Export") {
+                            ForEach(TranscriptExport.Format.allCases) { format in
+                                Button(format.label) {
+                                    TranscriptExporter.export(path: path, format: format,
+                                                              journal: journal, app: app)
+                                }
+                            }
+                        }
+                        .controlSize(.small)
+                        .fixedSize()
+                        .help("Save this transcript as subtitles, captions or text")
+                    }
                     Button(lines.isEmpty ? "Transcribe" : "Transcribe Again") {
                         NotificationCenter.default.post(
                             name: AppModel.transcribeNotification, object: path)
@@ -140,6 +164,14 @@ struct TranscriptPanel: View {
         }
         .buttonStyle(.plain)
         .help("Play from \(Self.clock(line.start))")
+        .contextMenu {
+            Button("Save as Moment") {
+                guard let path else { return }
+                let title = line.text.count > 60 ? String(line.text.prefix(60)) + "…" : line.text
+                moments.add(path: path, at: line.start, end: line.end > line.start ? line.end : nil,
+                            title: title, source: .transcript)
+            }
+        }
     }
 
     private func isSpeaking(_ line: TranscriptLine) -> Bool {
@@ -153,8 +185,9 @@ struct TranscriptPanel: View {
     }
 
     private func reload() {
-        guard let path else { lines = []; return }
+        guard let path else { lines = []; edited = false; return }
         lines = journal.transcript(for: path)
+        edited = journal.hasUserEdits(path)
         // A library search is the playlist: show this video's lines for it.
         if playback.mode == .said, let said = playback.saidQuery { typed = said }
     }
@@ -180,19 +213,28 @@ struct SubtitleOverlay: View {
     @EnvironmentObject private var journal: EvidenceJournal
     let path: String?
     @ObservedObject var head: Playhead
+    /// What the subtitle menu resolved to. Embedded tracks are drawn by the
+    /// player itself; this overlay draws a subtitle file's cues or the
+    /// transcript, and nothing otherwise.
+    var source: SubtitleSource = .transcript
+    var cues: [SubtitleCue] = []
 
     @State private var lines: [TranscriptLine] = []
 
-    private var speaking: TranscriptLine? {
+    private var speaking: String? {
         let now = head.position
-        return lines.last { $0.start <= now && now < $0.end }
+        switch source {
+        case .transcript: return lines.last { $0.start <= now && now < $0.end }?.text
+        case .sidecar: return TrackPlan.cue(at: now, in: cues)?.text
+        case .none, .embedded: return nil
+        }
     }
 
     var body: some View {
         ZStack(alignment: .bottom) {
             Color.clear
-            if let line = speaking {
-                Text(line.text)
+            if let text = speaking {
+                Text(text)
                     .font(.title3.weight(.medium))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
@@ -207,6 +249,7 @@ struct SubtitleOverlay: View {
         .allowsHitTesting(false)
         .task(id: path) { reload() }
         .onChange(of: app.transcriptLines) { _, _ in reload() }
+        .onChange(of: journal.transcriptEdits) { _, _ in reload() }
     }
 
     private func reload() {
