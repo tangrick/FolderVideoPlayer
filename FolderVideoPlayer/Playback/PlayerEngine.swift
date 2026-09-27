@@ -23,6 +23,20 @@ protocol PlayerEngine: AnyObject {
     /// 0…100, matching the volume slider and what gets saved.
     var volume: Int { get set }
 
+    // MARK: tracks
+
+    /// The file's own audio tracks and subtitle/caption tracks, once known.
+    var audioOptions: [TrackOption] { get }
+    var subtitleOptions: [TrackOption] { get }
+    /// Told when the current file's tracks have been read.
+    var onTracks: (() -> Void)? { get set }
+    /// Switch audio without restarting playback or moving the playhead.
+    func selectAudio(_ id: String)
+    /// Show one embedded subtitle track, or none (nil).
+    func selectEmbeddedSubtitle(_ id: String?)
+    /// Let the system's caption preferences choose among embedded tracks.
+    func selectSubtitlesAutomatically()
+
     func load(_ url: URL, startAt: Double)
     func play()
     func pause()

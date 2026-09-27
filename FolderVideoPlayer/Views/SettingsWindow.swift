@@ -24,7 +24,7 @@ import SwiftUI
 /// nothing about AI on it — which is what a user reported as "there is set up ai
 /// feature... i check and nothing i can do to get the feature" (2026-09-12).
 enum SettingsTab: Hashable {
-    case general, appearance, ai, privacy, library, advanced
+    case general, appearance, ai, privacy, library, background, advanced
 }
 
 struct SettingsView: View {
@@ -59,6 +59,9 @@ struct SettingsView: View {
             })
                 .tabItem { Label("Library", systemImage: "books.vertical") }
                 .tag(SettingsTab.library)
+            MaintenanceSettingsView(worker: app.maintenance, library: library, ai: app.ai)
+                .tabItem { Label("Background", systemImage: "arrow.triangle.2.circlepath") }
+                .tag(SettingsTab.background)
             AdvancedSettings(engine: engine, checking: $checking)
                 .tabItem { Label("Advanced", systemImage: "wrench.and.screwdriver") }
                 .tag(SettingsTab.advanced)
@@ -958,6 +961,100 @@ private struct AnalysisJobHistory: View {
                 }
                 .padding(.vertical, 3)
             }
+        }
+    }
+}
+
+/// Background upkeep: which folders, which work, and when it may run. Off until
+/// a folder is ticked — the default remains "only what is played is analysed".
+struct MaintenanceSettingsView: View {
+    @ObservedObject var worker: MaintenanceWorker
+    @ObservedObject var library: Library
+    let ai: AICapability
+
+    var body: some View {
+        Form {
+            Section {
+                Text("Keep chosen folders up to date without playing every video: new, moved and removed videos are noticed, and the work you allow below is done in the background, on this Mac. Hidden videos are never looked at.")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(worker.status.line).font(.callout)
+            }
+            Section("Folders") {
+                if library.pinned.isEmpty {
+                    Text("Pin a folder in the library first — right-click it and choose Pin.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(library.pinned, id: \.self) { folder in
+                    Toggle(isOn: Binding(get: { worker.isMaintained(folder) },
+                                         set: { worker.setMaintained(folder, $0) })) {
+                        VStack(alignment: .leading) {
+                            Text((folder as NSString).lastPathComponent)
+                            Text(folder).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        }
+                    }
+                }
+            }
+            Section("Work") {
+                ForEach(MaintenanceWork.allCases) { kind in
+                    let reason = unavailable(kind)
+                    Toggle(isOn: Binding(get: { worker.settings.work.contains(kind) },
+                                         set: { on in worker.update { if on { $0.work.insert(kind) } else { $0.work.remove(kind) } } })) {
+                        VStack(alignment: .leading) {
+                            Text(kind.title)
+                            if let reason { Text(reason).font(.caption).foregroundStyle(.secondary) }
+                        }
+                    }
+                }
+            }
+            Section("When") {
+                Toggle("Pause while a video is playing",
+                       isOn: Binding(get: { worker.settings.pauseWhilePlaying },
+                                     set: { v in worker.update { $0.pauseWhilePlaying = v } }))
+                Toggle("Pause on battery power",
+                       isOn: Binding(get: { worker.settings.pauseOnBattery },
+                                     set: { v in worker.update { $0.pauseOnBattery = v } }))
+                Picker("Run", selection: Binding(get: { worker.settings.schedule },
+                                                 set: { v in worker.update { $0.schedule = v } })) {
+                    ForEach(MaintenanceSettings.Schedule.allCases) { Text($0.title).tag($0) }
+                }
+                Stepper("Look for changes every \(worker.settings.rescanMinutes) minutes",
+                        value: Binding(get: { worker.settings.rescanMinutes },
+                                       set: { v in worker.update { $0.rescanMinutes = v } }),
+                        in: 5...720, step: 5)
+                Stepper("Read up to \(worker.settings.concurrency) file\(worker.settings.concurrency == 1 ? "" : "s") at a time",
+                        value: Binding(get: { worker.settings.concurrency },
+                                       set: { v in worker.update { $0.concurrency = v } }),
+                        in: 1...4)
+                Text("Keep this at 1 for a network share; AI work always takes one video at a time.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Queue") {
+                Text("\(worker.file.queue.count) video\(worker.file.queue.count == 1 ? "" : "s") waiting · \(worker.file.failed.count) set aside")
+                HStack {
+                    Button("Check for Changes Now") { worker.checkNow() }
+                        .disabled(worker.settings.folders.isEmpty)
+                    Button("Retry Set-Aside Videos") { worker.retryFailed() }
+                        .disabled(worker.file.failed.isEmpty)
+                    Button("Clear Queue") { worker.clearQueue() }
+                        .disabled(worker.file.queue.isEmpty)
+                }
+                ForEach(worker.file.failed.sorted(by: { $0.key < $1.key }).prefix(8), id: \.key) { path, why in
+                    Text("\((path as NSString).lastPathComponent): \(why)")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func unavailable(_ kind: MaintenanceWork) -> String? {
+        switch kind {
+        case .posters, .metadata: return nil
+        case .classify: return ai.works(.classify) ? nil : "Needs the Safe / NSFW model (Settings → AI)."
+        case .suggest: return ai.works(.tags) ? nil : "Needs the tag suggestion model (Settings → AI)."
+        case .transcribe:
+            return ai.works(.speech) ? "Minutes of work per film." : "Needs the speech model (Settings → AI)."
         }
     }
 }

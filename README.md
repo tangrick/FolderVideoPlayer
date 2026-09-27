@@ -14,10 +14,32 @@ no account, no cloud service, and no video, frame or tag leaves the machine.
   in it, on loop, with resume positions and a poster-frame or list playlist.
 - **Tags and favorites** — kept in their own files beside your videos; the video
   files themselves are never modified.
+- **Combined playlists** — ⌘-click several tags, star ratings, people or file
+  facts in the library panel to play every video carrying **any** of them, or
+  only those carrying **all** of them.
+- **Watch state and Library Overview** — each video is unwatched, in progress
+  or watched (Mark Watched / Unwatched by hand, for a selection too); View ▸
+  Library Overview (⌘0) lists Continue Watching, Recently Added, Recently
+  Watched, Unwatched, tag suggestions to review and unfinished analysis, each
+  one click from a playlist.
+- **Moments** — mark a point or a stretch of a video (⌘B, or from a transcript
+  line or something the AI saw), name it, add a note, jump back from the list or
+  the marks on the scrubber, and export a stretch as its own clip.
+- **Smart collections** — save a question about the library ("unwatched videos
+  of Anna rated 4★ or more", "transcripts that mention *beach*", "files that
+  need converting") and it keeps itself up to date: tags, people, file facts
+  (date, camera, quality, place), ratings,
+  recording date, date added, transcript text, watch state, analysis state,
+  Safe/NSFW verdict and file state, matched by all or any of the rules.
 - **Tag profiles** — several people can share a Mac or a NAS without writing
   over each other's tags.
 - **Duplicate finder** — finds identical copies and lets you look before
   anything is moved to the Trash.
+- **Sharing** — share a video through the macOS share menu (AirDrop, Messages,
+  Mail…), or *Prepare for Sharing* a new copy: original quality in an MP4,
+  1080p, 720p or a smaller file, optionally trimmed, with the transcript as
+  `.srt`/`.vtt` beside it or everything in one ZIP. The original is never
+  changed. MKV, AVI, WebM and FLV sources need FFmpeg installed.
 - **Hidden videos** — keep some videos out of the playlist behind a password.
 - **Optional AI features**, downloaded from inside the app (Settings → AI):
 
@@ -30,6 +52,25 @@ no account, no cloud service, and no video, frame or tag leaves the machine.
 
   The video you are watching is analysed while it plays; nothing else is
   scanned in the background, and one switch in Settings turns that off.
+
+- **Transcript editing and export** — correct a transcript's words and times
+  (split, merge, insert, delete, shift a line or the whole transcript, with undo),
+  check each line against the video, and export it as `.srt`, `.vtt`, `.txt`,
+  `.csv` or `.json`. The machine's original transcription is kept, so
+  *Restore Original* is always one click away. Edit right in the transcript
+  panel under the video (its Edit button, or View → Edit Transcript).
+
+- **Subtitles and audio tracks** — pick among a file's own subtitle and audio
+  tracks without restarting playback, show an `.srt`/`.vtt` file that sits beside
+  the video (or any one you choose), or the transcript. Choices are remembered
+  per video; a choice a file cannot honour falls back to Automatic and says so.
+
+- **Background upkeep (opt-in)** — tick a pinned folder in Settings →
+  Background (or right-click it: *Keep Up to Date in Background*) and new,
+  moved and removed videos are noticed on their own; poster frames and dates —
+  and, if you choose, the installed AI passes — are done without playing each
+  video. Pauses while you watch and on battery by default; hidden videos are
+  never looked at.
 
 Playback uses AVFoundation, so `.mp4`, `.m4v` and `.mov` play; `.mkv`, `.avi`,
 `.webm` and `.flv` are listed and taggable but not played.

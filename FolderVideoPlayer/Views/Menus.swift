@@ -413,6 +413,13 @@ struct MainMenu: Commands {
             }
                 .keyboardShortcut(.leftArrow, modifiers: [])
             Divider()
+            Button("Add Moment") {
+                NotificationCenter.default.post(name: AppModel.addMomentNotification, object: nil)
+            }
+            .keyboardShortcut("b")
+            .disabled(playback?.currentPath == nil || !library.profileOpen)
+            .help("Mark the playhead as a moment to come back to")
+            Divider()
             // 5 stars IS the Favorite tag, so this is an ordinary tag
             // playlist — the same one an Apple TV's favourites land in.
             Button("Play 5-Star Videos") { playback?.playTag(favoriteTag) }
@@ -459,6 +466,18 @@ struct MainMenu: Commands {
                 app.showPlaylist.toggle()
             }
             .keyboardShortcut("l")
+            Button("Library Overview") { openWindow(id: "overview") }
+                .keyboardShortcut("0")
+                .disabled(!library.profileOpen)
+                .help("What to continue, what is new, what is done, and what is waiting on you")
+            Button("Edit Transcript") {
+                app.showTagPanel = false
+                app.showMomentsPanel = false
+                app.showTranscriptPanel = true
+                app.transcriptEditTarget = playback?.currentPath
+            }
+            .disabled(playback?.currentPath == nil || !library.profileOpen)
+            .help("Correct and export the transcript of the video that is playing")
             Button("Show Hidden Videos…") { app.showHiddenVideos() }
                 .disabled(library.hidden.isEmpty)
                 .help(library.hidden.isEmpty
@@ -515,6 +534,25 @@ struct MainMenu: Commands {
                     paths.map { URL(fileURLWithPath: $0) })
             }
             .keyboardShortcut("r")
+            .disabled(fileTargets.isEmpty)
+
+            Button(app.selection.isEmpty ? "Mark Watched" : "Mark \(app.selection.count) Watched") {
+                library.markWatched(fileTargets, true)
+            }
+            .disabled(fileTargets.isEmpty || !library.profileOpen)
+            Button(app.selection.isEmpty ? "Mark Unwatched" : "Mark \(app.selection.count) Unwatched") {
+                library.markWatched(fileTargets, false)
+            }
+            .disabled(fileTargets.isEmpty || !library.profileOpen)
+
+            Button(app.selection.isEmpty ? "Share…" : "Share \(app.selection.count)…") {
+                SharePresenter.shared.share(fileTargets)
+            }
+            .disabled(fileTargets.isEmpty)
+            Button("Prepare for Sharing…") {
+                app.shareTargets = fileTargets
+                openWindow(id: "share-prepare")
+            }
             .disabled(fileTargets.isEmpty)
 
             Button(app.selection.isEmpty

@@ -199,6 +199,16 @@ enum Paths {
     static func profileFolder(_ profile: String) -> String { slug(profile) }
 
     /// Everything one profile owns: its own bundle under `profiles/`.
+    /// What one profile has watched (`WatchLog`).
+    static func watchFile(_ profile: String) -> String {
+        (profileDir(profile) as NSString).appendingPathComponent("watch.json")
+    }
+
+    /// One profile's saved smart collections (`SmartCollections`).
+    static func smartCollectionsFile(_ profile: String) -> String {
+        (profileDir(profile) as NSString).appendingPathComponent("smart-collections.json")
+    }
+
     static func profileDir(_ profile: String) -> String {
         ProfileBundle.dir(profile)
     }

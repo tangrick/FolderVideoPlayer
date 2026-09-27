@@ -70,6 +70,12 @@ final class Library: ObservableObject {
     // -- remembered state -------------------------------------------------
     @Published var recent: [String] = []
     @Published var progress: [String: Double] = [:]
+    /// What this profile has watched. Not published itself: a playback sample
+    /// refreshes a last-played time every minute, and that must not redraw every
+    /// view holding the library. `watchRevision` moves when a STATE changes.
+    private(set) var watch = WatchLog()
+    @Published private(set) var watchRevision = 0
+    private var watchDirty = false
     var progressSeen: [String: Double] = [:]
     @Published var session: Session?
     @Published var order: PlayOrder = .all { didSet { save() } }
@@ -410,6 +416,8 @@ final class Library: ObservableObject {
             tags = [:]
             groups = [:]
             facts = MetadataFacts()
+            watch = WatchLog()
+            watchRevision += 1
             provenance = TagProvenance.load()
             pinned = []
             recent = []
@@ -438,6 +446,8 @@ final class Library: ObservableObject {
         if clean != stored { saveTags() }
         facts = MetadataFacts.load(at: Paths.metadataFile)
         recountFacts()
+        watch = WatchLog.load(at: Paths.watchFile(name))
+        watchRevision += 1
         pinned = pinnedByProfile[slug(name)] ?? []
         // Pinned folders live in Pinned only — never also in Recent.
         recent = (recentByProfile[slug(name)] ?? []).filter { !pinned.contains($0) }
@@ -629,6 +639,7 @@ final class Library: ObservableObject {
 
     func save() {
         guard !suspendSaves else { return }
+        if watchDirty { saveWatch() }
         // Newest positions win; older ones age out.
         var kept = progress
         if kept.count > Tuning.progressMax {
@@ -965,6 +976,10 @@ final class Library: ObservableObject {
         if names.isEmpty { tags.removeValue(forKey: key) } else { tags[key] = names }
     }
 
+    /// Told (old, new absolute path) whenever `moveTags` re-points a file, so
+    /// per-video data kept outside the library can follow it.
+    var pathMoved: ((String, String) -> Void)?
+
     /// Re-point a file's library references at its new location — the
     /// moved-video scan's repair, and the carry behind FileOps' moves. Tags
     /// carry over — the stars among them, because stars are tags. Tags on the
@@ -979,6 +994,15 @@ final class Library: ObservableObject {
         // move is handled in one place, and a re-nested folder cannot silently
         // drop the date off a file that never changed.
         let carried = moveFacts(from: oldPath, to: newPath)
+        // So do the stores that are not the library's own — the transcript,
+        // corrections and all. A hook rather than a reference, the same shape as
+        // `SuggestionStore.onVerdict`, so the library does not own the journal.
+        pathMoved?(Paths.tagPath(from), Paths.tagPath(to))
+        if watch.entry(from) != nil {
+            watch.move(from: from, to: to)
+            watchRevision += 1
+            saveWatch()
+        }
         guard let moving = tags[from], !moving.isEmpty else { return carried }
         defer { saveTags() }
         // The destination may already carry tags of its own (a same-named
@@ -1002,6 +1026,7 @@ final class Library: ObservableObject {
         let key = Paths.tagKey(path)
         // A file gone for good takes its readings with it.
         forgetFacts(path)
+        if watch.entry(key) != nil { watch.forget(key); watchRevision += 1; saveWatch() }
         guard tags[key] != nil else { return false }
         tags.removeValue(forKey: key)
         recordSharedEdit(moving: key, to: nil)
@@ -1176,6 +1201,69 @@ final class Library: ObservableObject {
             paths.insert(Paths.tagPath(key))
         }
         return paths.sorted { naturalLess($0, $1) }
+    }
+
+    /// Every video a library query picks out: carrying any, or all, of its
+    /// names. Each name is answered by `pathsCarrying`, so tags, stars, people
+    /// and readings combine the same way their rows play, and hidden videos are
+    /// left out by the same rule. Memory only — no stat, no file read.
+    func paths(matching query: TagQuery) -> [String] {
+        Self.naturallySorted(Array(TagQuery.combine(query.names.map { Set(pathsCarrying($0)) }, query.match)))
+    }
+
+    // MARK: - smart collections
+
+    /// Every video this profile knows anything about — tagged, rated, read by
+    /// the scan, played or watched — as share-relative keys, hidden ones left
+    /// out. `extra` adds keys other stores know (analysed, transcribed). Memory
+    /// only: the library has no list of every file on every share, and walking
+    /// the shares to make one is not something a sidebar count may do.
+    func knownVideoKeys(adding extra: Set<String> = []) -> [String] {
+        var keys = Set(tags.keys)
+        keys.formUnion(facts.byKey.keys)
+        keys.formUnion(watch.keys)
+        keys.formUnion(progress.keys.map { Paths.tagKey($0) })
+        keys.formUnion(extra)
+        keys.subtract(hidden)
+        // A plain sort, not the natural one: this can be every video the
+        // analysis has ever seen (twelve thousand on one library), and the
+        // natural comparison rebuilds its key per comparison — seconds of main
+        // thread, on every refresh. Callers order what they show themselves.
+        return keys.sorted()
+    }
+
+    /// Natural (Finder) order for a list, with each sort key built once.
+    static func naturallySorted(_ paths: [String]) -> [String] {
+        paths.map { (naturalParts($0), $0) }.sorted { naturalLess($0.0, $1.0) }.map(\.1)
+    }
+
+    /// A video's recording date, from its Date readings: the most specific one
+    /// (a month beats a bare year), as the first day of that month or year.
+    func recordedDate(key: String) -> Double? {
+        var best: (rank: Int, year: Int, month: Int)?
+        for name in facts.names(for: key) {
+            guard let year = AutoTagCore.yearIn(name) else { continue }
+            let month = AutoTagCore.monthIn(name)
+            let rank = month == nil ? 1 : 2
+            if best == nil || rank > best!.rank { best = (rank, year, month ?? 1) }
+        }
+        guard let best,
+              let date = Calendar.current.date(from: DateComponents(year: best.year, month: best.month, day: 1))
+        else { return nil }
+        return date.timeIntervalSince1970
+    }
+
+    /// The part of a smart-collection evaluation the library answers, over the
+    /// live stores. The caller adds transcript hits and any stat results.
+    func smartContext(adding extra: Set<String> = []) -> SmartContext {
+        var context = SmartContext(universe: knownVideoKeys(adding: extra),
+                     names: { [tags] key in tags[key] ?? [] },
+                     rating: { [unowned self] key in self.rating(Paths.tagPath(key)) },
+                     watch: { [unowned self] key in self.watchState(Paths.tagPath(key)) },
+                     analysis: { _ in .unseen },
+                     recorded: { [unowned self] key in self.recordedDate(key: key) })
+        context.facts = { [facts] key in facts.names(for: key) }
+        return context
     }
 
     /// How many videos carry this name, tag or fact — what a sidebar row's
@@ -1546,7 +1634,17 @@ final class Library: ObservableObject {
 
     // MARK: - resume positions
 
-    func note(position: Double, total: Double, for path: String) {
+    func note(position: Double, total: Double, for path: String, watching: Bool = true) {
+        // Watching is recorded apart from resuming: the resume position is
+        // forgotten at the end, and the end is exactly what this remembers.
+        // A preview (an AI candidate looked at in passing) is not watching.
+        if profileOpen, watching {
+            switch watch.notePlayback(Paths.tagKey(path), position: position, total: total) {
+            case .none: break
+            case .refreshed: watchDirty = true
+            case .stateChanged: watchDirty = true; watchRevision += 1
+            }
+        }
         // Only the middle of a video is worth remembering: at either end the
         // right thing to do next time is start from the beginning.
         let finished = total > 0 && position > total - Tuning.resumeTail
@@ -1560,6 +1658,38 @@ final class Library: ObservableObject {
     }
 
     func resumePoint(_ path: String) -> Double { progress[path] ?? 0 }
+
+    // MARK: - watched
+
+    /// Unwatched, in progress or watched — memory only, no stat.
+    func watchState(_ path: String) -> WatchLog.State {
+        watch.state(Paths.tagKey(path), resume: progress[path])
+    }
+
+    func lastPlayed(_ path: String) -> Double? { watch.entry(Paths.tagKey(path))?.lastPlayedAt }
+
+    /// Mark Watched / Mark Unwatched, for one video or a selection. Unwatched
+    /// also forgets where it got to, so it reads — and plays — as new.
+    func markWatched(_ paths: [String], _ watched: Bool) {
+        guard profileOpen, !paths.isEmpty else { return }
+        watch.mark(paths.map { Paths.tagKey($0) }, watched: watched)
+        if !watched {
+            for path in paths {
+                progress.removeValue(forKey: path)
+                progressSeen.removeValue(forKey: path)
+            }
+        }
+        watchRevision += 1
+        saveWatch()
+        save()
+    }
+
+    /// Written with the state file, and at once for a switch or a mark.
+    func saveWatch() {
+        guard profileOpen else { return }
+        watch.save(to: Paths.watchFile(person))
+        watchDirty = false
+    }
 
     func remember(folder root: String) {
         // Pinned folders stay out of Recent: one sidebar entry each.
@@ -1674,10 +1804,15 @@ final class Library: ObservableObject {
     /// thousand of them from the main thread is a thousand SMB round trips
     /// with the window frozen behind them. Eight at a time, off the actor,
     /// then handed back in one go.
-    func warmStats(_ paths: [String]) async {
+    ///
+    /// `parallel` and `priority` are for background callers (smart collections,
+    /// the overview), which must trickle rather than flood: a share answering
+    /// eight stats at a time for thousands of files has nothing left for the
+    /// video somebody is waiting to open.
+    func warmStats(_ paths: [String], parallel: Int = 8, priority: TaskPriority = .utility) async {
         let cold = paths.filter { addedDates[$0] == nil || fileSizes[$0] == nil }
         guard !cold.isEmpty else { return }
-        let measured = await Task.detached(priority: .utility) { () -> [String: (Double, Int64)] in
+        let measured = await Task.detached(priority: priority) { () -> [String: (Double, Int64)] in
             var out: [String: (Double, Int64)] = [:]
             await withTaskGroup(of: (String, Double, Int64).self) { group in
                 var next = cold.makeIterator()
@@ -1693,7 +1828,7 @@ final class Library: ObservableObject {
                         return (path, created > 0 ? created : changed, size)
                     }
                 }
-                for _ in 0..<8 { add() }
+                for _ in 0..<max(parallel, 1) { add() }
                 while let (path, when, size) = await group.next() {
                     out[path] = (when, size)
                     running -= 1
@@ -2020,6 +2155,8 @@ extension Library {
         // handing them 3,000 readings off somebody else's scan would mean a
         // brand new profile was not new. Theirs arrive when they scan.
         facts.save(to: Paths.profileFactsFile(person))
+        // What was watched is this person's too.
+        saveWatch()
         // Pinned folders belong to the profile too: the ones in hand are put
         // away under the profile being left, and the new one's taken up.
         //
@@ -2048,6 +2185,8 @@ extension Library {
         if startingEmpty { groups = [:]; saveGroups() } else { loadGroups(for: name) }
         facts = startingEmpty ? MetadataFacts()
                               : MetadataFacts.load(at: Paths.profileFactsFile(name))
+        watch = startingEmpty ? WatchLog() : WatchLog.load(at: Paths.watchFile(name))
+        watchRevision += 1
         recount()
         lastPublishedAt = ProfileBundle.manifest(name)?.lastPublishedAt ?? 0
         publishedClean = ProfileBundle.manifest(name)?.publishedClean ?? (lastPublishedAt == 0)
@@ -2134,6 +2273,7 @@ extension Library {
         // its bundle first — the same order switchProfile keeps.
         JSONStore.save(Paths.profileFile(person), tags)
         facts.save(to: Paths.profileFactsFile(person))
+        saveWatch()
         saveGroups()
         pinnedByProfile[slug(person)] = pinned
         recentByProfile[slug(person)] = Array(recent.prefix(recentLimit))
@@ -2149,6 +2289,8 @@ extension Library {
         tags = [:]
         groups = [:]
         facts = MetadataFacts()
+        watch = WatchLog()
+        watchRevision += 1
         recount()
         undoable = nil
         try? FileManager.default.removeItem(atPath: Paths.tagsBackup)
@@ -2190,6 +2332,8 @@ extension Library {
         loadGroups(for: name)
         provenance = TagProvenance.load()
         facts = MetadataFacts.load(at: Paths.profileFactsFile(name))
+        watch = WatchLog.load(at: Paths.watchFile(name))
+        watchRevision += 1
         pinned = pinnedByProfile[slug(name)] ?? []
         // Pinned folders live in Pinned only — never also in Recent.
         recent = (recentByProfile[slug(name)] ?? []).filter { !pinned.contains($0) }

@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The scrubber on its own row above the buttons, the way the AppKit build
 /// laid it out once AVKit stopped drawing one.
@@ -9,6 +10,7 @@ struct TransportBar: View {
     @EnvironmentObject var library: Library
     @EnvironmentObject var app: AppModel
     @EnvironmentObject var rotation: VideoRotation
+    @EnvironmentObject var moments: MomentStore
 
     @State private var scrubbing = false
     @State private var scrubPosition: Double = 0
@@ -31,6 +33,14 @@ struct TransportBar: View {
                 .disabled(length <= 0)
                 .accessibilityLabel("Position")
                 .accessibilityValue("\(clock(head.position)) of \(clock(length))")
+                .overlay {
+                    if length > 0, let path = playback.currentPath {
+                        let marks = moments.moments(for: path)
+                        if !marks.isEmpty {
+                            MomentMarkers(moments: marks, length: length) { playback.seek(to: $0) }
+                        }
+                    }
+                }
                 Text(clock(length))
                     .monospacedDigit()
                     .frame(width: 58, alignment: .leading)
@@ -46,7 +56,9 @@ struct TransportBar: View {
                 }
 
                 Button {
+                    guard app.mayLeaveTranscriptEdit() else { return }
                     app.showTranscriptPanel = false
+                    app.showMomentsPanel = false
                     app.showTagPanel.toggle()
                 } label: {
                     Label("Tags", systemImage: "tag")
@@ -57,13 +69,29 @@ struct TransportBar: View {
                 // What was said, and where — reads the profile's store, so it
                 // shows a transcript made in any session, not just this one.
                 Button {
+                    if app.showTranscriptPanel, !app.mayLeaveTranscriptEdit() { return }
                     app.showTagPanel = false
+                    app.showMomentsPanel = false
                     app.showTranscriptPanel.toggle()
                 } label: {
                     Label("Transcript", systemImage: "captions.bubble")
                 }
                 .help("Read and search what was said")
                 .accessibilityLabel(app.showTranscriptPanel ? "Close the transcript" : "Read the transcript")
+
+                // Bookmarks in this video: add, name, jump, export a clip.
+                Button {
+                    guard app.mayLeaveTranscriptEdit() else { return }
+                    app.showTagPanel = false
+                    app.showTranscriptPanel = false
+                    app.showMomentsPanel.toggle()
+                } label: {
+                    Label("Moments", systemImage: "bookmark")
+                }
+                .help("Mark and revisit moments in this video (⌘B adds one)")
+                .accessibilityLabel(app.showMomentsPanel ? "Close moments" : "Show moments")
+
+                TrackMenu(playback: playback, engine: playback.engine)
 
                 // Stars: 1–5 on what is playing, click the lit star again
                 // to clear. The same rating the row menus and the Tags menu
@@ -194,5 +222,91 @@ struct TransportBar: View {
 
     private var currentRating: Int {
         playback.currentPath.map { library.rating($0) } ?? 0
+    }
+}
+
+/// Subtitles and audio for the playing video: the file's own tracks, subtitle
+/// files beside it, the transcript, or off — and, when the file has more than
+/// one, its audio tracks. Choices are remembered for this video only.
+struct TrackMenu: View {
+    @ObservedObject var playback: PlaybackController
+    @ObservedObject var engine: AVPlayerEngine
+
+    var body: some View {
+        Menu {
+            Section("Subtitles") {
+                pick("Off", .off)
+                pick("Automatic", .automatic)
+                ForEach(engine.subtitleOptions) { option in
+                    pick(option.title, .embedded(option.id))
+                }
+                if let path = playback.currentPath {
+                    ForEach(playback.sidecars, id: \.self) { name in
+                        pick(SubtitleFile.label(for: name, video: path), .sidecar(name))
+                    }
+                    if playback.hasTranscript?(path) == true {
+                        pick("Transcript", .transcript)
+                    }
+                }
+                if case .sidecar(let name) = playback.subtitleChoice, name.hasPrefix("/") {
+                    pick((name as NSString).lastPathComponent, .sidecar(name))
+                }
+                Button("Choose Subtitle File…") { chooseFile() }
+                if engine.subtitleOptions.isEmpty && playback.sidecars.isEmpty {
+                    Text("This video has no subtitle tracks of its own")
+                }
+            }
+            Section("Audio") {
+                if engine.audioOptions.count > 1 {
+                    ForEach(engine.audioOptions) { option in
+                        Button {
+                            playback.chooseAudio(option.id)
+                        } label: {
+                            if engine.selectedAudio == option.id {
+                                Label(option.title, systemImage: "checkmark")
+                            } else {
+                                Text(option.title)
+                            }
+                        }
+                    }
+                } else {
+                    Text(engine.audioOptions.isEmpty ? "No audio track to choose" : "Only one audio track")
+                }
+            }
+            if let note = playback.trackNote {
+                Section { Text(note) }
+            }
+        } label: {
+            Label("Subtitles", systemImage: playback.subtitleSource == .none ? "captions.bubble" : "captions.bubble.fill")
+        }
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(playback.currentPath == nil)
+        .help(playback.trackNote ?? "Subtitles and audio tracks")
+        .accessibilityLabel("Subtitles and audio")
+    }
+
+    private func pick(_ title: String, _ choice: SubtitleChoice) -> some View {
+        Button {
+            playback.chooseSubtitles(choice)
+        } label: {
+            if playback.subtitleChoice == choice {
+                Label(title, systemImage: "checkmark")
+            } else {
+                Text(title)
+            }
+        }
+    }
+
+    private func chooseFile() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose a Subtitle File"
+        panel.allowedContentTypes = ["srt", "vtt"].compactMap { UTType(filenameExtension: $0) }
+        panel.allowsMultipleSelection = false
+        if let path = playback.currentPath {
+            panel.directoryURL = URL(fileURLWithPath: (path as NSString).deletingLastPathComponent)
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        playback.chooseSubtitles(.sidecar(url.path))
     }
 }
