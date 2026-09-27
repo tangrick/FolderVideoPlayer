@@ -1796,10 +1796,15 @@ final class Library: ObservableObject {
     /// thousand of them from the main thread is a thousand SMB round trips
     /// with the window frozen behind them. Eight at a time, off the actor,
     /// then handed back in one go.
-    func warmStats(_ paths: [String]) async {
+    ///
+    /// `parallel` and `priority` are for background callers (smart collections,
+    /// the overview), which must trickle rather than flood: a share answering
+    /// eight stats at a time for thousands of files has nothing left for the
+    /// video somebody is waiting to open.
+    func warmStats(_ paths: [String], parallel: Int = 8, priority: TaskPriority = .utility) async {
         let cold = paths.filter { addedDates[$0] == nil || fileSizes[$0] == nil }
         guard !cold.isEmpty else { return }
-        let measured = await Task.detached(priority: .utility) { () -> [String: (Double, Int64)] in
+        let measured = await Task.detached(priority: priority) { () -> [String: (Double, Int64)] in
             var out: [String: (Double, Int64)] = [:]
             await withTaskGroup(of: (String, Double, Int64).self) { group in
                 var next = cold.makeIterator()
@@ -1815,7 +1820,7 @@ final class Library: ObservableObject {
                         return (path, created > 0 ? created : changed, size)
                     }
                 }
-                for _ in 0..<8 { add() }
+                for _ in 0..<max(parallel, 1) { add() }
                 while let (path, when, size) = await group.next() {
                     out[path] = (when, size)
                     running -= 1

@@ -91,13 +91,21 @@ struct LibraryOverviewWindow: View {
         .accessibilityElement(children: .contain)
     }
 
-    /// Everything from memory, after warming the dates Recently Added needs
-    /// off the main thread.
+    /// Everything from memory at once; then the dates Recently Added needs are
+    /// fetched as a gentle trickle (a flood of stats on a share starves the
+    /// video that is playing) and the overview is built again when they land.
     private func rebuild() async {
         guard library.profileOpen else { overview = LibraryOverview(); loading = false; return }
         let extra = Set(analysis.records.keys).union(journal.transcribedPaths.map { Paths.tagKey($0) })
         let known = library.knownVideoKeys(adding: extra)
-        await library.warmStats(known.map { Paths.tagPath($0) })
+        build(known)
+        await library.warmStats(known.map { Paths.tagPath($0) },
+                                parallel: SmartCollectionStore.trickle, priority: .background)
+        guard !Task.isCancelled else { return }
+        build(known)
+    }
+
+    private func build(_ known: [String]) {
         var added: [String: Double] = [:]
         for key in known {
             let path = Paths.tagPath(key)
