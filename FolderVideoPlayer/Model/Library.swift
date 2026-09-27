@@ -1248,12 +1248,14 @@ final class Library: ObservableObject {
     /// The part of a smart-collection evaluation the library answers, over the
     /// live stores. The caller adds transcript hits and any stat results.
     func smartContext(adding extra: Set<String> = []) -> SmartContext {
-        SmartContext(universe: knownVideoKeys(adding: extra),
-                     names: { [tags, facts] key in (tags[key] ?? []) + facts.names(for: key) },
+        var context = SmartContext(universe: knownVideoKeys(adding: extra),
+                     names: { [tags] key in tags[key] ?? [] },
                      rating: { [unowned self] key in self.rating(Paths.tagPath(key)) },
                      watch: { [unowned self] key in self.watchState(Paths.tagPath(key)) },
                      analysis: { _ in .unseen },
                      recorded: { [unowned self] key in self.recordedDate(key: key) })
+        context.facts = { [facts] key in facts.names(for: key) }
+        return context
     }
 
     /// How many videos carry this name, tag or fact — what a sidebar row's

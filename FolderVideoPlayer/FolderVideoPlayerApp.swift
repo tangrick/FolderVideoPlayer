@@ -190,16 +190,6 @@ struct FolderVideoPlayerApp: App {
                 .environmentObject(engine)
         }
 
-        // Correcting a transcript: a window beside the player, so the video
-        // stays in view while times are checked against it.
-        Window("Edit Transcript", id: "transcript-editor") {
-            TranscriptEditorWindow()
-                .environmentObject(library)
-                .environmentObject(app)
-                .environmentObject(journal)
-        }
-        .defaultSize(width: 820, height: 600)
-
         // Prepare for Sharing: new copies, never a change to the original.
         Window("Prepare for Sharing", id: "share-prepare") {
             SharePrepareWindow()
@@ -599,9 +589,26 @@ final class AppModel: ObservableObject {
     /// The transcript strip. Shares the bottom slot with the tag panel, so the
     /// two are never open at once — the same space cannot show both.
     @Published var showTranscriptPanel = false
-    /// The video the transcript editor window is asked to edit. The window
-    /// keeps its own copy, so a new request never drops unsaved edits.
+    /// A request to edit this video's transcript in the transcript panel (View ▸
+    /// Edit Transcript…). The panel takes it up and clears it.
     @Published var transcriptEditTarget: String?
+    /// The transcript panel is in edit mode: it is given more of the window.
+    @Published var transcriptEditing = false
+    /// The edit in progress has unsaved changes.
+    @Published var transcriptEditDirty = false
+
+    /// Before the transcript panel is swapped for another: unsaved edits would
+    /// go with it, so ask. True when it is fine to go on.
+    func mayLeaveTranscriptEdit() -> Bool {
+        guard transcriptEditing, transcriptEditDirty else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Discard your unsaved transcript edits?"
+        alert.informativeText = "Closing the transcript panel ends the edit. Choose Keep Editing, then Save, to keep your changes."
+        alert.addButton(withTitle: "Keep Editing")
+        alert.addButton(withTitle: "Discard")
+        alert.buttons[1].hasDestructiveAction = true
+        return alert.runModal() == .alertSecondButtonReturn
+    }
     /// The videos the Prepare for Sharing window is asked about.
     @Published var shareTargets: [String] = []
     /// A range to trim the next Prepare for Sharing to — a moment's Export Clip.

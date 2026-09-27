@@ -470,9 +470,11 @@ struct MainMenu: Commands {
                 .keyboardShortcut("0")
                 .disabled(!library.profileOpen)
                 .help("What to continue, what is new, what is done, and what is waiting on you")
-            Button("Edit Transcript…") {
+            Button("Edit Transcript") {
+                app.showTagPanel = false
+                app.showMomentsPanel = false
+                app.showTranscriptPanel = true
                 app.transcriptEditTarget = playback?.currentPath
-                openWindow(id: "transcript-editor")
             }
             .disabled(playback?.currentPath == nil || !library.profileOpen)
             .help("Correct and export the transcript of the video that is playing")

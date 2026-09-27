@@ -25,12 +25,13 @@ struct SmartCollection: Codable, Equatable, Identifiable {
 /// nothing, rather than the whole file failing to read.
 struct SmartRule: Codable, Equatable, Identifiable {
     enum Kind: String, Codable, CaseIterable, Identifiable {
-        case tag, person, rating, recorded, added, transcript, playback, analysis, verdict, file
+        case tag, person, fact, rating, recorded, added, transcript, playback, analysis, verdict, file
         var id: String { rawValue }
         var title: String {
             switch self {
             case .tag: return "Tag"
             case .person: return "Person"
+            case .fact: return "File fact"
             case .rating: return "Rating"
             case .recorded: return "Recording date"
             case .added: return "Date added"
@@ -95,7 +96,7 @@ struct SmartRule: Codable, Equatable, Identifiable {
     /// The comparisons a kind offers, in the order a menu shows them.
     static func ops(for kind: Kind) -> [Op] {
         switch kind {
-        case .tag, .person: return [.includes, .excludes]
+        case .tag, .person, .fact: return [.includes, .excludes]
         case .rating: return [.equals, .atLeast, .atMost]
         case .recorded, .added: return [.before, .after, .between]
         case .transcript: return [.contains]
@@ -195,7 +196,7 @@ struct SmartContext {
     /// Every video the library knows, as share-relative keys, hidden ones already
     /// removed.
     var universe: [String]
-    /// A video's tags and readings.
+    /// A video's own tags (people and star ratings are tags).
     var names: (String) -> [String]
     var rating: (String) -> Int
     var watch: (String) -> WatchLog.State
@@ -204,6 +205,8 @@ struct SmartContext {
     var recorded: (String) -> Double?
     /// Words → the keys of the videos whose transcript contains them.
     var transcriptHits: [String: Set<String>] = [:]
+    /// A video's readings off the file — dates, camera, quality, place.
+    var facts: (String) -> [String] = { _ in [] }
     var addedOn: [String: Double] = [:]
     var fileExists: [String: Bool] = [:]
 }
@@ -228,8 +231,9 @@ enum SmartEvaluator {
     static func holds(_ rule: SmartRule, for key: String, _ c: SmartContext) -> Bool {
         guard let kind = rule.kind, let op = rule.comparison else { return false }
         switch kind {
-        case .tag, .person:
-            let has = c.names(key).contains { $0.caseInsensitiveCompare(rule.text) == .orderedSame }
+        case .tag, .person, .fact:
+            let pool = kind == .fact ? c.facts(key) : c.names(key)
+            let has = pool.contains { $0.caseInsensitiveCompare(rule.text) == .orderedSame }
             return op == .excludes ? !has : has
         case .rating:
             let stars = c.rating(key)
@@ -292,9 +296,11 @@ enum SmartEvaluator {
         }
         guard SmartRule.ops(for: kind).contains(op) else { return "This rule's comparison does not fit its kind." }
         switch kind {
-        case .tag, .person:
+        case .tag, .person, .fact:
             let name = rule.text.trimmingCharacters(in: .whitespaces)
-            if name.isEmpty { return "Choose a \(kind == .tag ? "tag" : "person")." }
+            if name.isEmpty {
+                return "Choose a \(kind == .tag ? "tag" : kind == .person ? "person" : "file fact")."
+            }
             if !knownNames(name) {
                 return "“\(name)” is not on any video any more — it may have been renamed or deleted."
             }
