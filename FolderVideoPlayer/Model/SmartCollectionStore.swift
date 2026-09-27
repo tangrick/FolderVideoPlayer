@@ -132,7 +132,7 @@ final class SmartCollectionStore: ObservableObject {
 
     // MARK: - answering
 
-    func scheduleRefresh(after delay: Double = 1) {
+    func scheduleRefresh(after delay: Double = 2) {
         pending?.cancel()
         pending = Task { [weak self] in
             if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
@@ -193,7 +193,8 @@ final class SmartCollectionStore: ObservableObject {
         if wantsDates || wantsFiles { warmDisk(universe, dates: wantsDates, files: wantsFiles) }
         var out: [UUID: [String]] = [:]
         for collection in items {
-            out[collection.id] = SmartEvaluator.members(collection, in: context).map { Paths.tagPath($0) }
+            out[collection.id] = Library.naturallySorted(
+                SmartEvaluator.members(collection, in: context).map { Paths.tagPath($0) })
         }
         return out
     }

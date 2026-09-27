@@ -1208,8 +1208,7 @@ final class Library: ObservableObject {
     /// and readings combine the same way their rows play, and hidden videos are
     /// left out by the same rule. Memory only — no stat, no file read.
     func paths(matching query: TagQuery) -> [String] {
-        TagQuery.combine(query.names.map { Set(pathsCarrying($0)) }, query.match)
-            .sorted { naturalLess($0, $1) }
+        Self.naturallySorted(Array(TagQuery.combine(query.names.map { Set(pathsCarrying($0)) }, query.match)))
     }
 
     // MARK: - smart collections
@@ -1226,7 +1225,16 @@ final class Library: ObservableObject {
         keys.formUnion(progress.keys.map { Paths.tagKey($0) })
         keys.formUnion(extra)
         keys.subtract(hidden)
-        return keys.sorted { naturalLess($0, $1) }
+        // A plain sort, not the natural one: this can be every video the
+        // analysis has ever seen (twelve thousand on one library), and the
+        // natural comparison rebuilds its key per comparison — seconds of main
+        // thread, on every refresh. Callers order what they show themselves.
+        return keys.sorted()
+    }
+
+    /// Natural (Finder) order for a list, with each sort key built once.
+    static func naturallySorted(_ paths: [String]) -> [String] {
+        paths.map { (naturalParts($0), $0) }.sorted { naturalLess($0.0, $1.0) }.map(\.1)
     }
 
     /// A video's recording date, from its Date readings: the most specific one
