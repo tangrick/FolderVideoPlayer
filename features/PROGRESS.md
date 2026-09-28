@@ -57,10 +57,34 @@ Conventions discovered (follow them):
 |---|---|---|---|
 | 1.1.21 | 2026-09-27 | Priorities 1–8, the label refinement, test feedback fixes, launch-stall fixes | `7234402` |
 | 1.1.22 | 2026-09-27 | File facts sync between Macs (`facts.json` on the share) | `51d7e8d` |
+| 1.1.23 | 2026-09-28 | Pinned folders published for the Apple TV (`pins.json`, one-way) | `9bfd5e5` |
+| 1.1.24 | 2026-09-28 | Pinned folders follow the profile between Macs; upkeep only on pinned folders | `97539f3` |
 
 Each is a notarized DMG on the GitHub release (`v<version>`), which is also what
 the app's Check for Updates reads, and the website's download buttons
 (`~/foldervideoplayer-site`, `./deploy.sh`) point at it.
+
+### Apple TV (TestFlight)
+
+The TV app lives in `~/FolderVideoPlayerTV` (private repo `tangrick/FolderVideoPlayerTV`,
+commits as that repo's configured identity). Builds go to App Store Connect from
+the command line: `xcodebuild -scheme FolderVideoPlayerTV -configuration Release
+-destination 'generic/platform=tvOS' -allowProvisioningUpdates archive`, then
+`xcodebuild -exportArchive` with an options plist of `method app-store-connect`,
+`destination upload`, `teamID 4DMMS5733P`, `signingStyle automatic`. Bump
+`CURRENT_PROJECT_VERSION` (both configurations) first. Xcode rewrites
+`project.pbxproj` during builds (it once dropped the comment explaining the
+SMBClient fork) — commit only the version lines, never its rewrite.
+
+| Version (build) | Date | What | Commit |
+|---|---|---|---|
+| 1.1 (7) | 2026-09-28 | Home as shelves (Continue, Pinned, Ratings, Tags + All Tags, From the file); file facts; desktop transcripts as captions; the Mac's pins on Home | `d4e16b0` |
+| 1.1 (8) | 2026-09-28 | People shelf from the Mac's `faces.json`; people kept out of Tags / All Tags | `6a1e845` |
+| 1.1 (9) | 2026-09-28 | Subtitles menu in the transport bar (Off / Transcript / subtitle files beside the video); nothing laid over the picture; off by default, kind of choice remembered | `861f17f` |
+
+None has been tried on a real Apple TV by this log's author: the simulator
+cannot log in to the test share (see Known gaps). 1.0.1 (6) was the build
+before these.
 
 ## Status overview
 
@@ -263,6 +287,15 @@ in places (`PlaybackController.engine`, `VideoSurface(player:)`,
 
 ## Known gaps / decisions to revisit
 
+- The Apple TV builds of 2026-09-28 were verified only by simulator builds and
+  standalone checks of their readers (pins, `faces.json` against every real
+  file on the NAS, subtitle files); the simulator cannot log in to `~/TVShare`
+  (guest logins are refused) and the user's password is not used. The user
+  checks on the real TV. Embedded subtitle tracks on the TV are AVKit's own
+  info panel, not verified.
+- Tag headings (`headings.json`) do not travel to other Macs or the TV — the
+  user decided that is not needed (2026-09-28).
+
 - Share sync (`SharedExtras.syncTranscripts`) only sends a transcript for a
   video the share does not yet have ("transcripts only accumulate"), so a
   correction made after the first publish does not propagate to other Macs.
@@ -298,7 +331,9 @@ in places (`PlaybackController.engine`, `VideoSurface(player:)`,
 
 - 2026-09-28 — 1.1.23 released (pins published one-way); TV 1.1 (7) uploaded to TestFlight (archive + `xcodebuild -exportArchive` with `method app-store-connect`, `destination upload`, team 4DMMS5733P). The first `release.sh` run failed silently in the disk-image step (`hdiutil -quiet`); a rerun with `--skip-tests` passed — likely hdiutil's intermittent busy error.
 
-- 2026-09-28 — Profile survives on other Macs and the TV (user request: pinned folders, tags, people, file facts). Audit: tags (`tags.json`), people (`faces.json`) and file facts (`facts.json`) already reached a second Mac through `openProfile` → `adoptProfileOnShares` → `syncSharedExtras`; pins did not (1.1.23 only published them). Now `SharedExtras.mergePins` merges each share's list three ways (facts' rule; order counts; first meeting = this Mac's then the share's), `Library.takeSharedPins` applies it when the pins did not change during the sync, and `MaintenanceWorker` skips opted-in folders no longer pinned. New end-to-end `Tests/test_profile_travels.swift` (two Libraries, two support roots, one share; mutation-checked). TV: `TagStore.readPeople` reads the names in `faces.json` (only when its time moves); Home gets a People shelf and Tags/All Tags leave people out (the player's chips still offer them). Known gap, not done: tag headings (`headings.json`) never reach the share, so another Mac gets the tags unfiled.
+- 2026-09-28 — Profile survives on other Macs and the TV (user request: pinned folders, tags, people, file facts). Audit: tags (`tags.json`), people (`faces.json`) and file facts (`facts.json`) already reached a second Mac through `openProfile` → `adoptProfileOnShares` → `syncSharedExtras`; pins did not (1.1.23 only published them). Now `SharedExtras.mergePins` merges each share's list three ways (facts' rule; order counts; first meeting = this Mac's then the share's), `Library.takeSharedPins` applies it when the pins did not change during the sync, and `MaintenanceWorker` skips opted-in folders no longer pinned. New end-to-end `Tests/test_profile_travels.swift` (two Libraries, two support roots, one share; mutation-checked). TV: `TagStore.readPeople` reads the names in `faces.json` (only when its time moves); Home gets a People shelf and Tags/All Tags leave people out (the player's chips still offer them). Tag headings (`headings.json`) never reach the share; the user decided that is not needed.
+
+- 2026-09-28 — Released Mac 1.1.24 (tests passed, `release.sh --skip-tests` right after; GitHub release + website). TV 1.1 (8) and 1.1 (9) uploaded to TestFlight. Build 9 (user request): the transcript's Transcript / Captions On buttons that sat over the picture are gone; a Subtitles menu in the transport bar (only when the video has something) offers Off, Transcript, and subtitle files beside the video found and read by `Models/SubtitleFile.swift`, a copy of the Mac's `SubtitleFile` ("change both together"), plus Show Transcript. Off by default; `player.subtitles` remembers off / transcript / a file's language label. A file that will not read is said for 4 s and not shown.
 
 ## Next steps for whoever continues
 
