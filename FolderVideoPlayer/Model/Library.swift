@@ -355,8 +355,9 @@ final class Library: ObservableObject {
     /// File facts changed on this Mac since the last sync, so the shares should
     /// hear about them even if no tag changed.
     private var factsDirty = false
-    /// Pinned folders changed since the last sync. The Apple TV shows them on
-    /// its home screen, so they go to the shares like a tag does.
+    /// Pinned folders changed since the last sync. They follow the profile to
+    /// other Macs and the Apple TV's home screen, so they go to the shares like
+    /// a tag does.
     private var pinsDirty = false
     private var autoPublish: Task<Void, Never>?
     /// The publish in flight, so the next one waits rather than writing
@@ -777,6 +778,26 @@ final class Library: ObservableObject {
         guard changed > 0 else { return }
         facts = next
         saveFacts(fromShare: true)
+    }
+
+    /// Pinned folders from another Mac, per share, taken in only if the pins
+    /// have not changed here while the sync ran — a pin made in the meantime is
+    /// newer, and goes out with the next sync instead. A share's folders take
+    /// the place of the ones pinned on it here; a share with none here adds
+    /// its folders at the end.
+    func takeSharedPins(_ updates: [String: [String]], sent: [String]) {
+        guard profileOpen, !updates.isEmpty, pinned == sent else { return }
+        var next = pinned
+        for (share, folders) in updates.sorted(by: { $0.key < $1.key }) {
+            let prefix = Paths.volumes + share + "/"
+            let onShare = { (root: String) in root.hasPrefix(prefix) && root.count > prefix.count }
+            let at = next.firstIndex(where: onShare)
+            next.removeAll(where: onShare)
+            next.insert(contentsOf: folders.map { prefix + $0 }, at: at ?? next.count)
+        }
+        pinned = next
+        recent.removeAll { pinned.contains($0) }   // pinned folders leave Recent
+        save()
     }
 
     // MARK: - the one-time separation
@@ -1758,7 +1779,7 @@ final class Library: ObservableObject {
         pinsChanged()
     }
 
-    /// Off to the shares with the next sync, for the Apple TV's home screen.
+    /// Off to the shares with the next sync, for other Macs and the Apple TV.
     private func pinsChanged() {
         pinsDirty = true
         scheduleAutoPublish()

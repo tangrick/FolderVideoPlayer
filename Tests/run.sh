@@ -213,3 +213,7 @@ sh "$here/run_profile_document.sh"
 # tags: a new Mac takes all of it, a rename or a forget carries as one, and a
 # newer file on the share is left alone.
 sh "$here/run_shared_extras.sh"
+
+# What a profile carries to another Mac end to end — tags, people, file facts,
+# pinned folders — opened the way File > Open adopts it.
+sh "$here/run_profile_travels.sh"

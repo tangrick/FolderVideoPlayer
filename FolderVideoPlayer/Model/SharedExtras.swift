@@ -1,9 +1,10 @@
 import Foundation
 
 /// What follows a profile to another Mac besides its tags: the people it has
-/// named, the transcripts it has made, and the facts read off its files.
+/// named, the transcripts it has made, the facts read off its files, and the
+/// folders it pinned.
 ///
-/// All three sit beside the person's `tags.json` on every share:
+/// All four sit beside the person's `tags.json` on every share:
 ///
 ///     .FolderVideoPlayer/quincy/faces.json         names, face vectors, thumbnails
 ///     .FolderVideoPlayer/quincy/transcripts.json   this share's videos' transcripts
@@ -32,11 +33,11 @@ import Foundation
 /// changed only here, send ours; changed on both, this Mac's stand. A first
 /// meeting only fills gaps, so neither Mac's own reading is overwritten.
 ///
-/// **Pinned folders only go out**, for the Apple TV, which offers them on its
-/// home screen. No Mac reads them back: the folders worth a shortcut at one
-/// desk are not always the ones worth one at another. A Mac writes its list
-/// when it has changed since it last wrote one, so the share holds whichever
-/// Mac changed its pins last, rather than two Macs taking turns on every sync.
+/// **Pinned folders merge three ways, per share**, by the facts' rule, so a
+/// profile opened on another Mac comes with its pins and the Apple TV offers
+/// the same folders on its home screen. A share's list is the sidebar's order,
+/// so a reorder is a change. A first meeting keeps this Mac's pins and adds
+/// the share's it lacks, so a new Mac with none takes them all.
 enum SharedExtras {
 
     static let facesName = "faces.json"
@@ -89,9 +90,9 @@ enum SharedExtras {
         /// never met, which is what makes the first sync fill gaps only.
         var factBase: [String: [String: [String]]] = [:]
         var factMtime: [String: Double] = [:]
-        /// Share → the pins this Mac last wrote there. Nil for a share it has
-        /// never written pins to.
-        var pinsSent: [String: [String]] = [:]
+        /// Share → its pins as they were at the last sync. Nil for a share
+        /// never met, which is what makes the first sync fill gaps only.
+        var pinBase: [String: [String]] = [:]
 
         init() {}
 
@@ -105,7 +106,7 @@ enum SharedExtras {
             transcriptsOnShare = try c.decodeIfPresent([String: [String]].self, forKey: .transcriptsOnShare) ?? [:]
             factBase = try c.decodeIfPresent([String: [String: [String]]].self, forKey: .factBase) ?? [:]
             factMtime = try c.decodeIfPresent([String: Double].self, forKey: .factMtime) ?? [:]
-            pinsSent = try c.decodeIfPresent([String: [String]].self, forKey: .pinsSent) ?? [:]
+            pinBase = try c.decodeIfPresent([String: [String]].self, forKey: .pinBase) ?? [:]
         }
     }
 
@@ -205,6 +206,9 @@ enum SharedExtras {
         /// Facts this Mac should now hold, keyed like tags; an empty list means
         /// the video's facts were removed elsewhere.
         var factUpdates: [String: [String]] = [:]
+        /// Share → the pins this Mac should now hold on it, keyed from the
+        /// share root, for each share whose list changed elsewhere.
+        var pinUpdates: [String: [String]] = [:]
     }
 
     /// Blocking. Every failure is silent, as the tag sync's are: the next
@@ -219,7 +223,7 @@ enum SharedExtras {
         out.facesChanged = syncFaces(input, mounted, &out.state, lockBudget: lockBudget)
         out.transcriptsImported = syncTranscripts(input, mounted, &out.state, lockBudget: lockBudget)
         out.factUpdates = syncFacts(input, mounted, &out.state, lockBudget: lockBudget)
-        syncPins(input, mounted, &out.state)
+        out.pinUpdates = syncPins(input, mounted, &out.state, lockBudget: lockBudget)
         return out
     }
 
@@ -403,15 +407,32 @@ enum SharedExtras {
         return updates
     }
 
+    // MARK: - the pin merge
+
+    /// One share's pins: `local` against `shared` (nil: no file there), with
+    /// `base` the share's list at the last sync (nil: never met). Paths are
+    /// from the share root. Returns what this Mac should pin on that share,
+    /// and what the share should hold — nil to leave the file as it is.
+    static func mergePins(local: [String], base: [String]?,
+                          shared: [String]?) -> (local: [String], shared: [String]?) {
+        // No file, or one gone missing: this Mac's list, if it has one.
+        guard let shared else { return (local, local.isEmpty ? nil : local) }
+        guard let base else {
+            // First meeting: this Mac's pins, then the share's it lacks.
+            let both = local + shared.filter { !local.contains($0) }
+            return (both, both == shared ? nil : both)
+        }
+        if local == base { return (shared, nil) }          // only the share changed (or nothing)
+        return (local, local == shared ? nil : local)      // only this Mac, or both: this Mac's stand
+    }
+
     /// Each share gets the pins that live on it, keyed from its root; a
-    /// folder on this Mac's own disk means nothing to a television and is
-    /// never sent. No lock: nothing is read and merged, and the rename in
-    /// `write` means a reader never sees half a list.
-    ///
-    /// A share this Mac never wrote pins to, with nothing pinned on it, is
-    /// left alone — a new Mac with nothing pinned must not wipe the list an
-    /// older one published. A list that went missing is written again.
-    private static func syncPins(_ input: Input, _ folders: [String: String], _ state: inout State) {
+    /// folder on this Mac's own disk means nothing anywhere else and is never
+    /// sent. A file this Mac cannot read, or one a newer version wrote, is
+    /// neither taken from nor written — the facts' rule.
+    private static func syncPins(_ input: Input, _ folders: [String: String],
+                                 _ state: inout State, lockBudget: Double) -> [String: [String]] {
+        var updates: [String: [String]] = [:]
         for (share, folder) in folders.sorted(by: { $0.key < $1.key }) {
             let prefix = input.volumes + share + "/"
             let mine = input.pinned
@@ -419,18 +440,28 @@ enum SharedExtras {
                 .map { String($0.dropFirst(prefix.count)) }
             let file = path(folder, pinsName)
             let mtime = SharedTagDisk.mtime(file)
-            if mine == state.pinsSent[share] ?? [], mtime != nil || mine.isEmpty { continue }
-            // A file this Mac cannot read, or one a newer version wrote, is
-            // left as it is — the same rule as the facts.
+            var shared: [String]?
             if mtime != nil {
-                guard let current = readJSON(Pins.self, file),
-                      current.format <= currentFormat else { continue }
+                guard let read = readJSON(Pins.self, file), read.format <= currentFormat else { continue }
+                shared = read.folders
             }
+
+            let merged = mergePins(local: mine, base: state.pinBase[share], shared: shared)
+            if merged.local != mine { updates[share] = merged.local }
+            state.pinBase[share] = shared
+            guard let send = merged.shared else { continue }
+
             try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
-            if write(Pins(folders: mine), file, device: input.device) {
-                state.pinsSent[share] = mine.isEmpty ? nil : mine
+            guard let token = SharedTagDisk.lock(folder: folder, by: input.device, budget: lockBudget)
+            else { continue }
+            defer { SharedTagDisk.unlock(folder: folder, token: token) }
+            // Written by another Mac since it was read: the next sync merges it.
+            if SharedTagDisk.mtime(file) != mtime { continue }
+            if write(Pins(folders: send), file, device: input.device) {
+                state.pinBase[share] = send
             }
         }
+        return updates
     }
 
     // MARK: - disk

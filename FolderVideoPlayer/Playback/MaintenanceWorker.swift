@@ -138,9 +138,13 @@ final class MaintenanceWorker: ObservableObject {
                 continue
             }
             let now = Date().timeIntervalSince1970
+            // Only pinned folders are kept up to date, and pins now follow the
+            // profile between Macs: a folder another Mac unpinned has left
+            // Settings' list, so it is left alone here too until pinned again.
             let due = file.settings.folders.filter {
-                forceScan || MaintenancePlanner.isDue(lastScan: file.lastScan[$0],
-                                                      minutes: file.settings.rescanMinutes, now: now)
+                library?.isPinned($0) == true
+                && (forceScan || MaintenancePlanner.isDue(lastScan: file.lastScan[$0],
+                                                          minutes: file.settings.rescanMinutes, now: now))
             }
             forceScan = false
             for folder in due {

@@ -111,8 +111,8 @@ extension Library {
 
     /// The named people, the transcripts and the file facts, to and from the
     /// same shares, right after the tags — so every way a tag sync starts
-    /// (adopting a profile on a new Mac included) carries them too. The pinned
-    /// folders go out the same way, for the Apple TV. See `SharedExtras`.
+    /// (adopting a profile on a new Mac included) carries them too — and the
+    /// pinned folders, which the Apple TV reads as well. See `SharedExtras`.
     private func syncSharedExtras(context: UUID) async {
         let profile = slug(person)
         let root = Paths.support
@@ -135,6 +135,7 @@ extension Library {
         if output.state != input.state { _ = JSONStore.save(stateFile, output.state) }
         guard profileContext == context else { return }
         takeSharedFacts(output.factUpdates, sent: input.facts)
+        takeSharedPins(output.pinUpdates, sent: input.pinned)
         guard output.facesChanged || output.transcriptsImported > 0 else { return }
         NotificationCenter.default.post(name: .fvpSharedExtrasArrived, object: profile)
     }

@@ -76,7 +76,8 @@ the app's Check for Updates reads, and the website's download buttons
 | 7 | Subtitle and audio track controls | released 1.1.21 (engine probe on a real multi-track file); UI not yet exercised by hand |
 | 8 | Opt-in background maintenance | released 1.1.21; worker not yet exercised end-to-end |
 | — | File facts sync between Macs (user request) | released 1.1.22; not yet run between two real Macs |
-| — | Pinned folders published for the Apple TV (`pins.json`, user request) | done, uncommitted, unreleased; model tests pass; not yet seen on a real TV |
+| — | Pinned folders published for the Apple TV (`pins.json`, user request) | released 1.1.23 (one-way); TV 1.1 (7) on TestFlight reads them |
+| — | Pins follow the profile between Macs; People shelf on the TV (user request) | done, uncommitted, unreleased; `run_profile_travels.sh` covers a second Mac opening the profile |
 | 9 | Additional-format playback (VLCKit/libmpv) | KIV — on hold by the user's decision (2026-09-27); do not start without asking |
 
 ## Priority 1 — Transcript editor and export
@@ -294,6 +295,10 @@ in places (`PlaybackController.engine`, `VideoSurface(player:)`,
 - 2026-09-27 — Published 1.1.21 and 1.1.22: notarized DMGs as GitHub releases (Check for Updates offers them) and the website's download buttons deployed. Full `Tests/run.sh` before 1.1.22: 2,806 checks, exit 0. Both public repos' histories rewritten to the noreply identity (app repo: the 6 feature-branch commits; website repo: all 56 author/committer entries) and force-pushed with `--force-with-lease`.
 
 - 2026-09-28 — Pinned folders now published for the Apple TV (user request; the TV side lives in `~/FolderVideoPlayerTV`, uncommitted with that repo's in-progress Home work). Mac: `SharedExtras.Pins` / `syncPins` write `.FolderVideoPlayer/<profile>/pins.json` (`{format: 1, folders: [share-relative paths]}`, sidebar order) on each mounted share; one-way, no lock, written only when this Mac's list for that share differs from `State.pinsSent` (or the file went missing), and never over a newer format. `Library.pin/unpin/movePinned` set `pinsDirty` and schedule the usual auto-publish. TV: `TagStore.readPins` (same cadence and rules as `readFacts`) → `PinStore.takeFromMac`; Home shows this box's pins then the Mac's, captioned "From the Mac"; unpinning a Mac pin on the TV hides it on that TV only (`hiddenMacPins`). Verified: `run_shared_extras.sh` (8 new pin checks), Mac Debug build, tvOS simulator build, the Mac publisher run against `~/TVShare` and its file read by the TV's `PinStore` compiled standalone (12 checks). NOT verified: a live SMB connection from the TV (the test share rejects guest logins).
+
+- 2026-09-28 — 1.1.23 released (pins published one-way); TV 1.1 (7) uploaded to TestFlight (archive + `xcodebuild -exportArchive` with `method app-store-connect`, `destination upload`, team 4DMMS5733P). The first `release.sh` run failed silently in the disk-image step (`hdiutil -quiet`); a rerun with `--skip-tests` passed — likely hdiutil's intermittent busy error.
+
+- 2026-09-28 — Profile survives on other Macs and the TV (user request: pinned folders, tags, people, file facts). Audit: tags (`tags.json`), people (`faces.json`) and file facts (`facts.json`) already reached a second Mac through `openProfile` → `adoptProfileOnShares` → `syncSharedExtras`; pins did not (1.1.23 only published them). Now `SharedExtras.mergePins` merges each share's list three ways (facts' rule; order counts; first meeting = this Mac's then the share's), `Library.takeSharedPins` applies it when the pins did not change during the sync, and `MaintenanceWorker` skips opted-in folders no longer pinned. New end-to-end `Tests/test_profile_travels.swift` (two Libraries, two support roots, one share; mutation-checked). TV: `TagStore.readPeople` reads the names in `faces.json` (only when its time moves); Home gets a People shelf and Tags/All Tags leave people out (the player's chips still offer them). Known gap, not done: tag headings (`headings.json`) never reach the share, so another Mac gets the tags unfiled.
 
 ## Next steps for whoever continues
 

@@ -204,11 +204,17 @@ one Mac reaches the others and a Mac's own reading is never overwritten on a
 first meeting. Watch history, moments and smart collections stay on the Mac
 that made them.
 
-`pins.json` sits there too, for the Apple TV: the profile's pinned folders on
-that share, keyed from its root, in the sidebar's order. It only goes out — no
-Mac reads it back — and a Mac writes it only when its own pins changed since
-it last wrote one, so two Macs on one profile do not take turns over it and a
-new Mac with nothing pinned does not wipe it.
+`pins.json` sits there too: the profile's pinned folders on that share, keyed
+from its root, in the sidebar's order. It merges per share by the facts' rule
+(a reorder counts as a change), so a profile opened on another Mac comes with
+its pins, and the Apple TV offers the same folders on its home screen. A first
+meeting keeps this Mac's pins and adds the share's, so a new Mac with none
+takes them all. Folders on a Mac's own disk stay on that Mac. Background
+upkeep runs only on folders still pinned, so one unpinned on another Mac is
+left alone until pinned again.
+
+Tag headings (Tag Profiles, `headings.json`) are not on the shares: another
+Mac opening the profile gets every tag, unfiled.
 
 ## Nothing is deleted outright
 

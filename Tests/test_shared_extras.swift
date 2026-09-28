@@ -17,11 +17,11 @@
 //      reading is never overwritten on a first meeting, a video on this Mac's
 //      own disk is never published, and a newer facts file is left alone;
 //   9. a sync-state file from before facts existed still loads its face base;
-//  10. pinned folders go out for the Apple TV: keyed from the share root in
-//      the sidebar's order, never a folder on this Mac's own disk; written
-//      only when they changed, so two Macs do not take turns and a new Mac
-//      with none does not wipe the list; unpinning everything clears it; a
-//      list that went missing comes back; a newer file is left alone.
+//  10. pinned folders merge three ways per share: keyed from the share root
+//      in the sidebar's order, never a folder on this Mac's own disk; a Mac
+//      opening the profile takes them, a pin, unpin or reorder on one Mac
+//      reaches the other, a first meeting adds rather than replaces, a list
+//      that went missing comes back, and a newer file is left alone.
 //
 // Run: Tests/run_shared_extras.sh
 
@@ -264,44 +264,70 @@ struct SharedExtrasTest {
         let old = Data("{\"faceBase\":{\"nas\":{\"Bob\":[\"h\"]}},\"transcriptMtime\":{},\"transcriptsOnShare\":{}}".utf8)
         let decoded = try? JSONDecoder().decode(SharedExtras.State.self, from: old)
         check(decoded?.faceBase["nas"] == ["Bob": ["h"]] && decoded?.factBase.isEmpty == true
-                && decoded?.pinsSent.isEmpty == true,
-              "an older sync state still loads, with no fact base and no pins sent")
+                && decoded?.pinBase.isEmpty == true,
+              "an older sync state still loads, with no fact or pin base")
 
-        // 10. Pinned folders, out to the share for the Apple TV.
+        // 10. Pinned folders, three ways per share.
+        // The merge on its own first. Lists: the order is the sidebar's.
+        let absent = SharedExtras.mergePins(local: ["a"], base: ["a"], shared: nil)
+        check(absent.local == ["a"] && absent.shared == ["a"], "no file: this Mac's list goes out")
+        check(SharedExtras.mergePins(local: [], base: nil, shared: nil).shared == nil,
+              "no file and nothing pinned: nothing is written")
+        let meet = SharedExtras.mergePins(local: ["a", "b"], base: nil, shared: ["c", "a"])
+        check(meet.local == ["a", "b", "c"] && meet.shared == ["a", "b", "c"],
+              "a first meeting keeps this Mac's pins and adds the share's it lacks")
+        let fresh = SharedExtras.mergePins(local: [], base: nil, shared: ["x", "y"])
+        check(fresh.local == ["x", "y"] && fresh.shared == nil, "a new Mac with none takes the share's")
+        let there = SharedExtras.mergePins(local: ["a"], base: ["a"], shared: ["b", "a"])
+        check(there.local == ["b", "a"] && there.shared == nil, "a change made only elsewhere is taken")
+        let here = SharedExtras.mergePins(local: ["b", "a"], base: ["a"], shared: ["a"])
+        check(here.local == ["b", "a"] && here.shared == ["b", "a"], "a change made only here is sent")
+        let clash = SharedExtras.mergePins(local: ["c"], base: ["a"], shared: ["b"])
+        check(clash.local == ["c"] && clash.shared == ["c"], "changed on both: this Mac's stand")
+        let reorder = SharedExtras.mergePins(local: ["b", "a"], base: ["a", "b"], shared: ["a", "b"])
+        check(reorder.shared == ["b", "a"], "a reorder is a change")
+
+        // Two Macs through the share.
         let (p, q) = (mac("p"), mac("q"))
-        sync(q, device: "mac-q")
-        check(!fm.fileExists(atPath: pinsFile), "a Mac with nothing pinned writes no pins")
+        check(sync(q, device: "mac-q").pinUpdates.isEmpty && !fm.fileExists(atPath: pinsFile),
+              "a Mac with nothing pinned writes no pins")
 
-        var pins = [volumes + "nas/kids/cartoons", "/Users/someone/Movies",
-                    volumes + "nas/movies/2024", volumes + "nas", volumes + "usb/stuff"]
-        sync(p, device: "mac-p", pinned: pins)
+        var pinsP = [volumes + "nas/kids/cartoons", "/Users/someone/Movies",
+                     volumes + "nas/movies/2024", volumes + "nas", volumes + "usb/stuff"]
+        check(sync(p, device: "mac-p", pinned: pinsP).pinUpdates.isEmpty, "publishing takes nothing back")
         check(sharedPins() == ["kids/cartoons", "movies/2024"],
               "the share holds its own pins, keyed from its root, in the sidebar's order")
 
-        let anotherMacs = try! JSONEncoder().encode(SharedExtras.Pins(folders: ["from/another/mac"]))
-        try! anotherMacs.write(to: URL(fileURLWithPath: pinsFile))
-        sync(p, device: "mac-p", pinned: pins)
-        check(sharedPins() == ["from/another/mac"],
-              "pins unchanged here do not write over another Mac's newer list")
-        sync(q, device: "mac-q")
-        check(sharedPins() == ["from/another/mac"], "a new Mac with no pins does not wipe the list")
+        let adopted = sync(q, device: "mac-q").pinUpdates
+        check(adopted == ["nas": ["kids/cartoons", "movies/2024"]],
+              "a Mac opening the profile takes its pins")
+        check(sharedPins() == ["kids/cartoons", "movies/2024"], "...without writing the file again")
 
-        pins = [volumes + "nas/movies/2024", volumes + "nas/kids/cartoons"]
-        sync(p, device: "mac-p", pinned: pins)
-        check(sharedPins() == ["movies/2024", "kids/cartoons"], "a reorder here is published")
+        let pinsQ = [volumes + "nas/movies/2024", volumes + "nas/kids/cartoons", volumes + "nas/new"]
+        check(sync(q, device: "mac-q", pinned: pinsQ).pinUpdates.isEmpty
+                && sharedPins() == ["movies/2024", "kids/cartoons", "new"],
+              "a pin and a reorder on the second Mac reach the share")
+        check(sync(p, device: "mac-p", pinned: pinsP).pinUpdates == ["nas": ["movies/2024", "kids/cartoons", "new"]],
+              "...and the first Mac takes them")
+        pinsP = ["/Users/someone/Movies", volumes + "nas/movies/2024", volumes + "nas/kids/cartoons", volumes + "nas/new"]
+        check(sync(p, device: "mac-p", pinned: pinsP).pinUpdates.isEmpty, "a second sync changes nothing")
 
-        try! fm.removeItem(atPath: pinsFile)
-        sync(p, device: "mac-p", pinned: pins)
-        check(sharedPins() == ["movies/2024", "kids/cartoons"], "a list that went missing is written again")
-
-        sync(p, device: "mac-p", pinned: [])
+        pinsP = ["/Users/someone/Movies"]
+        sync(p, device: "mac-p", pinned: pinsP)
         check(fm.fileExists(atPath: pinsFile) && sharedPins() == [],
               "unpinning everything clears the list rather than leaving the old one")
+        check(sync(q, device: "mac-q", pinned: pinsQ).pinUpdates == ["nas": []],
+              "...and the other Mac unpins them too")
+
+        try! fm.removeItem(atPath: pinsFile)
+        sync(q, device: "mac-q", pinned: [volumes + "nas/new"])
+        check(sharedPins() == ["new"], "a list that went missing is written again")
 
         let newerPins = Data("{\"format\":99,\"folders\":[\"x\"]}".utf8)
         try! newerPins.write(to: URL(fileURLWithPath: pinsFile))
-        sync(p, device: "mac-p", pinned: pins)
-        check(fm.contents(atPath: pinsFile) == newerPins, "a newer pins file is left alone")
+        check(sync(p, device: "mac-p", pinned: pinsP + [volumes + "nas/later"]).pinUpdates.isEmpty
+                && fm.contents(atPath: pinsFile) == newerPins,
+              "a newer pins file is neither taken from nor written over")
 
         print(failures == 0 ? "ALL PASS" : "\(failures) FAILED")
         exit(failures == 0 ? 0 : 1)
