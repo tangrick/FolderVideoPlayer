@@ -82,6 +82,7 @@ SMBClient fork) — commit only the version lines, never its rewrite.
 | 1.1 (8) | 2026-09-28 | People shelf from the Mac's `faces.json`; people kept out of Tags / All Tags | `6a1e845` |
 | 1.1 (9) | 2026-09-28 | Subtitles menu in the transport bar (Off / Transcript / subtitle files beside the video); nothing laid over the picture; off by default, kind of choice remembered | `861f17f` |
 | 1.1 (10) | 2026-09-28 | Captions 38 pt with Small / Medium / Large; Settings as four rows (Tagging as, Share, Away from home, Acknowledgements); one press picks a name; Connection screen switches share without hanging up (`Library.switchTo`); Connect to page and the 4-step add-a-connection flow redesigned as cards | `46e4bf3` |
+| 1.1 (11) | 2026-09-29 | Forward 15s within the last 15 s moves on per the play order instead of replaying (`Queue.skip` → `finished()`) | `1ae23dd` |
 
 None has been tried on a real Apple TV by this log's author: the simulator
 cannot log in to the test share (see Known gaps). 1.0.1 (6) was the build
