@@ -204,6 +204,12 @@ one Mac reaches the others and a Mac's own reading is never overwritten on a
 first meeting. Watch history, moments and smart collections stay on the Mac
 that made them.
 
+`pins.json` sits there too, for the Apple TV: the profile's pinned folders on
+that share, keyed from its root, in the sidebar's order. It only goes out — no
+Mac reads it back — and a Mac writes it only when its own pins changed since
+it last wrote one, so two Macs on one profile do not take turns over it and a
+new Mac with nothing pinned does not wipe it.
+
 ## Nothing is deleted outright
 
 Accidental deletion is a safety problem, not a security one, so instead of

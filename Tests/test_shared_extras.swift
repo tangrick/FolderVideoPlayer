@@ -16,7 +16,12 @@
 //      correction or a removal on one Mac reaches the other, a Mac's own
 //      reading is never overwritten on a first meeting, a video on this Mac's
 //      own disk is never published, and a newer facts file is left alone;
-//   9. a sync-state file from before facts existed still loads its face base.
+//   9. a sync-state file from before facts existed still loads its face base;
+//  10. pinned folders go out for the Apple TV: keyed from the share root in
+//      the sidebar's order, never a folder on this Mac's own disk; written
+//      only when they changed, so two Macs do not take turns and a new Mac
+//      with none does not wipe the list; unpinning everything clears it; a
+//      list that went missing comes back; a newer file is left alone.
 //
 // Run: Tests/run_shared_extras.sh
 
@@ -41,14 +46,15 @@ struct SharedExtrasTest {
 
     static func mac(_ name: String) -> String { scratch + "/" + name }
 
-    static func sync(_ root: String, device: String,
-                     facts: [String: [String]] = [:]) -> SharedExtras.Output {
+    @discardableResult
+    static func sync(_ root: String, device: String, facts: [String: [String]] = [:],
+                     pinned: [String] = []) -> SharedExtras.Output {
         let stateFile = SharedExtras.stateFile(profile, root: root)
         let input = SharedExtras.Input(
             root: root, profile: profile, device: device, volumes: volumes,
             folders: ["nas": folder],
             state: JSONStore.load(stateFile, fallback: SharedExtras.State()),
-            facts: facts)
+            facts: facts, pinned: pinned)
         let output = SharedExtras.sync(input, lockBudget: 2)
         _ = JSONStore.save(stateFile, output.state)
         return output
@@ -64,6 +70,13 @@ struct SharedExtrasTest {
             factsOf[root, default: [:]][key] = names.isEmpty ? nil : names
         }
         return output.factUpdates
+    }
+
+    static let pinsFile = folder + "/pins.json"
+
+    static func sharedPins() -> [String]? {
+        fm.contents(atPath: pinsFile)
+            .flatMap { try? JSONDecoder().decode(SharedExtras.Pins.self, from: $0) }?.folders
     }
 
     static func sharedFacts() -> [String: [String]]? {
@@ -250,8 +263,45 @@ struct SharedExtrasTest {
         // 9. A state file from before facts: its face base must survive.
         let old = Data("{\"faceBase\":{\"nas\":{\"Bob\":[\"h\"]}},\"transcriptMtime\":{},\"transcriptsOnShare\":{}}".utf8)
         let decoded = try? JSONDecoder().decode(SharedExtras.State.self, from: old)
-        check(decoded?.faceBase["nas"] == ["Bob": ["h"]] && decoded?.factBase.isEmpty == true,
-              "an older sync state still loads, with no fact base")
+        check(decoded?.faceBase["nas"] == ["Bob": ["h"]] && decoded?.factBase.isEmpty == true
+                && decoded?.pinsSent.isEmpty == true,
+              "an older sync state still loads, with no fact base and no pins sent")
+
+        // 10. Pinned folders, out to the share for the Apple TV.
+        let (p, q) = (mac("p"), mac("q"))
+        sync(q, device: "mac-q")
+        check(!fm.fileExists(atPath: pinsFile), "a Mac with nothing pinned writes no pins")
+
+        var pins = [volumes + "nas/kids/cartoons", "/Users/someone/Movies",
+                    volumes + "nas/movies/2024", volumes + "nas", volumes + "usb/stuff"]
+        sync(p, device: "mac-p", pinned: pins)
+        check(sharedPins() == ["kids/cartoons", "movies/2024"],
+              "the share holds its own pins, keyed from its root, in the sidebar's order")
+
+        let anotherMacs = try! JSONEncoder().encode(SharedExtras.Pins(folders: ["from/another/mac"]))
+        try! anotherMacs.write(to: URL(fileURLWithPath: pinsFile))
+        sync(p, device: "mac-p", pinned: pins)
+        check(sharedPins() == ["from/another/mac"],
+              "pins unchanged here do not write over another Mac's newer list")
+        sync(q, device: "mac-q")
+        check(sharedPins() == ["from/another/mac"], "a new Mac with no pins does not wipe the list")
+
+        pins = [volumes + "nas/movies/2024", volumes + "nas/kids/cartoons"]
+        sync(p, device: "mac-p", pinned: pins)
+        check(sharedPins() == ["movies/2024", "kids/cartoons"], "a reorder here is published")
+
+        try! fm.removeItem(atPath: pinsFile)
+        sync(p, device: "mac-p", pinned: pins)
+        check(sharedPins() == ["movies/2024", "kids/cartoons"], "a list that went missing is written again")
+
+        sync(p, device: "mac-p", pinned: [])
+        check(fm.fileExists(atPath: pinsFile) && sharedPins() == [],
+              "unpinning everything clears the list rather than leaving the old one")
+
+        let newerPins = Data("{\"format\":99,\"folders\":[\"x\"]}".utf8)
+        try! newerPins.write(to: URL(fileURLWithPath: pinsFile))
+        sync(p, device: "mac-p", pinned: pins)
+        check(fm.contents(atPath: pinsFile) == newerPins, "a newer pins file is left alone")
 
         print(failures == 0 ? "ALL PASS" : "\(failures) FAILED")
         exit(failures == 0 ? 0 : 1)

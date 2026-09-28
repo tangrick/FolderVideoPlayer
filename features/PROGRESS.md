@@ -76,6 +76,7 @@ the app's Check for Updates reads, and the website's download buttons
 | 7 | Subtitle and audio track controls | released 1.1.21 (engine probe on a real multi-track file); UI not yet exercised by hand |
 | 8 | Opt-in background maintenance | released 1.1.21; worker not yet exercised end-to-end |
 | — | File facts sync between Macs (user request) | released 1.1.22; not yet run between two real Macs |
+| — | Pinned folders published for the Apple TV (`pins.json`, user request) | done, uncommitted, unreleased; model tests pass; not yet seen on a real TV |
 | 9 | Additional-format playback (VLCKit/libmpv) | KIV — on hold by the user's decision (2026-09-27); do not start without asking |
 
 ## Priority 1 — Transcript editor and export
@@ -291,6 +292,8 @@ in places (`PlaybackController.engine`, `VideoSurface(player:)`,
 - 2026-09-27 — 1.1.22: file facts now sync between Macs through the profile's share folder (`facts.json`, `SharedExtras.syncFacts`/`mergeFacts`, three-way per video; `Library.takeSharedFacts` applies only to videos unchanged during the sync; `factsDirty` schedules a sync after a scan or correction; `SharedExtras.State` decodes older files). Tests in `test_shared_extras.swift` and `test_smart_collections.swift`. Verified before: on the real NAS, facts for 3,505 videos were not shared at all.
 
 - 2026-09-27 — Published 1.1.21 and 1.1.22: notarized DMGs as GitHub releases (Check for Updates offers them) and the website's download buttons deployed. Full `Tests/run.sh` before 1.1.22: 2,806 checks, exit 0. Both public repos' histories rewritten to the noreply identity (app repo: the 6 feature-branch commits; website repo: all 56 author/committer entries) and force-pushed with `--force-with-lease`.
+
+- 2026-09-28 — Pinned folders now published for the Apple TV (user request; the TV side lives in `~/FolderVideoPlayerTV`, uncommitted with that repo's in-progress Home work). Mac: `SharedExtras.Pins` / `syncPins` write `.FolderVideoPlayer/<profile>/pins.json` (`{format: 1, folders: [share-relative paths]}`, sidebar order) on each mounted share; one-way, no lock, written only when this Mac's list for that share differs from `State.pinsSent` (or the file went missing), and never over a newer format. `Library.pin/unpin/movePinned` set `pinsDirty` and schedule the usual auto-publish. TV: `TagStore.readPins` (same cadence and rules as `readFacts`) → `PinStore.takeFromMac`; Home shows this box's pins then the Mac's, captioned "From the Mac"; unpinning a Mac pin on the TV hides it on that TV only (`hiddenMacPins`). Verified: `run_shared_extras.sh` (8 new pin checks), Mac Debug build, tvOS simulator build, the Mac publisher run against `~/TVShare` and its file read by the TV's `PinStore` compiled standalone (12 checks). NOT verified: a live SMB connection from the TV (the test share rejects guest logins).
 
 ## Next steps for whoever continues
 

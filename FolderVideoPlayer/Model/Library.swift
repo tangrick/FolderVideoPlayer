@@ -355,6 +355,9 @@ final class Library: ObservableObject {
     /// File facts changed on this Mac since the last sync, so the shares should
     /// hear about them even if no tag changed.
     private var factsDirty = false
+    /// Pinned folders changed since the last sync. The Apple TV shows them on
+    /// its home screen, so they go to the shares like a tag does.
+    private var pinsDirty = false
     private var autoPublish: Task<Void, Never>?
     /// The publish in flight, so the next one waits rather than writing
     /// through it. See `publishTags()`.
@@ -907,11 +910,12 @@ final class Library: ObservableObject {
     /// said. Silent: a NAS asleep, unplugged or mounted read-only is a normal
     /// Tuesday. `always` syncs with nothing to send — to hear what changed.
     func publishIfNeeded(always: Bool = false) async {
-        guard tagsDirty || factsDirty || always, profileOpen else { return }
+        guard tagsDirty || factsDirty || pinsDirty || always, profileOpen else { return }
         let context = profileContext
-        // Cleared before the sync, which carries the facts: a change made while
-        // it runs sets it again and goes out next time.
+        // Cleared before the sync, which carries the facts and the pins: a
+        // change made while it runs sets them again and goes out next time.
         factsDirty = false
+        pinsDirty = false
         let outcome = await publishTags()
         guard context == profileContext else { return }
         // Only counted as done when a share actually took it, so a NAS that
@@ -1745,11 +1749,19 @@ final class Library: ObservableObject {
         pinned.insert(root, at: 0)
         recent.removeAll { $0 == root }   // pinned folder leaves Recent
         save()
+        pinsChanged()
     }
 
     func unpin(folder root: String) {
         pinned.removeAll { $0 == root }
         save()
+        pinsChanged()
+    }
+
+    /// Off to the shares with the next sync, for the Apple TV's home screen.
+    private func pinsChanged() {
+        pinsDirty = true
+        scheduleAutoPublish()
     }
 
     func isPinned(_ root: String) -> Bool { pinned.contains(root) }
@@ -1768,6 +1780,7 @@ final class Library: ObservableObject {
     func movePinned(from: Int, to: Int) {
         pinned = Self.reordered(pinned, from: from, to: to)
         save()
+        pinsChanged()
     }
 
     // MARK: - stat caches
