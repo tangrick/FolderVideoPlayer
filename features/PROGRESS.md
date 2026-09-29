@@ -84,6 +84,7 @@ SMBClient fork) — commit only the version lines, never its rewrite.
 | 1.1 (10) | 2026-09-28 | Captions 38 pt with Small / Medium / Large; Settings as four rows (Tagging as, Share, Away from home, Acknowledgements); one press picks a name; Connection screen switches share without hanging up (`Library.switchTo`); Connect to page and the 4-step add-a-connection flow redesigned as cards | `46e4bf3` |
 | 1.1 (11) | 2026-09-29 | Forward 15s within the last 15 s moves on per the play order instead of replaying (`Queue.skip` → `finished()`) | `1ae23dd` |
 | 1.1 (12) | 2026-09-29 | Pinned folders belong to the tag profile: the TV reads and writes the profile's `pins.json` (`TagStore.setPin`, under `tags.lock`), so pins follow the person and the Mac sees pins made on the TV; the TV's per-share pins and hide list are gone (old pins migrate once) | `99d63ca` |
+| 1.1 (13) | 2026-09-29 | Back from Home goes to the share chooser (chooser is the stack's root, Home pushed via `navigationDestination(isPresented:)`, `Library.hangUp`); Connection's Add a new server now opens step 1 (`Library.addingServer`); Save and reconnect uses `switchTo` | `7507e28` |
 
 None has been tried on a real Apple TV by this log's author: the simulator
 cannot log in to the test share (see Known gaps). 1.0.1 (6) was the build
