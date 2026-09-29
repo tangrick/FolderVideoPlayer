@@ -7,7 +7,12 @@
 //   2. the second Mac gets the tags, the person (name and face vector), the
 //      facts and the pinned folders;
 //   3. pins changed on the second Mac reach the first when it opens the
-//      profile again, and a folder on a Mac's own disk stays on that Mac.
+//      profile again, and a folder on a Mac's own disk stays on that Mac;
+//   4. a pin or unpin made on the Apple TV — which writes the same pins.json,
+//      in its own encoding — reaches the Mac at its next sync;
+//   5. pins belong to the tag profile: another profile on the same Mac sees
+//      none of them, gets a pins.json of its own, and switching back brings
+//      the first profile's pins back.
 //
 // Two scratch support roots stand in for the two Macs, one scratch folder for
 // the NAS. `Paths.support` is global, so each Mac's library is closed before
@@ -103,6 +108,38 @@ struct ProfileTravelsTest {
         await a.openProfile("Quincy")
         check("...and the first Mac takes them, keeping its own disk's folder",
               a.pinned == [clips, homeFolder], "\(a.pinned)")
+
+        // MARK: the Apple TV pins and unpins for the profile
+
+        // Written the way the TV writes it (JSONSerialization, sorted keys).
+        func tvWrites(_ folders: [String]) {
+            let data = try! JSONSerialization.data(
+                withJSONObject: ["format": 1, "folders": folders] as [String: Any], options: [.sortedKeys])
+            try! data.write(to: URL(fileURLWithPath: folder + "/pins.json"))
+        }
+        tvWrites(["kids", "clips"])
+        await a.publishTags()   // any sync — coming to the front makes one
+        check("a folder pinned on the Apple TV is pinned on the Mac",
+              a.pinned == [kids, clips, homeFolder], "\(a.pinned)")
+        tvWrites(["kids"])
+        await a.publishTags()
+        check("...and one unpinned there is unpinned here", a.pinned == [kids, homeFolder], "\(a.pinned)")
+
+        // MARK: another tag profile on the same Mac
+
+        await a.openProfile("Rowan")
+        check("another profile sees none of the first one's pins", a.pinned.isEmpty, "\(a.pinned)")
+        a.setTags(["Rowan's"], for: video)
+        a.pin(folder: clips)
+        await a.publishTags()
+        let rowanPins = fm.contents(atPath: Paths.volumes + "media/.FolderVideoPlayer/rowan/pins.json")
+            .flatMap { try? JSONDecoder().decode(SharedExtras.Pins.self, from: $0) }?.folders
+        check("...its pins go to its own pins.json", rowanPins == ["clips"], "\(rowanPins ?? [])")
+        check("...leaving the first profile's alone",
+              onShare(SharedExtras.Pins.self, "pins.json")?.folders == ["kids"])
+        await a.openProfile("Quincy")
+        check("switching back brings the first profile's pins back",
+              a.pinned == [kids, homeFolder], "\(a.pinned)")
         a.closeProfile()
 
         print(failures == 0 ? "\nall profile travel checks pass" : "\n\(failures) profile travel check(s) FAILED")
