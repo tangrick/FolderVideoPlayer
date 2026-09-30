@@ -31,6 +31,14 @@ struct PathMap: Codable, Equatable, Sendable {
         return Self.withSlash(to) + path.dropFirst(prefix.count)
     }
 
+    /// Where a path is after a run of moves — the first that touches it — or
+    /// the path itself when none does. What a list of paths held elsewhere
+    /// (the playlist) goes through after an operation.
+    static func follow(_ path: String, through maps: [PathMap]) -> String {
+        for map in maps { if let now = map.map(path) { return now } }
+        return path
+    }
+
     /// The same question for a key in the tag space (`Paths.tagKey`):
     /// share-relative for a file on a mounted share, absolute otherwise.
     func mapKey(_ key: String) -> String? {

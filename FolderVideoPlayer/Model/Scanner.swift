@@ -2,7 +2,8 @@ import Foundation
 
 enum Scanner {
     /// The folders videos are swept into on a volume with no Trash
-    /// (`Library.discardFolders`), kept in step by the library. What is in one
+    /// (`Library.discardFolders`), kept in step by the library, as named: a
+    /// walk passes them through `expanded` once, off the main thread. What is in one
     /// has been deleted as far as the user is concerned, so no walk that builds
     /// a view of the library may list it — otherwise a "trashed" video turns
     /// straight up again in the playlist, the counts, the duplicate finder.

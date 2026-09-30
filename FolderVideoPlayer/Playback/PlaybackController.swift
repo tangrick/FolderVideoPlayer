@@ -1230,9 +1230,23 @@ final class PlaybackController: ObservableObject {
     /// keeps playing.
     /// A folder renamed or moved while its videos were in the list: the list,
     /// and the folder it is of, follow before the listing is read again.
-    func followRelocation(_ map: PathMap) {
-        if let now = root.flatMap(map.map) { root = now }
-        playlist = playlist.map { map.map($0) ?? $0 }
+    func followRelocation(_ map: PathMap) { follow([map]) }
+
+    /// Files or folders renamed or moved: every path this controller holds
+    /// follows BEFORE the list is read again — the playlist, the folder it is
+    /// of, a named list's members, a transcript search's results. Refreshing
+    /// alone looked the playing video up by its old path, found nothing, and
+    /// moved the highlight onto whichever video now sat in its place; a named
+    /// list rebuilt itself from its old paths; a search dropped the video.
+    func follow(_ maps: [PathMap]) {
+        guard !maps.isEmpty else { return refreshAfterFileChanges() }
+        func moved(_ path: String) -> String { PathMap.follow(path, through: maps) }
+        if let current = root { root = moved(current) }
+        playlist = playlist.map(moved)
+        if let list = namedList { namedList = NamedList(title: list.title, members: list.members.map(moved)) }
+        if !saidMentions.isEmpty {
+            saidMentions = Dictionary(saidMentions.map { (moved($0.key), $0.value) }, uniquingKeysWith: { a, _ in a })
+        }
         refreshAfterFileChanges()
     }
 

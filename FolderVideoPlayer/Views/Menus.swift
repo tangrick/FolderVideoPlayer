@@ -318,6 +318,13 @@ struct MainMenu: Commands {
             }
             .keyboardShortcut("o", modifiers: [.command, .shift])
 
+            // ⌥⌘O: ⇧⌘O is Open Folder… just above.
+            Button("Organize Folders…") {
+                if let root = playback?.root { app.organize(root) }
+                openWindow(id: "organize")
+            }
+            .keyboardShortcut("o", modifiers: [.command, .option])
+
             // Named for what it lists. There are two recent lists in this menu
             // now, and "Open Recent" alone would not say which.
             Menu("Open Recent Folder") {

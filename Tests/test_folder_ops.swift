@@ -113,6 +113,8 @@ struct FolderOpsTest {
         // 3–6. rename Clips → Trips
         let trips = media + "/Trips"
         let renamed = await FolderOps.renameFolder(clips, to: "Trips", library: alex)
+        check("...and its report says what moved, for the playlist to follow",
+              renamed.moves == [PathMap(from: clips, to: trips, isFolder: true)])
         check("3. the folder is renamed", renamed.done == [trips] && exists(trips + "/sub/b.mp4") && !exists(clips),
               renamed.summary)
         check("...its videos' tags follow, subfolders included",

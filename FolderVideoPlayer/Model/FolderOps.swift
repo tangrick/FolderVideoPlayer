@@ -34,6 +34,18 @@ enum FolderOps {
     static var folderRelocated: ((PathMap) -> Void)?
     static var folderDeleted: ((String) -> Void)?
 
+    /// The videos among `paths` that a move into `folder` takes off the share
+    /// they are on — whose other people's tags cannot follow them.
+    nonisolated static func leavingShare(_ paths: [String], into folder: String) -> [String] {
+        func share(_ path: String) -> String? {
+            let key = Paths.tagKey(path)
+            guard !key.hasPrefix("/") else { return nil }
+            return key.split(separator: "/", maxSplits: 1).first.map(String.init)
+        }
+        let destination = share(folder)
+        return paths.filter { share($0).map { $0 != destination } ?? false }
+    }
+
     // MARK: - names
 
     /// Why a name will not do, or nil when it will. Trimmed first, as Finder
@@ -171,9 +183,11 @@ enum FolderOps {
             RelocationJournal.end([planned])
             report.failed.append((name, error.localizedDescription))
         case .success(let path):
-            await finishRelocation(PathMap(from: old, to: path, isFolder: true), library: library)
+            let map = PathMap(from: old, to: path, isFolder: true)
+            await finishRelocation(map, library: library)
             RelocationJournal.end([planned])
             report.done.append(path)
+            report.moves.append(map)
         }
         return report
     }

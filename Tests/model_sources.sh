@@ -35,6 +35,8 @@ MODEL_SOURCES=(
     "$model/ParkedTags.swift"
     # Folder operations and the empty-only delete (folder management, phase 4).
     "$model/FolderOps.swift" "$model/FolderDelete.swift"
+    # The Organize window's folder tree (folder management, phase 5).
+    "$model/FolderTree.swift"
     "$model/MovedScan.swift" "$model/NameIndex.swift" "$model/AnalysisModels.swift"
     "$model/AnalysisStore.swift" "$model/AnalysisEngine.swift"
     "$model/AICapability.swift" "$model/FaceStore.swift" "$model/SuggestionStore.swift"

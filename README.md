@@ -41,6 +41,11 @@ no account, no cloud service, and no video, frame or tag leaves the machine.
   `.srt`/`.vtt` beside it or everything in one ZIP. The original is never
   changed. MKV, AVI, WebM and FLV sources need FFmpeg installed.
 - **Hidden videos** — keep some videos out of the playlist behind a password.
+- **Organize folders** — *File ▸ Organize Folders…* (⌥⌘O): make, rename and
+  move folders, drag videos between them, and delete a folder once it holds
+  nothing. Tags, stars, resume points and subtitle files go with every move —
+  for everyone who tagged the videos, on this Mac, other Macs and the Apple TV.
+  A video moved to the Trash keeps its tags out of sight until it is put back.
 - **Optional AI features**, downloaded from inside the app (Settings → AI):
 
   | Bundle | What it adds | Download |

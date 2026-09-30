@@ -94,6 +94,39 @@ enum SubtitleFile {
     /// the same name (`clip.srt`), or the same name with a language between
     /// (`clip.en.srt`, `clip.pt-BR.vtt`). Case-insensitive, sorted, the bare
     /// name first.
+    /// Every subtitle file in a folder's listing, filed under the video name it
+    /// could belong to: `clip.srt` under `clip`, and `clip.en.srt` under both
+    /// `clip.en` and `clip`. Built once per listing, so a folder of thousands
+    /// answers `sidecars(for:in:)` per video by a lookup, where reading the
+    /// whole listing again for every video was quadratic.
+    static func sidecarIndex(_ names: [String]) -> [String: [String]] {
+        var index: [String: [String]] = [:]
+        for name in names {
+            let lower = name.lowercased()
+            guard extensions.contains((lower as NSString).pathExtension) else { continue }
+            let stem = (lower as NSString).deletingPathExtension
+            index[stem, default: []].append(name)
+            // `base.tag`: the tag is what follows the LAST dot — the same
+            // rule as below, where a tag may not itself contain a dot.
+            if let dot = stem.lastIndex(of: ".") {
+                let tag = stem[stem.index(after: dot)...]
+                if !tag.isEmpty && tag.count <= 12 { index[String(stem[..<dot]), default: []].append(name) }
+            }
+        }
+        return index
+    }
+
+    /// The same answer as `sidecars(for:in:)`, from an index.
+    static func sidecars(for video: String, in index: [String: [String]]) -> [String] {
+        let base = ((video as NSString).lastPathComponent as NSString).deletingPathExtension.lowercased()
+        return (index[base] ?? []).sorted { a, b in
+            let bareA = (a.lowercased() as NSString).deletingPathExtension == base
+            let bareB = (b.lowercased() as NSString).deletingPathExtension == base
+            if bareA != bareB { return bareA }
+            return a.localizedCaseInsensitiveCompare(b) == .orderedAscending
+        }
+    }
+
     static func sidecars(for video: String, in names: [String]) -> [String] {
         let base = ((video as NSString).lastPathComponent as NSString).deletingPathExtension.lowercased()
         let found = names.filter { name in

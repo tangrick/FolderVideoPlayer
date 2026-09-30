@@ -251,7 +251,7 @@ final class MaintenanceWorker: ObservableObject {
                                                         includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
                                                         options: [.skipsHiddenFiles]) else { return nil }
         var found: [(String, Int64)] = []
-        let discarded = Scanner.discarded
+        let discarded = Scanner.expanded(Scanner.discarded)
         for case let url as URL in walk {
             if Scanner.isInside(url.path, discarded) { walk.skipDescendants(); continue }
             guard videoExtensions.contains(url.pathExtension.lowercased()) else { continue }

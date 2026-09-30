@@ -469,6 +469,7 @@ final class MovedScan: ObservableObject {
         var seen: [String: [String: [String]]] = [:]
         let fm = FileManager.default
         var seenCount = 0
+        let discarded = Scanner.expanded(Scanner.discarded)
         for root in roots {
             guard let walk = fm.enumerator(at: URL(fileURLWithPath: root),
                                            includingPropertiesForKeys: [.isDirectoryKey],
@@ -482,7 +483,7 @@ final class MovedScan: ObservableObject {
                     return (hits, seen, false)
                 }
                 // A video in the discard folder was deleted, not moved there.
-                if Scanner.isInside(url.path, Scanner.discarded) { walk.skipDescendants(); continue }
+                if Scanner.isInside(url.path, discarded) { walk.skipDescendants(); continue }
                 let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
                 if !isDir {
                     let name = url.lastPathComponent.lowercased()

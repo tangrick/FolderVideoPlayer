@@ -107,7 +107,7 @@ before these.
 | — | Pinned folders published for the Apple TV (`pins.json`, user request) | released 1.1.23 (one-way); TV 1.1 (7) on TestFlight reads them |
 | — | Pins follow the profile between Macs; People shelf on the TV (user request) | done, uncommitted, unreleased; `run_profile_travels.sh` covers a second Mac opening the profile |
 | 9 | Additional-format playback (VLCKit/libmpv) | KIV — on hold by the user's decision (2026-09-27); do not start without asking |
-| — | Folder management (user request) — **start at `features/folder-management/README.md`** | phases 1–3 committed on `feature/folder-management`; phase 4 built there, uncommitted; phase 5 specified in `features/folder-management/PHASE-5-ORGANIZE-UI.md`, not started; phase 6 (TV) optional, ask first |
+| — | Folder management (user request) — **start at `features/folder-management/README.md`** | phases 1–4 committed on `feature/folder-management`; phase 5 (Organize window) built there, uncommitted; phase 6 (TV) optional, ask first |
 
 ## Priority 1 — Transcript editor and export
 
@@ -384,6 +384,43 @@ in places (`PlaybackController.engine`, `VideoSurface(player:)`,
   - **Recovery** of folder journal entries goes through `FolderOps.recover`, called once at launch.
   - **Tests:** `Tests/test_folder_ops.swift`, 42 checks, mutation-checked (recursive delete, no orphans, no folder lists, no batching each fail their checks). Full suite 2,980 checks, exit 0. Debug build OK, no new warnings.
   - **NOT verified:** a real NAS; no UI calls the folder operations yet (phase 5).
+
+- 2026-09-30 — Folder management, phase 5 (spec: `features/folder-management/PHASE-5-ORGANIZE-UI.md`): **the Organize window.**
+  - **What's built:**
+    - *File ▸ Organize Folders…* (⌥⌘O; ⇧⌘O is Open Folder), `Views/OrganizeWindow.swift`: a folder tree (new `Model/FolderTree.swift`), a video table with CC for subtitle files, drag and drop, New Folder (⇧⌘N), Rename… (↩), Delete Folder (⌥⌘⌫, only when empty), Move To, and Move to Trash.
+    - The sidebar's pinned and recent rows gain *Organize…* and folder verbs, and playlist rows gain *Show in Organizer*.
+    - `FileOps.move` reports progress and can stop between files; `FileOpProgressBanner` shows it in both windows.
+    - `AppModel.moveFiles(_:into:)` confirms a copy across drives and gives the leaving-share warning.
+    - README and Help mention the window.
+  - **Fix after user testing (deleting an empty folder froze the app):**
+    - `Library.discardFolders`' `didSet` called `realpath` on every discard folder **on the main thread**, and folder deletes and moves re-assigned the list even when unchanged. It's now stored as named, only assigned when changed, and resolved once per walk off the main thread.
+    - The Organize tree now reads each folder with one listing, instead of a stat per entry (a round trip per file on a NAS).
+    - The window shows each operation's result in its own status line; the alert goes to the player window, which may be behind it.
+    - **Not confirmed from a stack trace:** Xcode's debugger was attached, so the process couldn't be sampled.
+  - **Second fix after user testing (every action made the Organize window disappear):**
+    - `AppModel.say` showed results as an alert on the **player** window, which brought that window to the front over the Organize window.
+    - Now, when the Organize window is key (`AppModel.organizeWindow`, found by a `WindowReader`), `say` shows a sheet on it instead. A clean result shows no alert at all, only the status line.
+  - **Performance pass (user request, before commit):**
+    - **The right pane read a folder twice, then one stat per video, then matched subtitles by rescanning the listing for every video** (3,000 videos: 19.3 s of CPU on a local disk). Now it's one listing that carries size and date (`FolderTree.listing`), plus `SubtitleFile.sidecarIndex`. The pane empties at once on a new pick, shows "Reading…", and drops late results for a folder no longer picked.
+    - **The tree was rebuilt from scratch after every action.** Now `FolderTree.refreshed` re-reads only the folders the action touched (`AppModel.touch` / `takeOrganizeChange`) and reuses a moved folder's subtree. Trees are cached per root (`AppModel.organizeTrees`).
+    - **Other fixes:**
+      - Hidden folders stop at their first file (`FolderTree.hasAnyFile`); a share's `.FolderVideoPlayer/thumbs` was read in full.
+      - The tree is indexed once per change; before, `flattened` ran several times per redraw.
+      - *Move To* is capped at 150 folders, shallowest first, with Other….
+      - A drop is sorted into videos and folders from the index, with no per-item stat on the main thread.
+      - `moveFiles(_:into:)` checks the drive once per source folder, and sums copy sizes off the main thread.
+    - **Drag feedback:** the folder under a drag is highlighted (filled icon, tinted, outlined), and a collapsed folder opens after a 0.7 s hover. The tree is a hand-written `DisclosureGroup` recursion so the window owns which folders are expanded.
+  - **Fix after user testing ("Show in Organizer picked the wrong path after a move"):**
+    - **The playlist kept old paths after a move in three ways.**
+      - The refresh looked the playing video up by its old path and moved the highlight onto whichever video took its place.
+      - A Library Overview list (`namedList`) rebuilt itself from its original members.
+      - A transcript search dropped the moved video.
+      Now `FileOps.Report.moves` records every move (files, and folders in `FolderOps`), and `AppModel.finish` calls `PlaybackController.follow(report.moves)`. That re-points root, playlist, named-list members and search results through `PathMap.follow` before refreshing.
+    - **Show in Organizer replaced the window's root with the video's folder,** and did nothing when that folder was already the root. It's now a request (`AppModel.OrganizeRequest`, `showInOrganizer`). The window keeps its root when the video is inside it (otherwise the playing, pinned or recent folder holding it, or the video's folder), opens every folder above it, selects and scrolls to it, and selects the video once its list arrives.
+    - Full suite 3,008 checks, exit 0.
+    - **Tests:** `test_folder_tree.swift` now has 24 checks. Refreshes equal a full walk; a moved subtree is reused; hidden-folder early exit; index equivalence; 3,000 videos in under 1 s. Each is mutation-checked. Full suite 3,004 checks, exit 0.
+  - **Tests:** `Tests/test_folder_tree.swift`, 18 checks, mutation-checked, including the regression for the freeze. Full suite 2,998 checks, exit 0. Debug build OK.
+  - **UI not exercised by hand here** (the user runs the app).
 
 ## Next steps for whoever continues
 

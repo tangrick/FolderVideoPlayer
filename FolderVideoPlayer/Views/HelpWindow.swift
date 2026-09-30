@@ -254,6 +254,8 @@ private struct ShortcutsPage: View {
     private let windows: [Row] = [
         Row(keys: ["⌘N", "⌘O"], what: "New profile, or open one", where_: "File menu"),
         Row(keys: ["⌘⇧O"], what: "Open a folder", where_: "File menu"),
+        Row(keys: ["⌥⌘O"], what: "Organize folders — make, rename, move, delete empty ones", where_: "File menu"),
+        Row(keys: ["⇧⌘N", "⌥⌘⌫"], what: "New folder; delete an empty one", where_: "Organize Folders"),
         Row(keys: ["⌘⇧L"], what: "Show or hide the library", where_: "File menu"),
         Row(keys: ["⌘⇧P"], what: "Publish this profile's tags to the shares", where_: "File menu"),
         Row(keys: ["⌘L"], what: "Show or hide the playlist", where_: "View menu"),

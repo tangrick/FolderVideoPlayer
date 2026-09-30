@@ -116,6 +116,7 @@ final class DuplicateFinder: ObservableObject {
         var sizes: [String: Int64] = [:]
         var seen = 0
         let fm = FileManager.default
+        let discarded = Scanner.expanded(Scanner.discarded)
         for folder in folders {
             guard let walk = fm.enumerator(at: URL(fileURLWithPath: folder),
                                            includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey],
@@ -125,7 +126,7 @@ final class DuplicateFinder: ObservableObject {
             while let url = walk.nextObject() as? URL {
                 if await cancelled() { return (index, seen) }
                 // A discarded copy is not a duplicate of the one kept.
-                if Scanner.isInside(url.path, Scanner.discarded) { walk.skipDescendants(); continue }
+                if Scanner.isInside(url.path, discarded) { walk.skipDescendants(); continue }
                 guard videoExtensions.contains(url.pathExtension.lowercased()) else { continue }
                 guard let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
                       let size = values.fileSize else { continue }

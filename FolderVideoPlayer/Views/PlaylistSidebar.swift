@@ -2358,6 +2358,10 @@ struct RowMenu: View {
             openWindow(id: "share-prepare")
         }
         Divider()
+        Button("Show in Organizer") {
+            app.showInOrganizer(path)
+            openWindow(id: "organize")
+        }
         Button("Rename…") { app.renameFile(path) }
         Button(targets.count > 1 ? "Move \(targets.count) Videos…" : "Move to Folder…") {
             app.moveFiles(targets)

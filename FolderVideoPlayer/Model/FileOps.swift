@@ -19,6 +19,10 @@ enum FileOps {
     /// What a batch did, for the report the window shows.
     struct Report {
         var done: [String] = []                 // new paths, in order
+        /// What moved where — so whatever still holds the old paths (the
+        /// playlist, above all) can follow, rather than look the old path up
+        /// and find nothing.
+        var moves: [PathMap] = []
         var failed: [(name: String, why: String)] = []
         var skipped: [(name: String, why: String)] = []
 
@@ -56,16 +60,29 @@ enum FileOps {
     /// few gigabytes over Wi-Fi has hung as far as anyone can tell. The
     /// bookkeeping comes back here, one file at a time, so the stores never
     /// disagree with the disk for longer than one file takes.
+    ///
+    /// `progress` hears each file as it starts; `shouldStop` is asked between
+    /// files — never in the middle of one — so a stop leaves every file either
+    /// moved with its bookkeeping, or untouched.
     @discardableResult
-    static func move(_ paths: [String], into folder: String, library: Library) async -> Report {
+    static func move(_ paths: [String], into folder: String, library: Library,
+                     progress: ((Int, Int, String) -> Void)? = nil,
+                     shouldStop: (() -> Bool)? = nil) async -> Report {
         var report = Report()
         guard !paths.isEmpty else { return report }
         let undo = "moving \(paths.count) video\(paths.count == 1 ? "" : "s")"
         var journal: [PathMap] = []
         var moved: [PathMap] = []
         var listings: [String: [String]] = [:]
-        for path in paths {
+        for (done, path) in paths.enumerated() {
             let name = (path as NSString).lastPathComponent
+            if shouldStop?() == true {
+                for rest in paths[done...] {
+                    report.skipped.append(((rest as NSString).lastPathComponent, "not moved — stopped"))
+                }
+                break
+            }
+            progress?(done, paths.count, name)
             let source = (path as NSString).deletingLastPathComponent
             if source == folder {
                 report.skipped.append((name, "already in that folder"))
@@ -230,6 +247,7 @@ enum FileOps {
             for (companion, why) in trouble { report.failed.append((companion, why)) }
             journal.append(planned)
             moved.append(PathMap(from: planned.from, to: landed))
+            report.moves.append(PathMap(from: planned.from, to: landed))
         case .skipped(let why):
             report.skipped.append((name, why))
         case .failed(let why):

@@ -19,6 +19,8 @@ struct PlayerWindow: View {
                 Color(nsColor: .windowBackgroundColor)
             }
         }
+        // A batch of moves started from the playlist shows its progress here.
+        .overlay(alignment: .top) { FileOpProgressBanner().padding(.top, 12) }
         .alert(item: $app.notice) { notice in
             Alert(title: Text(notice.title), message: Text(notice.detail))
         }
@@ -1097,6 +1099,15 @@ struct LibrarySidebar: View {
                         app.findMoved(inFolder: root)
                         openWindow(id: "moved")
                     }
+                    Divider()
+                    Button("Organize…") {
+                        app.organize(root)
+                        openWindow(id: "organize")
+                    }
+                    Button("New Folder Inside…") { app.newFolder(in: root) }
+                    Button("Rename Folder…") { app.renameFolder(root) }
+                    Button("Delete Folder…") { app.deleteFolder(root) }
+                    Divider()
                     Toggle("Keep Up to Date in Background", isOn: Binding(
                         get: { app.maintenance.isMaintained(root) },
                         set: { app.maintenance.setMaintained(root, $0) }))
@@ -1160,6 +1171,15 @@ struct LibrarySidebar: View {
                         app.findMoved(inFolder: root)
                         openWindow(id: "moved")
                     }
+                    Divider()
+                    Button("Organize…") {
+                        app.organize(root)
+                        openWindow(id: "organize")
+                    }
+                    Button("New Folder Inside…") { app.newFolder(in: root) }
+                    Button("Rename Folder…") { app.renameFolder(root) }
+                    Button("Delete Folder…") { app.deleteFolder(root) }
+                    Divider()
                     if !library.isPinned(root) {
                         Button("Pin") { library.pin(folder: root) }
                     }

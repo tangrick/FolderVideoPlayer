@@ -156,6 +156,10 @@ sh "$here/run_trash_park.sh"
 # carried for every profile and person, in one batch.
 sh "$here/run_folder_ops.sh"
 
+# Folder management, phase 5: the Organize window's folder tree, listings,
+# progress and Stop.
+sh "$here/run_folder_tree.sh"
+
 # T08's first slice: a video becomes the one signal a speech model takes, with
 # nothing installed — real AAC decoded, silence left silent, no-audio answered,
 # and a time window really honoured, because a long film is read in pieces.

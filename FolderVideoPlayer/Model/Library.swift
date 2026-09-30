@@ -191,8 +191,11 @@ final class Library: ObservableObject {
     /// Recent folders per profile — see `pinnedByProfile`, same rule.
     private var recentByProfile: [String: [String]] = [:]
     @Published var discardFolders: [String: String] = [:] {
-        // Every walk skips these; see `Scanner.discarded`.
-        didSet { Scanner.discarded = Scanner.expanded(discardFolders.values.filter { !$0.isEmpty }.sorted()) }
+        // Every walk skips these; see `Scanner.discarded`. Stored as named —
+        // no file system call here: this runs on the main thread, and
+        // resolving a folder on a sleeping NAS waits for it to wake. Each walk
+        // resolves them itself, off the main thread (`Scanner.expanded`).
+        didSet { Scanner.discarded = discardFolders.values.filter { !$0.isEmpty }.sorted() }
     }
     /// Fingerprinting as videos play. Off unless asked for: a video that was
     /// moved and then found again gets matched against where it used to be
@@ -1196,7 +1199,8 @@ final class Library: ObservableObject {
         pinnedByProfile = pinnedByProfile.mapValues { $0.map(moved) }
         recentByProfile = recentByProfile.mapValues { $0.map(moved) }
         for i in scans.indices { scans[i].folders = scans[i].folders.map(moved) }
-        discardFolders = discardFolders.mapValues(moved)
+        let discards = discardFolders.mapValues(moved)
+        if discards != discardFolders { discardFolders = discards }
         if let root = session?.root { session?.root = moved(root) }
         save()
         if pinned != pinsBefore { pinsChanged() }
@@ -1212,7 +1216,8 @@ final class Library: ObservableObject {
         pinnedByProfile = pinnedByProfile.mapValues { $0.filter { !gone($0) } }
         recentByProfile = recentByProfile.mapValues { $0.filter { !gone($0) } }
         for i in scans.indices { scans[i].folders.removeAll(where: gone) }
-        discardFolders = discardFolders.filter { !gone($0.value) }
+        let discards = discardFolders.filter { !gone($0.value) }
+        if discards != discardFolders { discardFolders = discards }
         save()
         if pinned != pinsBefore { pinsChanged() }
     }

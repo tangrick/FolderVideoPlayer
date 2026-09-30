@@ -175,6 +175,14 @@ struct FolderVideoPlayerApp: App {
         }
         .defaultSize(width: 900, height: 660)
 
+        Window("Organize Folders", id: "organize") {
+            OrganizeWindow()
+                .environmentObject(library)
+                .environmentObject(app)
+                .frame(minWidth: 700, minHeight: 440)
+        }
+        .defaultSize(width: 980, height: 640)
+
         Window("Find Missing Files", id: "moved") {
             MissingFilesWindow()
                 .environmentObject(library)
@@ -948,6 +956,86 @@ final class AppModel: ObservableObject {
     /// on top of the first would have two of them re-pointing the same stores.
     private var fileOpsRunning = false
 
+    /// A batch on the move, for the progress bar and its Stop button: how far
+    /// it has got, and the file it is on. Nil when nothing is moving.
+    struct FileOpProgress: Equatable { var done: Int; var total: Int; var current: String }
+    @Published private(set) var fileOpProgress: FileOpProgress?
+    private var stopRequested = false
+
+    /// Stop the batch on the move, after the file it is on.
+    func stopFileOp() { stopRequested = true }
+
+    /// For FileOps: report a file starting, and ask whether to stop.
+    private func noteProgress(_ done: Int, _ total: Int, _ current: String) {
+        fileOpProgress = FileOpProgress(done: done, total: total, current: current)
+    }
+    private func stopAsked() -> Bool { stopRequested }
+
+    // MARK: - the Organize window
+
+    /// The folder the Organize window should show, and a video in it to
+    /// select — set before opening the window, as `findMoved` aims the
+    /// missing-files one.
+    /// What the Organize window has been asked to show: a folder to organise,
+    /// or a video to find in it. A request rather than a setting, so asking
+    /// twice for the same thing still goes there — the window might have been
+    /// moved on from it since.
+    struct OrganizeRequest: Equatable {
+        let id = UUID()
+        var root: String?
+        var video: String?
+    }
+    @Published private(set) var organizeRequest: OrganizeRequest?
+    /// Bumped after every file operation, so the window reads the disk again.
+    @Published private(set) var organizeRevision = 0
+    /// What the last one did, in a line — for the Organize window's own
+    /// status line. The full report is an alert on the player window, which
+    /// may be behind the Organize window and easy to miss from there.
+    @Published private(set) var lastFileOp: String?
+    /// The Organize window, once it is on screen — so what an action taken in
+    /// it has to say is said there, not on the player window. Not published:
+    /// nothing draws it.
+    weak var organizeWindow: NSWindow?
+
+    /// Organise a folder: it becomes the window's root.
+    func organize(_ root: String) {
+        organizeRequest = OrganizeRequest(root: root, video: nil)
+    }
+
+    /// Find a video in the Organize window: its folder selected and opened
+    /// down to, the video selected in it. The window keeps the folder it is
+    /// organising when the video is inside it, rather than narrowing to the
+    /// video's own folder.
+    func showInOrganizer(_ video: String) {
+        organizeRequest = OrganizeRequest(root: nil, video: video)
+    }
+
+    /// What the last operation changed, for the Organize window to read
+    /// again: the folders whose own contents changed, and the folders that
+    /// moved (whose subtrees are reused rather than walked). Nil: read the
+    /// whole tree. Taken once, by the window, when `organizeRevision` moves.
+    struct OrganizeChange { var folders: [String]; var moved: [PathMap] }
+    private var organizeChange: OrganizeChange?
+    private var pendingFolders = Set<String>()
+    private var pendingMoved: [PathMap] = []
+    private var pendingWholeTree = false
+
+    func takeOrganizeChange() -> OrganizeChange? {
+        defer { organizeChange = nil }
+        return organizeChange
+    }
+
+    /// The last tree built for each root, so reopening the window, or going
+    /// back to a root, shows it at once while it is read again behind.
+    var organizeTrees: [String: FolderNode] = [:]
+
+    /// Note what an operation about to run will change.
+    private func touch(_ folders: [String], moved: [PathMap] = [], wholeTree: Bool = false) {
+        pendingFolders.formUnion(folders)
+        pendingMoved += moved
+        pendingWholeTree = pendingWholeTree || wholeTree
+    }
+
     private var relocationsRecovered = false
 
     /// Finish a move a crash cut short — once per launch. `onAppear` can run
@@ -979,9 +1067,11 @@ final class AppModel: ObservableObject {
             return
         }
         fileOpsRunning = true
+        stopRequested = false
         Task {
             let report = await work()
             fileOpsRunning = false
+            fileOpProgress = nil
             finish(report, verb)
         }
     }
@@ -993,34 +1083,132 @@ final class AppModel: ObservableObject {
         guard let wanted = ask("Rename video",
                                "What should this file be called?",
                                current), wanted != current else { return }
+        touch([(path as NSString).deletingLastPathComponent])
         runFileOp("Renamed") { await FileOps.rename(path, to: wanted, library: library) }
     }
 
     /// Move videos into a folder the user picks.
     func moveFiles(_ paths: [String]) {
-        guard let library, !paths.isEmpty else { return }
+        guard !paths.isEmpty else { return }
         guard let folder = pickFolder(prompt: "Move Here",
                                       message: paths.count == 1
                                         ? "Where should this video go?"
                                         : "Where should these \(paths.count) videos go?",
                                       start: (paths[0] as NSString).deletingLastPathComponent)
         else { return }
+        moveFiles(paths, into: folder)
+    }
+
+    /// Move videos into a folder already chosen — Move To, and a drop in the
+    /// Organize window. Asks first when they cross to another drive, and when
+    /// other people's tags cannot follow them off their share.
+    func moveFiles(_ paths: [String], into folder: String) {
+        guard let library, !paths.isEmpty else { return }
+        // Which drive a video is on is asked once per folder it comes from,
+        // not once per video: on a share every question is a round trip, and
+        // this runs on the main thread.
+        let sources = Set(paths.map { ($0 as NSString).deletingLastPathComponent })
+        let away = sources.filter { !FolderOps.sameVolume($0, folder) }
+        let crossing = paths.filter { away.contains(($0 as NSString).deletingLastPathComponent) }
         // Videos leaving their share take this profile's tags with them, but
         // not anybody else's: the others cannot see where they went. Say whose
         // before anything moves, and let the move go ahead.
-        let leaving = paths.filter { Self.share(of: $0).map { $0 != Self.share(of: folder) } ?? false }
-        guard !leaving.isEmpty else {
-            runFileOp("Moved") { await FileOps.move(paths, into: folder, library: library) }
-            return
-        }
+        let leaving = FolderOps.leavingShare(paths, into: folder)
         let me = library.profileOpen ? slug(library.person) : ""
         let shares = Set(leaving.compactMap(Self.share(of:))).sorted()
         Task {
-            let people = await Task.detached(priority: .userInitiated) {
-                ProfileRelocation.peopleTagging(leaving, skip: me)
-            }.value
-            guard people.isEmpty || confirmLeavingShare(people, shares: shares) else { return }
-            runFileOp("Moved") { await FileOps.move(paths, into: folder, library: library) }
+            if !crossing.isEmpty {
+                let bytes = await Task.detached(priority: .userInitiated) {
+                    crossing.reduce(Int64(0)) { total, path in
+                        total + ((try? FileManager.default.attributesOfItem(atPath: path)[.size] as? NSNumber)?.int64Value ?? 0)
+                    }
+                }.value
+                guard confirmCopy(crossing.count, bytes: bytes, to: folder) else { return }
+            }
+            if !leaving.isEmpty {
+                let people = await Task.detached(priority: .userInitiated) {
+                    ProfileRelocation.peopleTagging(leaving, skip: me)
+                }.value
+                guard people.isEmpty || confirmLeavingShare(people, shares: shares) else { return }
+            }
+            touch(Array(sources) + [folder])
+            runFileOp("Moved") { [self] in
+                await FileOps.move(paths, into: folder, library: library,
+                                   progress: { self.noteProgress($0, $1, $2) },
+                                   shouldStop: { self.stopAsked() })
+            }
+        }
+    }
+
+    /// A move to another drive is a copy of every byte: say how much first.
+    private func confirmCopy(_ count: Int, bytes: Int64, to folder: String) -> Bool {
+        let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        let alert = NSAlert()
+        alert.messageText = "Copy \(count) video\(count == 1 ? "" : "s") (\(size)) to “\((folder as NSString).lastPathComponent)”?"
+        alert.informativeText = "It is on another drive, so each video is copied across. The originals are removed once each copy has moved."
+        alert.addButton(withTitle: "Move")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    // MARK: - folders
+
+    /// A new folder inside `parent`, then its name asked for straight away.
+    func newFolder(in parent: String) {
+        guard let library else { return }
+        touch([parent])
+        runFileOp("Made") { [self] in
+            let made = await FolderOps.makeFolder(in: parent)
+            guard let folder = made.done.first,
+                  let name = ask("Name the new folder", "What should it be called?",
+                                 (folder as NSString).lastPathComponent, ok: "Name"),
+                  name != (folder as NSString).lastPathComponent else { return made }
+            return await FolderOps.renameFolder(folder, to: name, library: library)
+        }
+    }
+
+    /// Rename a folder, asked for by name. Everything under it follows.
+    func renameFolder(_ path: String) {
+        guard let library else { return }
+        let current = (path as NSString).lastPathComponent
+        guard let name = ask("Rename folder", "What should this folder be called?", current),
+              name != current else { return }
+        let parent = (path as NSString).deletingLastPathComponent
+        touch([parent], moved: [PathMap(from: path, to: (parent as NSString).appendingPathComponent(
+            name.trimmingCharacters(in: .whitespacesAndNewlines)), isFolder: true)])
+        runFileOp("Renamed") { await FolderOps.renameFolder(path, to: name, library: library) }
+    }
+
+    /// Move a folder into another — the Organize window's drop.
+    func moveFolder(_ path: String, into parent: String) {
+        guard let library else { return }
+        touch([(path as NSString).deletingLastPathComponent, parent],
+              moved: [PathMap(from: path, to: (parent as NSString).appendingPathComponent(
+                (path as NSString).lastPathComponent), isFolder: true)])
+        runFileOp("Moved") { await FolderOps.moveFolder(path, into: parent, library: library) }
+    }
+
+    /// Delete a folder, if it holds no files. What is in it is looked at first
+    /// — a context menu cannot know without walking the folder — and said
+    /// instead of deleting when it is not empty.
+    func deleteFolder(_ path: String, root: String? = nil) {
+        guard let library else { return }
+        let name = (path as NSString).lastPathComponent
+        Task {
+            let inside = await Task.detached(priority: .userInitiated) { FolderDelete.contents(of: path) }.value
+            guard inside.isEmpty else {
+                say("“\(name)” is not empty",
+                    "It holds \(inside.description). Move or delete them first — a folder is only deleted once there is nothing in it.")
+                return
+            }
+            let alert = NSAlert()
+            alert.messageText = "Delete “\(name)”?"
+            alert.informativeText = "It holds no files."
+            alert.addButton(withTitle: "Delete")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            touch([(path as NSString).deletingLastPathComponent])
+            runFileOp("Deleted") { await FolderOps.deleteFolder(path, library: library, root: root) }
         }
     }
 
@@ -1076,6 +1264,7 @@ final class AppModel: ObservableObject {
         alert.addButton(withTitle: "Move to Trash")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        touch(paths.map { ($0 as NSString).deletingLastPathComponent })
         runFileOp("Deleted") {
             await FileOps.trash(paths, library: library) { volume, why in
                 self.askDiscardFolder(volume, why)
@@ -1338,14 +1527,27 @@ final class AppModel: ObservableObject {
         alert.addButton(withTitle: "Gather")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        touch([], wholeTree: true)
         runFileOp("Gathered") { await FileOps.gather(tag: tag, into: parent, library: library) }
     }
 
     /// Report what a batch did and put the views back in step with the disk.
     private func finish(_ report: FileOps.Report, _ verb: String) {
+        organizeChange = pendingWholeTree || pendingFolders.isEmpty ? nil
+            : OrganizeChange(folders: Array(pendingFolders), moved: pendingMoved)
+        pendingFolders = []
+        pendingMoved = []
+        pendingWholeTree = false
+        organizeRevision += 1
         guard !report.isEmpty else { return }
+        lastFileOp = "\(verb): \(report.summary)"
+            + (report.failed.first.map { " — \($0.name): \($0.why)" } ?? "")
         selectNone()
-        playback?.refreshAfterFileChanges()
+        playback?.follow(report.moves)
+        // In the Organize window, a clean result is its status line and needs
+        // no alert; only something that did not happen is worth stopping for.
+        let inOrganize = organizeWindow.map { NSApp.keyWindow === $0 } ?? false
+        if inOrganize && report.failed.isEmpty && report.skipped.isEmpty { return }
         say("\(verb): \(report.summary)", report.detail)
     }
 
@@ -1397,6 +1599,16 @@ final class AppModel: ObservableObject {
     }
 
     func say(_ title: String, _ detail: String) {
+        // From the Organize window, say it there. The notice is an alert on
+        // the player window, and presenting it brought that window to the
+        // front — over the Organize window, after every action taken in it.
+        if let window = organizeWindow, NSApp.keyWindow === window {
+            let alert = NSAlert()
+            alert.messageText = title
+            alert.informativeText = detail
+            alert.beginSheetModal(for: window)
+            return
+        }
         notice = Notice(title: title, detail: detail)
     }
 
