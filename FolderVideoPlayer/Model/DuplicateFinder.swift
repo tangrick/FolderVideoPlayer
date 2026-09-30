@@ -124,6 +124,8 @@ final class DuplicateFinder: ObservableObject {
             // iterator is not available from an async context.
             while let url = walk.nextObject() as? URL {
                 if await cancelled() { return (index, seen) }
+                // A discarded copy is not a duplicate of the one kept.
+                if Scanner.isInside(url.path, Scanner.discarded) { walk.skipDescendants(); continue }
                 guard videoExtensions.contains(url.pathExtension.lowercased()) else { continue }
                 guard let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
                       let size = values.fileSize else { continue }

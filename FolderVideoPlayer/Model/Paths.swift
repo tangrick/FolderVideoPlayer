@@ -150,6 +150,10 @@ enum Paths {
     static var relocationsOwedFile: String {
         (support as NSString).appendingPathComponent("relocations-owed.json")
     }
+    /// Tags of videos in the Trash, kept for Put Back — see `ParkedTags`.
+    static var parkedTagsFile: String {
+        (support as NSString).appendingPathComponent("trashed-tags.json")
+    }
     /// The facts the app READ off the files — the capture date, the resolution,
     /// the camera, the place from GPS. Kept out of `tagsFile` because that one
     /// is published to the other devices verbatim, and because a reading is not

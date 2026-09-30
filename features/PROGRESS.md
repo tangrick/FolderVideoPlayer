@@ -107,7 +107,7 @@ before these.
 | — | Pinned folders published for the Apple TV (`pins.json`, user request) | released 1.1.23 (one-way); TV 1.1 (7) on TestFlight reads them |
 | — | Pins follow the profile between Macs; People shelf on the TV (user request) | done, uncommitted, unreleased; `run_profile_travels.sh` covers a second Mac opening the profile |
 | 9 | Additional-format playback (VLCKit/libmpv) | KIV — on hold by the user's decision (2026-09-27); do not start without asking |
-| — | Folder management (user request) — **start at `features/folder-management/README.md`** | phases 1–2 committed on `feature/folder-management`; phases 3–5 specified in `features/folder-management/PHASE-*.md`, not started; phase 6 (TV) optional, ask first |
+| — | Folder management (user request) — **start at `features/folder-management/README.md`** | phases 1–2 committed on `feature/folder-management`; phase 3 built there, uncommitted; phases 4–5 specified in `features/folder-management/PHASE-*.md`, not started; phase 6 (TV) optional, ask first |
 
 ## Priority 1 — Transcript editor and export
 
@@ -363,6 +363,16 @@ in places (`PlaybackController.engine`, `VideoSurface(player:)`,
   - **`MediaCache.move`'s disk work is serialised** (NAS trickle rule).
   - **Tests:** `Tests/test_profile_relocation.swift` (37 checks, mutation-checked; with ring 3 off, the reported bug reproduces). Full `sh Tests/run.sh`: 2,919 checks, exit 0. Debug app build OK, no new warnings.
   - **NOT verified:** a real NAS, a real second Mac, or the Apple TV hardware.
+
+- 2026-09-30 — Folder management, phase 3 (spec: `features/folder-management/PHASE-3-TRASH.md`): **the Trash keeps tags, out of sight, and Put Back returns them**, for every profile on this Mac and every person on the share.
+  - **New `Model/ParkedTags.swift`** (`support/trashed-tags.json`). A holder's tags are kept there *before* they're removed from that holder, so a crash loses nothing; if keeping fails, nothing is removed.
+  - **`FileOps.trash` is `async`.** It sends subtitle sidecars with their video; `Library.parkForTrash` replaces `forgetPath` for the profile in force (readings, watch, resume, hidden untouched). Other bundles go through `ParkedTags.parkAndRemoveFromBundles`, and people on the share through `ProfileRelocation.removeOnShares`. `ProfileRelocation.apply(edits:parks:)` is generalised from moves; `Owed` gains optional `edits` and `parks`.
+  - **Put Back:** `ParkedTags.restore(present:library:)` runs after every folder scan (`PlaybackController.videosFound`) and once at launch. A person who retagged the video meanwhile keeps their own tags.
+  - **Discard folders are skipped** by every library walk: `Scanner.discarded`, kept in step by `Library.discardFolders`, resolved with `realpath`, and used by `Scanner.scan`/`count` (new `skipping:`), the duplicate finder, the moved-file search and background upkeep.
+  - **Find Missing Files** gains "Deleted videos kept for Put Back" with Forget / Forget All.
+  - **`FileOps.replace` and `PlaybackController.replaceOriginal` are `async`**, and a replace spreads before it trashes. `FileOps.sendsToTrash` (off in tests) keeps tests out of the user's Trash.
+  - **Tests:** `Tests/test_trash_park.swift`, 19 checks, mutation-checked (no parking → checks 5, 7–9 and 11 fail; no ring 3 → checks 3 and 11 fail). Full suite 2,938 checks, exit 0. Debug build OK, no new warnings.
+  - **NOT verified:** the real Trash and Finder's Put Back, and a real NAS.
 
 ## Next steps for whoever continues
 

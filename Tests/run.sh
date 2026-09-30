@@ -148,6 +148,10 @@ sh "$here/run_relocation.sh"
 # its next sync.
 sh "$here/run_profile_relocation.sh"
 
+# Folder management, phase 3: the Trash keeps tags, out of sight, for every
+# profile and person; Put Back returns them; discard folders are not scanned.
+sh "$here/run_trash_park.sh"
+
 # T08's first slice: a video becomes the one signal a speech model takes, with
 # nothing installed — real AAC decoded, silence left silent, no-audio answered,
 # and a time window really honoured, because a long film is read in pieces.

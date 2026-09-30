@@ -37,6 +37,7 @@ private struct MissingFilesContent: View {
             header
                 .padding(16)
             Divider()
+            KeptForPutBack()
             if scan.phase == .idle && !scan.hasFindings {
                 idleExplainer
             } else {
@@ -404,4 +405,50 @@ private struct MissingFilesContent: View {
     private var pickedCount: Int { scan.chosen.count }
 
     @Environment(\.dismissWindow) private var dismissWindow
+}
+
+/// Videos sent to the Trash and gone from it too, whose tags are still kept for
+/// a Put Back that can no longer happen (`ParkedTags`). Shown only when there
+/// are some; forgetting one drops the kept tags and nothing else.
+private struct KeptForPutBack: View {
+    @State private var gone: [String] = []
+
+    var body: some View {
+        Group {
+            if !gone.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Deleted videos kept for Put Back (\(gone.count))")
+                            .font(.headline)
+                        Spacer()
+                        Button("Forget All") { forget(gone) }
+                    }
+                    Text("These went to the Trash and are no longer there either, so they cannot be put back. Their tags are kept out of sight until you forget them.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ForEach(gone.prefix(50), id: \.self) { key in
+                        HStack {
+                            Text((key as NSString).lastPathComponent)
+                                .lineLimit(1)
+                                .help(Paths.tagPath(key))
+                            Spacer()
+                            Button("Forget") { forget([key]) }
+                        }
+                    }
+                }
+                .padding(16)
+                Divider()
+            }
+        }
+        // Each entry is two existence checks, and on a share each is a round
+        // trip: asked off the main thread, once, when the window opens.
+        .task {
+            gone = await Task.detached(priority: .utility) { ParkedTags.load().forgettable() }.value
+        }
+    }
+
+    private func forget(_ keys: [String]) {
+        ParkedTags.forget(keys)
+        gone.removeAll { keys.contains($0) }
+    }
 }

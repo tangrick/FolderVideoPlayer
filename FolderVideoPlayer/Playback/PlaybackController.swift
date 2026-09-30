@@ -106,7 +106,10 @@ final class PlaybackController: ObservableObject {
     /// Puts a finished copy in the original's place: details moved, original
     /// to the Trash. Supplied by the app, which owns the "which folder, on a
     /// share with no Trash" question.
-    var replaceOriginal: ((_ original: String, _ copy: String) -> FileOps.Report)?
+    var replaceOriginal: ((_ original: String, _ copy: String) async -> FileOps.Report)?
+    /// Told every folder listing, so a video put back from the Trash gets its
+    /// tags back (`ParkedTags.restore`). Set by the app.
+    var videosFound: (([String]) -> Void)?
     /// The run's closing line, for the app to show.
     var onConversionFinished: ((String) -> Void)?
     /// Set while a folder is being walked, so the window can say so.
@@ -188,6 +191,7 @@ final class PlaybackController: ObservableObject {
             }.value
             guard let self else { return }
             self.scanning = false
+            self.videosFound?(items)
             guard !items.isEmpty else {
                 self.trouble = "No videos in “\((root as NSString).lastPathComponent)”."
                 self.playlist = []
@@ -920,7 +924,7 @@ final class PlaybackController: ObservableObject {
                     continue
                 }
                 converted += 1
-                if let report = self.replaceOriginal?(source, target), !report.failed.isEmpty {
+                if let report = await self.replaceOriginal?(source, target), !report.failed.isEmpty {
                     stayed.append(name)
                 }
                 self.adopt(source, as: target)
@@ -1225,6 +1229,7 @@ final class PlaybackController: ObservableObject {
                     Scanner.scan(root)
                 }.value
                 guard let self else { return }
+                self.videosFound?(items)
                 self.playlist = self.library.sorted(items)
                 self.settle(on: playingNow)
             }

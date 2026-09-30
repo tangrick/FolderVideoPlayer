@@ -31,6 +31,8 @@ MODEL_SOURCES=(
     # ...and the same move carried to the other profiles on this Mac and every
     # person's folder on the share (folder management, phase 2).
     "$model/ProfileRelocation.swift"
+    # Tags of videos in the Trash, kept for Put Back (folder management, phase 3).
+    "$model/ParkedTags.swift"
     "$model/MovedScan.swift" "$model/NameIndex.swift" "$model/AnalysisModels.swift"
     "$model/AnalysisStore.swift" "$model/AnalysisEngine.swift"
     "$model/AICapability.swift" "$model/FaceStore.swift" "$model/SuggestionStore.swift"

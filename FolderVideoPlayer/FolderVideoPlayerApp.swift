@@ -706,9 +706,14 @@ final class AppModel: ObservableObject {
         // A converted copy replaces its original the way Delete sends a file
         // anywhere: the Trash, or the folder asked for on a share with none.
         player.replaceOriginal = { [weak self] original, copy in
-            FileOps.replace(original, with: copy, library: library) { volume, why in
+            await FileOps.replace(original, with: copy, library: library) { volume, why in
                 self?.askDiscardFolder(volume, why)
             }
+        }
+        // A folder just listed may hold a video the Finder has put back from
+        // the Trash: its tags come back with it.
+        player.videosFound = { found in
+            Task { await ParkedTags.restore(present: found, library: library) }
         }
         // An alert, not `jobNotice`: nothing in the player window draws that.
         player.onConversionFinished = { [weak self] line in self?.say("Converting finished", line) }
@@ -934,6 +939,16 @@ final class AppModel: ObservableObject {
         // The other profiles and people hear of those too, and any person's
         // folder whose lock was held last time gets its moves now.
         Task { await ProfileRelocation.spread(finished, library: library) }
+        // Videos put back from the Trash while the app was closed. Looked for
+        // off the main thread, one at a time: a sleeping NAS answers slowly.
+        let kept = ParkedTags.originals()
+        guard !kept.isEmpty else { return }
+        Task {
+            let back = await Task.detached(priority: .utility) {
+                kept.filter { FileManager.default.fileExists(atPath: $0) }
+            }.value
+            await ParkedTags.restore(present: back, library: library)
+        }
     }
 
     /// Run one file operation, one at a time, then report it.
@@ -1031,7 +1046,8 @@ final class AppModel: ObservableObject {
         let alert = NSAlert()
         alert.messageText = "Move \(what) to the Trash?"
         alert.informativeText = """
-        The tags and resume positions go with them.
+        Their tags are kept, out of sight, and come back if you put them back \
+        from the Trash — for everybody who tagged them.
 
         Nothing is deleted outright — on a share with no Trash you will be \
         asked for a folder to move them into instead, and you empty it yourself.
@@ -1039,10 +1055,11 @@ final class AppModel: ObservableObject {
         alert.addButton(withTitle: "Move to Trash")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let report = FileOps.trash(paths, library: library) { volume, why in
-            self.askDiscardFolder(volume, why)
+        runFileOp("Deleted") {
+            await FileOps.trash(paths, library: library) { volume, why in
+                self.askDiscardFolder(volume, why)
+            }
         }
-        finish(report, "Deleted")
     }
 
     // MARK: - hidden videos

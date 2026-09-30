@@ -293,17 +293,27 @@ enum FileOps {
 
     // MARK: - deleting
 
-    /// Move videos to the Trash, and their tag references with them.
+    /// Move videos to the Trash — their subtitle files with them — keeping
+    /// their tags for Put Back.
     ///
     /// On a volume with no Trash — most NAS shares — the caller is asked for
     /// a folder to sweep them into instead, once per volume. Nothing is ever
     /// deleted outright by this app.
+    ///
+    /// The tags leave every list: the profile in force's, every other profile's
+    /// on this Mac, every person's on the share — so a video in the Trash is
+    /// counted and offered nowhere, the Apple TV included. They are kept first
+    /// (`ParkedTags`), and Put Back returns them. Readings, watch state, the
+    /// resume point, marks and the hidden flag are not touched at all: keyed to
+    /// the old path, they are invisible without the file and back with it.
     @discardableResult
     static func trash(_ paths: [String], library: Library,
-                      askFolder: (String, String) -> String?) -> Report {
+                      askFolder: (String, String) -> String?) async -> Report {
         var report = Report()
         guard !paths.isEmpty else { return report }
         library.rememberForUndo("deleting \(paths.count) video\(paths.count == 1 ? "" : "s")")
+        let active = library.profileOpen ? slug(library.person) : ""
+        var binned: [String] = []           // tag keys at the old paths
         for path in paths {
             let name = (path as NSString).lastPathComponent
             guard FileManager.default.fileExists(atPath: path) else {
@@ -313,13 +323,15 @@ enum FileOps {
                 report.skipped.append((name, "was already gone — reference removed"))
                 continue
             }
-            do {
-                try FileManager.default.trashItem(at: URL(fileURLWithPath: path),
-                                                  resultingItemURL: nil)
-                dropBookkeeping(path, library: library)
-                report.done.append(path)
-            } catch {
-                let why = (error as NSError).localizedDescription
+            var outcome: Binned = .refused("this volume has no Trash")
+            if sendsToTrash {
+                outcome = await Task.detached(priority: .userInitiated) {
+                    binFile(path, into: nil)
+                }.value
+            }
+            if case .refused(let why) = outcome {
+                // No Trash here. The question is a modal alert, so it is asked
+                // here, on the main actor, and only the moving goes off it.
                 let volume = Paths.volumeOf(path)
                 var folder = library.discardFolders[volume]
                 if let known = folder, !FileManager.default.fileExists(atPath: known) {
@@ -334,19 +346,92 @@ enum FileOps {
                     report.failed.append((name, why))
                     continue
                 }
-                let target = freeName(in: folder, for: name)
-                do {
-                    try FileManager.default.moveItem(atPath: path, toPath: target)
-                    dropBookkeeping(path, library: library)
-                    report.done.append(target)
-                } catch {
-                    report.failed.append((name, (error as NSError).localizedDescription))
-                }
+                outcome = await Task.detached(priority: .userInitiated) {
+                    binFile(path, into: folder)
+                }.value
             }
+            guard case let .done(location, trouble) = outcome else {
+                if case .refused(let why) = outcome { report.failed.append((name, why)) }
+                continue
+            }
+            // Kept before it is taken out: a crash in between loses nothing.
+            let key = Paths.tagKey(path)
+            let names = library.tagsFor(path)
+            if ParkedTags.keep(key, profile: active.isEmpty ? nil : active, names: names,
+                               location: location) {
+                library.parkForTrash(path)
+            } else {
+                report.failed.append((name, "its tags could not be kept for Put Back, so they were left on it"))
+            }
+            binned.append(key)
+            report.done.append(location)
+            for (companion, why) in trouble { report.failed.append((companion, why)) }
         }
         library.saveTags()
         library.save()
+        guard !binned.isEmpty else { return report }
+        // The other profiles on this Mac, and every person on the share — off
+        // the main thread, each holder's tags kept before they are removed.
+        let device = slug(library.device)
+        let root = Paths.support
+        await Task.detached(priority: .utility) {
+            ParkedTags.parkAndRemoveFromBundles(binned, except: active, root: root)
+            ProfileRelocation.owe(ProfileRelocation.removeOnShares(binned, skip: active, device: device))
+            // A video nobody had tagged keeps nothing worth a line.
+            ParkedTags.update { parked in
+                for key in binned where parked.videos[key]?.isEmpty == true {
+                    parked.videos.removeValue(forKey: key)
+                }
+            }
+        }.value
         return report
+    }
+
+    /// Off in the tests, which must never fill the user's own Trash: every
+    /// volume then behaves as one with no Trash, and takes the folder route.
+    static var sendsToTrash = true
+
+    /// What sending one video to the Trash did.
+    enum Binned: Sendable {
+        /// Where it went, and any subtitle file that could not go with it.
+        case done(String, [(String, String)])
+        /// The Trash (or the folder) refused it, and why.
+        case refused(String)
+    }
+
+    /// Send one video and its subtitle files to the Trash — or, given a
+    /// `folder`, into it, never over anything already there.
+    nonisolated static func binFile(_ path: String, into folder: String?) -> Binned {
+        let fm = FileManager.default
+        let source = (path as NSString).deletingLastPathComponent
+        let listing = (try? fm.contentsOfDirectory(atPath: source)) ?? []
+        let companions = SubtitleFile.sidecars(for: path, in: listing)
+        func bin(_ file: String) throws -> String {
+            if let folder {
+                let target = freeName(in: folder, for: (file as NSString).lastPathComponent)
+                try fm.moveItem(atPath: file, toPath: target)
+                return target
+            }
+            var landed: NSURL?
+            try fm.trashItem(at: URL(fileURLWithPath: file), resultingItemURL: &landed)
+            return (landed as URL?)?.path ?? file
+        }
+        let location: String
+        do {
+            location = try bin(path)
+        } catch {
+            return .refused((error as NSError).localizedDescription)
+        }
+        var trouble: [(String, String)] = []
+        for companion in companions {
+            do {
+                _ = try bin((source as NSString).appendingPathComponent(companion))
+            } catch {
+                trouble.append((companion, "the subtitle file stayed behind — "
+                                + (error as NSError).localizedDescription))
+            }
+        }
+        return .done(location, trouble)
     }
 
     // MARK: - replacing with a converted copy
@@ -358,14 +443,14 @@ enum FileOps {
     /// stays where it is and the report says so; the copy keeps the details.
     @discardableResult
     static func replace(_ original: String, with copy: String, library: Library,
-                        askFolder: (String, String) -> String?) -> Report {
+                        askFolder: (String, String) -> String?) async -> Report {
         carryBookkeeping(from: original, to: copy, library: library)
         library.saveTags()
         library.save()
-        // Everybody's tags take the copy, not only the profile in force's. Its
-        // own task: the caller is waiting on a report, not on the share.
-        Task { await ProfileRelocation.spread([PathMap(from: original, to: copy)], library: library) }
-        return trash([original], library: library, askFolder: askFolder)
+        // Everybody's tags take the copy, not only the profile in force's —
+        // before the original goes, so there is nothing of theirs left on it.
+        await ProfileRelocation.spread([PathMap(from: original, to: copy)], library: library)
+        return await trash([original], library: library, askFolder: askFolder)
     }
 
     // MARK: - a tag, gathered into a folder
@@ -426,13 +511,6 @@ enum FileOps {
                                          library: Library) {
         library.moveTags(from: old, to: new)
         library.recent = library.recent.map { $0 == old ? new : $0 }
-    }
-
-    /// The same, for a file that has gone to the Trash.
-    private static func dropBookkeeping(_ path: String, library: Library) {
-        library.forgetPath(path)
-        library.progress.removeValue(forKey: path)
-        library.progressSeen.removeValue(forKey: path)
     }
 
     // MARK: - names

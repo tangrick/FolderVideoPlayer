@@ -481,6 +481,8 @@ final class MovedScan: ObservableObject {
                 if Task.isCancelled {
                     return (hits, seen, false)
                 }
+                // A video in the discard folder was deleted, not moved there.
+                if Scanner.isInside(url.path, Scanner.discarded) { walk.skipDescendants(); continue }
                 let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
                 if !isDir {
                     let name = url.lastPathComponent.lowercased()

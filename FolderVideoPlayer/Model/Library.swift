@@ -190,7 +190,10 @@ final class Library: ObservableObject {
     private var pinnedByProfile: [String: [String]] = [:]
     /// Recent folders per profile — see `pinnedByProfile`, same rule.
     private var recentByProfile: [String: [String]] = [:]
-    @Published var discardFolders: [String: String] = [:]
+    @Published var discardFolders: [String: String] = [:] {
+        // Every walk skips these; see `Scanner.discarded`.
+        didSet { Scanner.discarded = Scanner.expanded(discardFolders.values.filter { !$0.isEmpty }.sorted()) }
+    }
     /// Fingerprinting as videos play. Off unless asked for: a video that was
     /// moved and then found again gets matched against where it used to be
     /// and reported as a copy of itself, so this waits for a deliberate yes.
@@ -1143,6 +1146,18 @@ final class Library: ObservableObject {
         }
         RelocationJournal.end(finished + abandoned)
         return finished
+    }
+
+    /// Take a trashed video's tags out of the profile in force, and queue the
+    /// removal for the share. Its readings, watch state, resume point, marks
+    /// and hidden flag stay where they are, keyed to the old path: invisible
+    /// without the file, and back with it. The tags themselves must already be
+    /// kept (`ParkedTags.keep`) — Put Back returns them from there.
+    func parkForTrash(_ path: String) {
+        let key = Paths.tagKey(path)
+        guard tags[key] != nil else { return }
+        tags.removeValue(forKey: key)
+        recordSharedEdit(moving: key, to: nil)
     }
 
     /// Drop one tag reference entirely — a file that is gone for good. The

@@ -151,6 +151,15 @@ enum ProfileRelocation {
         var folder: String
         /// `[from, to]`, keyed from the share root, in the order they happened.
         var moves: [[String]]
+        /// Any other edits owed — a video sent to the Trash is a `.remove`.
+        /// Optional, so an owed file written before this existed still loads.
+        var edits: [SharedTagEdit]? = nil
+        /// Share-relative path → tag key, for each `.remove` whose tags must be
+        /// kept for Put Back before they are taken out (`ParkedTags`).
+        var parks: [String: String]? = nil
+
+        /// Everything owed, in order: the moves, then the other edits.
+        var allEdits: [SharedTagEdit] { moves.map { .move($0[0], $0[1]) } + (edits ?? []) }
     }
 
     /// Carry moves that stayed within one share into every person's folder on
@@ -200,6 +209,20 @@ enum ProfileRelocation {
     /// False when the lock could not be had or a write failed.
     static func apply(_ pairs: [[String]], inPersonFolder folder: String, device: String,
                       now: Double = Date().timeIntervalSince1970) -> Bool {
+        apply(edits: pairs.map { .move($0[0], $0[1]) }, inPersonFolder: folder, device: device, now: now)
+    }
+
+    /// The same, for any edits. A `.remove` named in `parks` has the person's
+    /// tags on that video kept first (`ParkedTags.keep`) — and if they cannot
+    /// be kept, nothing of theirs is removed and the folder is owed instead.
+    /// Only a `.move` re-keys facts and transcripts: a trashed video's stay
+    /// where they are, to come back with it.
+    static func apply(edits: [SharedTagEdit], parks: [String: String] = [:],
+                      inPersonFolder folder: String, device: String,
+                      now: Double = Date().timeIntervalSince1970) -> Bool {
+        let pairs: [[String]] = edits.compactMap {
+            if case let .move(from, to) = $0 { return [from, to] } else { return nil }
+        }
         guard let token = SharedTagDisk.lock(folder: folder, by: device, budget: lockBudget)
         else { return false }
         defer { SharedTagDisk.unlock(folder: folder, token: token) }
@@ -215,7 +238,11 @@ enum ProfileRelocation {
         // idea of the format would drop whatever that one added.
         if var file = current, !file.isReadOnlyHere {
             let before = file
-            file.apply(pairs.map { SharedTagEdit.move($0[0], $0[1]) }, at: now)
+            for case let .remove(rest) in edits {
+                guard let key = parks[rest], let names = file.videos[rest], !names.isEmpty else { continue }
+                if !ParkedTags.keep(key, person: folder, names: names, now: now) { return false }
+            }
+            file.apply(edits, at: now)
             if file != before {
                 file.prune(now: now)
                 if SharedTagDisk.write(file, folder: folder, device: device) != nil { done = false }
@@ -249,6 +276,46 @@ enum ProfileRelocation {
         return moved
     }
 
+    // MARK: - a video sent to the Trash
+
+    /// Take trashed videos out of every person's file on their share except
+    /// `skip` (the profile in force, whose own sync sends its `.remove`),
+    /// keeping each person's tags for Put Back first. Keys are tag keys at the
+    /// videos' old paths. Returns what could not be written now.
+    static func removeOnShares(_ keys: [String], skip: String, device: String) -> [Owed] {
+        var byShare: [String: [String: String]] = [:]      // share → rest → key
+        for key in keys {
+            guard let edit = SharedTagEdit.forMove(from: key, to: nil),
+                  case let .remove(rest) = edit.edit else { continue }
+            byShare[edit.share, default: [:]][rest] = key
+        }
+        var owed: [Owed] = []
+        for (share, parks) in byShare.sorted(by: { $0.key < $1.key }) {
+            let edits = parks.keys.sorted().map { SharedTagEdit.remove($0) }
+            for folder in personFolders(on: share) where (folder as NSString).lastPathComponent != skip {
+                if !apply(edits: edits, parks: parks, inPersonFolder: folder, device: device) {
+                    owed.append(Owed(folder: folder, moves: [], edits: edits, parks: parks))
+                }
+            }
+        }
+        return owed
+    }
+
+    /// Put Back, for one person's file: their kept tags go back on the video —
+    /// unless they have tagged it themselves since, which stands. True when
+    /// done, false when the lock could not be had.
+    static func restore(_ rest: String, names: [String], inPersonFolder folder: String,
+                        device: String, now: Double = Date().timeIntervalSince1970) -> Bool {
+        guard let token = SharedTagDisk.lock(folder: folder, by: device, budget: lockBudget)
+        else { return false }
+        defer { SharedTagDisk.unlock(folder: folder, token: token) }
+        guard case var .file(file, _) = SharedTagDisk.read(folder: folder), !file.isReadOnlyHere
+        else { return true }            // nothing there to put them back into
+        guard (file.videos[rest] ?? []).isEmpty else { return true }
+        file.apply(.set(rest, names), at: now)
+        return SharedTagDisk.write(file, folder: folder, device: device) == nil
+    }
+
     // MARK: - what is owed
 
     /// Guards the owed file: the retry at launch and a move's own run can
@@ -272,7 +339,9 @@ enum ProfileRelocation {
         owedLock.lock(); defer { owedLock.unlock() }
         let waiting = owed()
         guard !waiting.isEmpty else { return }
-        let left = waiting.filter { !apply($0.moves, inPersonFolder: $0.folder, device: device) }
+        let left = waiting.filter {
+            !apply(edits: $0.allEdits, parks: $0.parks ?? [:], inPersonFolder: $0.folder, device: device)
+        }
         if left.isEmpty {
             try? FileManager.default.removeItem(atPath: Paths.relocationsOwedFile)
         } else if left != waiting {
