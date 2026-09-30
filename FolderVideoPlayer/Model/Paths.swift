@@ -139,6 +139,12 @@ enum Paths {
     /// is published to the other devices verbatim, and where a tag came from is
     /// this Mac's knowledge, not part of the tag.
     static var tagProvenanceFile: String { (support as NSString).appendingPathComponent("tag-provenance.json") }
+    /// Moves begun and not yet finished — see `RelocationJournal`. Normally
+    /// absent: it exists only between a file moving and its references
+    /// following, and a launch that finds it finishes the job.
+    static var relocationsFile: String {
+        (support as NSString).appendingPathComponent("relocations-pending.json")
+    }
     /// The facts the app READ off the files — the capture date, the resolution,
     /// the camera, the place from GPS. Kept out of `tagsFile` because that one
     /// is published to the other devices verbatim, and because a reading is not

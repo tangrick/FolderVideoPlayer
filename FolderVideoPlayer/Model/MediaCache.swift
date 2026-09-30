@@ -155,6 +155,54 @@ final class MediaCache: ObservableObject {
         }
     }
 
+    /// Carry a video's running time and its frames to its new path.
+    ///
+    /// Both are keyed by the path (the frames by a hash of it), so a renamed
+    /// video would otherwise be measured and have its frames made all over
+    /// again — seconds a file on a share, and the Apple TV paying the same for
+    /// every card. The files on disk are renamed off the main thread; a rename
+    /// that fails costs only a frame made again later.
+    func move(from oldPath: String, to newPath: String) {
+        let from = Paths.tagKey(oldPath)
+        let to = Paths.tagKey(newPath)
+        guard from != to else { return }
+        if let known = lengths.removeValue(forKey: from) {
+            lengths[to] = known
+            lengthsDirty = true
+            scheduleSave()
+        }
+        if let seconds = resolved.removeValue(forKey: oldPath) { resolved[newPath] = seconds }
+        for suffix in ["", "|big"] {
+            if let image = memory.object(forKey: oldPath + suffix as NSString) {
+                memory.setObject(image, forKey: newPath + suffix as NSString,
+                                 cost: Self.pixelCost(image))
+                memory.removeObject(forKey: oldPath + suffix as NSString)
+            }
+        }
+        Task.detached(priority: .utility) {
+            guard let bytes = MediaCache.fileSize(newPath) else { return }
+            let size = Int64(bytes)
+            let fm = FileManager.default
+            func rename(_ old: String?, _ new: String?) {
+                guard let old, let new, old != new,
+                      fm.fileExists(atPath: old), !fm.fileExists(atPath: new) else { return }
+                try? fm.moveItem(atPath: old, toPath: new)
+            }
+            for big in [false, true] {
+                rename(MediaCache.thumbLocation(oldPath, size: size, big: big),
+                       MediaCache.thumbLocation(newPath, size: size, big: big))
+            }
+            // The share's copy only moves within its own share: a frame left on
+            // the share a video has left is not this Mac's to carry elsewhere.
+            let shared = (MediaCache.sharedLocation(oldPath, size: size),
+                          MediaCache.sharedLocation(newPath, size: size))
+            if let old = shared.0, let new = shared.1,
+               (old as NSString).deletingLastPathComponent == (new as NSString).deletingLastPathComponent {
+                rename(old, new)
+            }
+        }
+    }
+
     // MARK: - poster frames
 
     /// A frame for this video, if one is already to hand.

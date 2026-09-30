@@ -1058,6 +1058,7 @@ final class Library: ObservableObject {
             watchRevision += 1
             saveWatch()
         }
+        carryMachineState(from: from, to: to)
         guard let moving = tags[from], !moving.isEmpty else { return carried }
         defer { saveTags() }
         // The destination may already carry tags of its own (a same-named
@@ -1072,6 +1073,74 @@ final class Library: ObservableObject {
         tags.removeValue(forKey: from)
         recordSharedEdit(moving: from, to: to)
         return true
+    }
+
+    /// What this Mac knows about a video whoever is looking, carried across a
+    /// move: where it was got to, whether it is hidden, its fingerprint and
+    /// whether a copy of it was spared, where its tags came from, and the
+    /// session that was playing it.
+    ///
+    /// The hidden flag above all. It is keyed by path like everything else, so
+    /// a hidden video that was renamed used to fall out of the hidden set and
+    /// turn up in ordinary browsing — the one thing the password exists to
+    /// prevent.
+    ///
+    /// Nothing here writes `state.json`: a batch saves once when it is done
+    /// (`FileOps`, the moved-file repairs), not once per file.
+    private func carryMachineState(from: String, to: String) {
+        guard from != to else { return }
+        let oldPath = Paths.tagPath(from)
+        let newPath = Paths.tagPath(to)
+        if let position = progress.removeValue(forKey: oldPath) {
+            progress[newPath] = position
+            progressSeen[newPath] = progressSeen.removeValue(forKey: oldPath)
+                ?? Date().timeIntervalSince1970
+        }
+        if session?.path == oldPath { session?.path = newPath }
+        if hidden.remove(from) != nil { hidden.insert(to) }
+        if sparedDupes.remove(from) != nil { sparedDupes.insert(to) }
+        if let entry = prints.removeValue(forKey: from) {
+            prints[to] = entry
+            savePrints()
+            dupesChanged()
+        }
+        if provenance.origins[from] != nil {
+            provenance.move(from: from, to: to)
+            saveProvenance()
+        }
+    }
+
+    /// Finish any relocation a crash interrupted.
+    ///
+    /// A journal entry whose file is at its new path and gone from its old one
+    /// moved, and its references did not follow: they follow now. One whose
+    /// file never left is dropped — the move did not happen. One that finds
+    /// neither is KEPT: that is a share not mounted at this launch, and
+    /// dropping it would orphan the tags for good the day it comes back.
+    ///
+    /// Run once the stores behind `pathMoved` are attached, so transcripts,
+    /// moments and marks follow as well as the tags.
+    @discardableResult
+    func recoverRelocations(exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) })
+        -> Int {
+        var finished: [PathMap] = []
+        var abandoned: [PathMap] = []
+        for map in RelocationJournal.pending() {
+            let there = exists(map.to)
+            let left = !exists(map.from)
+            if there && left {
+                moveTags(from: map.from, to: map.to)
+                finished.append(map)
+            } else if there || !left {
+                abandoned.append(map)
+            }
+        }
+        if !finished.isEmpty {
+            saveTags()
+            save()
+        }
+        RelocationJournal.end(finished + abandoned)
+        return finished.count
     }
 
     /// Drop one tag reference entirely — a file that is gone for good. The

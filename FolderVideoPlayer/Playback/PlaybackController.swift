@@ -236,6 +236,20 @@ final class PlaybackController: ObservableObject {
     private static let subtitleKey = "subtitleChoices"
     private static let audioKey = "audioChoices"
 
+    /// A renamed or moved video keeps the subtitles and the audio track that
+    /// were chosen for it.
+    static func moveTrackChoices(from oldPath: String, to newPath: String) {
+        let from = Paths.tagKey(oldPath)
+        let to = Paths.tagKey(newPath)
+        guard from != to else { return }
+        for key in [subtitleKey, audioKey] {
+            guard var saved = UserDefaults.standard.dictionary(forKey: key) as? [String: String],
+                  let choice = saved.removeValue(forKey: from) else { continue }
+            saved[to] = choice
+            UserDefaults.standard.set(saved, forKey: key)
+        }
+    }
+
     /// A new video: forget the last one's tracks and look beside it for
     /// subtitle files — off the main thread, since it is a folder listing and
     /// the folder may be on a share.

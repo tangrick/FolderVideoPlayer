@@ -221,6 +221,7 @@ final class MovedScan: ObservableObject {
                     _ = library.moveTags(from: fix.oldKey, to: fix.newPath)
                 }
                 library.saveTags()
+                library.save()      // resume points and hidden flags moved too
             }
             self.repairs = split.fixes
             self.undoCovers = split.fixes
@@ -296,6 +297,7 @@ final class MovedScan: ObservableObject {
                                     tagNames: item.tagNames, sizeMatches: item.sizeMatches))
         }
         library.saveTags()
+        library.save()      // resume points and hidden flags moved too
         let keys = Set(picked.map(\.oldKey))
         candidates.removeAll { keys.contains($0.oldKey) }
         chosen = []

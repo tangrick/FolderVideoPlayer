@@ -216,6 +216,7 @@ final class MaintenanceWorker: ObservableObject {
         // transcript, moments and watch history — the moved-file repair's own
         // single-match rule, applied as it is noticed.
         for move in changes.moved { library.moveTags(from: full(move.from), to: full(move.to)) }
+        if !changes.moved.isEmpty { library.save() }    // resume points, hidden flags
         var queue = MaintenancePlanner.move(changes.moved.map { (full($0.from), full($0.to)) }, in: file.queue)
         queue = MaintenancePlanner.drop(Set(changes.removed.map(full)), from: queue)
         for gone in changes.removed { file.failed.removeValue(forKey: full(gone)) }

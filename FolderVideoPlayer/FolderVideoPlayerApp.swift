@@ -108,12 +108,24 @@ struct FolderVideoPlayerApp: App {
                         journal.decide(verdict, for: path, label: tag)
                     }
                     // A moved file's transcript follows it, through the same
-                    // repair that carries its tags.
+                    // repair that carries its tags — and so does everything
+                    // else kept outside the library: its Safe/NSFW mark, its
+                    // suggestion verdicts, its running time and frames, its
+                    // turn, and the subtitles and audio chosen for it.
+                    let rotation = app.rotation
                     library.pathMoved = { old, new in
                         journal.moveTranscript(from: old, to: new)
                         moments.move(from: old, to: new)
+                        analysis.move(from: old, to: new)
+                        suggestions.move(from: old, to: new)
+                        media.move(from: old, to: new)
+                        rotation.move(from: old, to: new)
+                        PlaybackController.moveTrackChoices(from: old, to: new)
                     }
                     moments.reload(profile: Paths.activeProfile)
+                    // A move a crash cut short finishes now, with every store
+                    // above attached to follow it.
+                    app.recoverRelocationsOnce(library)
                     app.maintenance.attach(app: app, library: library, media: media)
                     // Smart collections answer from the live stores, and a
                     // collection open as the playlist re-asks when they change.
@@ -905,6 +917,36 @@ final class AppModel: ObservableObject {
 
     // MARK: - file operations
 
+    /// A rename, move or gather still running. The file work happens off the
+    /// main thread now, so the window stays live — and a second batch started
+    /// on top of the first would have two of them re-pointing the same stores.
+    private var fileOpsRunning = false
+
+    private var relocationsRecovered = false
+
+    /// Finish a move a crash cut short — once per launch. `onAppear` can run
+    /// again for another window, and by then a move of this session's own may
+    /// be halfway through: that one is not a crash's to finish.
+    func recoverRelocationsOnce(_ library: Library) {
+        guard !relocationsRecovered else { return }
+        relocationsRecovered = true
+        library.recoverRelocations()
+    }
+
+    /// Run one file operation, one at a time, then report it.
+    private func runFileOp(_ verb: String, _ work: @escaping () async -> FileOps.Report) {
+        guard !fileOpsRunning else {
+            say("Still moving videos", "Wait for the videos already on the move to finish, then try again.")
+            return
+        }
+        fileOpsRunning = true
+        Task {
+            let report = await work()
+            fileOpsRunning = false
+            finish(report, verb)
+        }
+    }
+
     /// Rename one video, asked for by name.
     func renameFile(_ path: String) {
         guard let library else { return }
@@ -912,8 +954,7 @@ final class AppModel: ObservableObject {
         guard let wanted = ask("Rename video",
                                "What should this file be called?",
                                current), wanted != current else { return }
-        let report = FileOps.rename(path, to: wanted, library: library)
-        finish(report, "Renamed")
+        runFileOp("Renamed") { await FileOps.rename(path, to: wanted, library: library) }
     }
 
     /// Move videos into a folder the user picks.
@@ -925,14 +966,17 @@ final class AppModel: ObservableObject {
                                         : "Where should these \(paths.count) videos go?",
                                       start: (paths[0] as NSString).deletingLastPathComponent)
         else { return }
-        let report = FileOps.move(paths, into: folder, library: library)
-        finish(report, "Moved")
+        runFileOp("Moved") { await FileOps.move(paths, into: folder, library: library) }
     }
 
     /// Send videos to the Trash — or, on a share without one, to a folder
     /// the user nominates. Asked about first, always.
     func trashFiles(_ paths: [String]) {
         guard let library, !paths.isEmpty else { return }
+        guard !fileOpsRunning else {
+            say("Still moving videos", "Wait for the videos already on the move to finish, then try again.")
+            return
+        }
         let what = paths.count == 1
             ? "“\((paths[0] as NSString).lastPathComponent)”"
             : "\(paths.count) videos"
@@ -1208,8 +1252,7 @@ final class AppModel: ObservableObject {
         alert.addButton(withTitle: "Gather")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let report = FileOps.gather(tag: tag, into: parent, library: library)
-        finish(report, "Gathered")
+        runFileOp("Gathered") { await FileOps.gather(tag: tag, into: parent, library: library) }
     }
 
     /// Report what a batch did and put the views back in step with the disk.

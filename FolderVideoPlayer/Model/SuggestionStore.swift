@@ -293,6 +293,17 @@ final class SuggestionStore: ObservableObject {
         scheduleSave()
     }
 
+    /// Carry a video's suggestions and verdicts to its new path. The verdicts
+    /// are training data — a chip somebody rejected must stay rejected after
+    /// the file is renamed, and must not turn up again as a fresh suggestion.
+    func move(from oldPath: String, to newPath: String) {
+        let from = Paths.tagKey(oldPath)
+        let to = Paths.tagKey(newPath)
+        guard from != to, let entry = byVideo.removeValue(forKey: from) else { return }
+        byVideo[to] = entry
+        scheduleSave()
+    }
+
     // MARK: - training data
 
     /// Every decision the user has made, as (tagKey, tag, verdict) triples.

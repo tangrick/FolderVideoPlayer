@@ -48,42 +48,49 @@ enum FileOps {
     /// A name already taken in the destination is not overwritten — two
     /// folders can hold different videos with the same name, and one quietly
     /// replacing the other is exactly the loss this guards against. The
-    /// mover gets " (2)" and so on, the way Finder does it.
+    /// mover gets " (2)" and so on, the way Finder does it — and so do its
+    /// subtitle files, which travel with it.
+    ///
+    /// The file work happens off the main thread: a video going to or from a
+    /// share is a copy, and a window that stops drawing for the length of a
+    /// few gigabytes over Wi-Fi has hung as far as anyone can tell. The
+    /// bookkeeping comes back here, one file at a time, so the stores never
+    /// disagree with the disk for longer than one file takes.
     @discardableResult
-    static func move(_ paths: [String], into folder: String, library: Library) -> Report {
+    static func move(_ paths: [String], into folder: String, library: Library) async -> Report {
         var report = Report()
         guard !paths.isEmpty else { return report }
-        library.rememberForUndo("moving \(paths.count) video\(paths.count == 1 ? "" : "s")")
+        let undo = "moving \(paths.count) video\(paths.count == 1 ? "" : "s")"
+        var journal: [PathMap] = []
+        var listings: [String: [String]] = [:]
         for path in paths {
             let name = (path as NSString).lastPathComponent
-            guard FileManager.default.fileExists(atPath: path) else {
-                report.skipped.append((name, "the file is not there any more"))
-                continue
-            }
-            let target = freeName(in: folder, for: name)
-            if (path as NSString).deletingLastPathComponent == folder {
+            let source = (path as NSString).deletingLastPathComponent
+            if source == folder {
                 report.skipped.append((name, "already in that folder"))
                 continue
             }
-            do {
-                try FileManager.default.moveItem(atPath: path, toPath: target)
-                carryBookkeeping(from: path, to: target, library: library)
-                report.done.append(target)
-            } catch {
-                report.failed.append((name, (error as NSError).localizedDescription))
-            }
+            let listing = listings[source]
+            let outcome = await Task.detached(priority: .userInitiated) {
+                shift(path, into: folder, leaf: name, findFree: true, listing: listing)
+            }.value
+            listings[source] = outcome.listing
+            record(outcome, name: name, undo: undo, library: library,
+                   report: &report, journal: &journal)
         }
         library.saveTags()
         library.save()
+        RelocationJournal.end(journal)
         return report
     }
 
     // MARK: - renaming
 
     /// Rename one video, keeping its extension unless the new name carries
-    /// one. The tags, resume position and favorite status follow the file.
+    /// one. The tags, resume position and favorite status follow the file, and
+    /// its subtitle files are renamed to match.
     @discardableResult
-    static func rename(_ path: String, to newName: String, library: Library) -> Report {
+    static func rename(_ path: String, to newName: String, library: Library) async -> Report {
         var report = Report()
         let name = (path as NSString).lastPathComponent
         let wanted = newName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -107,21 +114,175 @@ enum FileOps {
         let folder = (path as NSString).deletingLastPathComponent
         let target = (folder as NSString).appendingPathComponent(leaf)
         guard target != path else { return report }
-        guard !FileManager.default.fileExists(atPath: target) else {
-            report.failed.append((name, "“\(leaf)” is already in that folder"))
-            return report
-        }
-        library.rememberForUndo("renaming “\(name)”")
-        do {
-            try FileManager.default.moveItem(atPath: path, toPath: target)
-            carryBookkeeping(from: path, to: target, library: library)
-            library.saveTags()
-            library.save()
-            report.done.append(target)
-        } catch {
-            report.failed.append((name, (error as NSError).localizedDescription))
-        }
+        let outcome = await Task.detached(priority: .userInitiated) {
+            shift(path, into: folder, leaf: leaf, findFree: false, listing: nil)
+        }.value
+        var journal: [PathMap] = []
+        record(outcome, name: name, undo: "renaming “\(name)”", library: library,
+               report: &report, journal: &journal)
+        library.saveTags()
+        library.save()
+        RelocationJournal.end(journal)
         return report
+    }
+
+    // MARK: - one file, off the main thread
+
+    /// What moving one video did.
+    struct Shifted: Sendable {
+        enum Result: Sendable {
+            /// Moved. `planned` is the journal's entry, struck off once the
+            /// bookkeeping is saved; `landed` is where it is, spelt as the
+            /// volume spells it.
+            case done(planned: PathMap, landed: String, trouble: [(String, String)])
+            case skipped(String)
+            case failed(String)
+        }
+        var result: Result
+        /// The source folder's listing, handed back so a batch out of one
+        /// folder lists it once rather than once per video.
+        var listing: [String]?
+    }
+
+    /// Move one video and its subtitle files to `leaf` in `folder` — or, when
+    /// `findFree`, to the first free " (2)" variant — never over anything.
+    ///
+    /// The journal entry is written before the file moves: from that moment a
+    /// crash leaves something for the next launch to finish.
+    nonisolated static func shift(_ path: String, into folder: String, leaf: String,
+                                  findFree: Bool, listing known: [String]?) -> Shifted {
+        let fm = FileManager.default
+        let name = (path as NSString).lastPathComponent
+        guard fm.fileExists(atPath: path) else {
+            return Shifted(result: .skipped("the file is not there any more"), listing: known)
+        }
+        let source = (path as NSString).deletingLastPathComponent
+        let listing = known ?? ((try? fm.contentsOfDirectory(atPath: source)) ?? [])
+        // A sidecar is the video's stem plus a tail: `clip` + `.en.srt`. The
+        // tail is what the new name keeps, so `clip.en.srt` becomes
+        // `beach.en.srt`. Matched case-insensitively, so the stem's length is
+        // the same in either spelling.
+        let companions = SubtitleFile.sidecars(for: path, in: listing)
+        let stem = (name as NSString).deletingPathExtension
+        let tails = companions.map { String($0.dropFirst(stem.count)) }
+        func inFolder(_ leaf: String) -> String { (folder as NSString).appendingPathComponent(leaf) }
+        func inSource(_ leaf: String) -> String { (source as NSString).appendingPathComponent(leaf) }
+
+        let target: String
+        if findFree {
+            target = freeName(in: folder, for: leaf, companions: tails)
+        } else {
+            // A name taken by ANOTHER file is refused. The same file under
+            // another spelling — `clip.mp4` → `Clip.mp4` on a volume that
+            // ignores case — is not a clash, it is the rename asked for.
+            let newStem = (leaf as NSString).deletingPathExtension
+            let wanted = [(path, inFolder(leaf))]
+                + zip(companions, tails).map { (inSource($0.0), inFolder(newStem + $0.1)) }
+            if let taken = wanted.first(where: { fm.fileExists(atPath: $0.1) && !sameFile($0.0, $0.1) }) {
+                let what = (taken.1 as NSString).lastPathComponent
+                return Shifted(result: .failed("“\(what)” is already in that folder"), listing: listing)
+            }
+            target = inFolder(leaf)
+        }
+
+        let planned = PathMap(from: path, to: target)
+        RelocationJournal.begin(planned)
+        do {
+            try moveFile(path, to: target)
+        } catch {
+            RelocationJournal.end([planned])
+            return Shifted(result: .failed((error as NSError).localizedDescription), listing: listing)
+        }
+        let landed = onDisk(target)
+        let landedStem = ((landed as NSString).lastPathComponent as NSString).deletingPathExtension
+        var trouble: [(String, String)] = []
+        for (companion, tail) in zip(companions, tails) {
+            do {
+                try moveFile(inSource(companion), to: inFolder(landedStem + tail))
+            } catch {
+                trouble.append((companion, "the subtitle file could not follow — "
+                                + (error as NSError).localizedDescription))
+            }
+        }
+        let left = listing.filter { $0 != name && !companions.contains($0) }
+        return Shifted(result: .done(planned: planned, landed: landed, trouble: trouble),
+                       listing: left)
+    }
+
+    /// Put one file's outcome into the report, and its bookkeeping into the
+    /// library — here, on the main actor, where the stores live.
+    ///
+    /// The Undo snapshot is taken as the FIRST file lands, not before the
+    /// batch: the tags have not changed until then, and a rename refused as a
+    /// clash must not leave an Undo behind that puts back nothing.
+    private static func record(_ outcome: Shifted, name: String, undo: String, library: Library,
+                               report: inout Report, journal: inout [PathMap]) {
+        switch outcome.result {
+        case let .done(planned, landed, trouble):
+            if journal.isEmpty { library.rememberForUndo(undo) }
+            carryBookkeeping(from: planned.from, to: landed, library: library)
+            report.done.append(landed)
+            for (companion, why) in trouble { report.failed.append((companion, why)) }
+            journal.append(planned)
+        case .skipped(let why):
+            report.skipped.append((name, why))
+        case .failed(let why):
+            report.failed.append((name, why))
+        }
+    }
+
+    /// Move one file, never over another.
+    ///
+    /// A target that is the SAME file under another spelling — the case-only
+    /// rename — goes through a hidden scratch name: the direct move would be
+    /// refused as a clash with itself. `moveItem` refuses a target that
+    /// exists, which is the no-overwrite rule held by the file system itself.
+    nonisolated static func moveFile(_ from: String, to target: String) throws {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: target), sameFile(from, target) else {
+            try fm.moveItem(atPath: from, toPath: target)
+            return
+        }
+        let scratch = ((target as NSString).deletingLastPathComponent as NSString)
+            .appendingPathComponent(".fvp-renaming-" + UUID().uuidString)
+        try fm.moveItem(atPath: from, toPath: scratch)
+        do {
+            try fm.moveItem(atPath: scratch, toPath: target)
+        } catch {
+            try? fm.moveItem(atPath: scratch, toPath: from)
+            throw error
+        }
+    }
+
+    /// Whether two paths name one file — the same file under two spellings on
+    /// a volume that ignores case. Compared by device and inode, not by name.
+    nonisolated static func sameFile(_ a: String, _ b: String) -> Bool {
+        var x = stat()
+        var y = stat()
+        guard lstat(a, &x) == 0, lstat(b, &y) == 0 else { return false }
+        return x.st_dev == y.st_dev && x.st_ino == y.st_ino
+    }
+
+    /// A path, spelt the way its volume stores it.
+    ///
+    /// Swift compares names by their Unicode meaning, so the tags do not care
+    /// whether `Café` was typed with one accented letter or with a letter and
+    /// an accent. The transcript store and `NSString` compare the bytes, and a
+    /// share may store a name in the other form from the one typed. Taking the
+    /// name back from the folder's listing keys every store by the form every
+    /// later scan of that folder will produce. A plain-ASCII name has only one
+    /// form, so it costs no listing.
+    nonisolated static func onDisk(_ path: String) -> String {
+        let leaf = (path as NSString).lastPathComponent
+        guard !leaf.unicodeScalars.allSatisfy(\.isASCII) else { return path }
+        let folder = (path as NSString).deletingLastPathComponent
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder) else {
+            return path
+        }
+        let bytes = Array(leaf.utf8)
+        guard names.first(where: { Array($0.utf8) == bytes }) == nil,
+              let stored = names.first(where: { $0 == leaf }) else { return path }
+        return (folder as NSString).appendingPathComponent(stored)
     }
 
     // MARK: - deleting
@@ -208,7 +369,7 @@ enum FileOps {
     /// the tag playlist works exactly as before, only now its contents sit
     /// together.
     @discardableResult
-    static func gather(tag: String, into parent: String, library: Library) -> Report {
+    static func gather(tag: String, into parent: String, library: Library) async -> Report {
         let folder = (parent as NSString).appendingPathComponent(safeFolderName(tag))
         var report = Report()
         do {
@@ -223,7 +384,7 @@ enum FileOps {
             report.skipped.append((tag, "no videos carry this tag"))
             return report
         }
-        return move(paths, into: folder, library: library)
+        return await move(paths, into: folder, library: library)
     }
 
     /// Where a tag's folder belongs: the folder its videos already live in.
@@ -248,17 +409,13 @@ enum FileOps {
 
     // MARK: - the bookkeeping
 
-    /// Everything the library knows about a video, moved to its new path:
-    /// tags (the star ratings are tags), and where you had got to watching it.
+    /// Everything the library knows about a video, moved to its new path.
+    /// `moveTags` is the one place that carries it — tags and stars, readings,
+    /// watch state, where you had got to, the hidden flag, and through its hook
+    /// the stores kept outside the library.
     private static func carryBookkeeping(from old: String, to new: String,
                                          library: Library) {
         library.moveTags(from: old, to: new)
-        if let position = library.progress[old] {
-            library.progress[new] = position
-            library.progressSeen[new] = library.progressSeen[old] ?? Date().timeIntervalSince1970
-            library.progress.removeValue(forKey: old)
-            library.progressSeen.removeValue(forKey: old)
-        }
         library.recent = library.recent.map { $0 == old ? new : $0 }
     }
 
@@ -273,17 +430,29 @@ enum FileOps {
 
     /// A path in `folder` for `name` that is not already taken: "clip.mp4",
     /// then "clip (2).mp4", and so on.
-    static func freeName(in folder: String, for name: String) -> String {
+    ///
+    /// `companions` are the tails of the files that travel with it —
+    /// `.en.srt` for `clip.en.srt` — and a name is only free when every one of
+    /// them is free under it too, so a video never arrives as "clip (2)" with
+    /// its subtitles stranded as "clip".
+    nonisolated static func freeName(in folder: String, for name: String,
+                                     companions: [String] = []) -> String {
         let stem = (name as NSString).deletingPathExtension
         let ext = (name as NSString).pathExtension
-        var target = (folder as NSString).appendingPathComponent(name)
+        func taken(_ candidate: String) -> Bool {
+            let leaf = ext.isEmpty ? candidate : "\(candidate).\(ext)"
+            let paths = [leaf] + companions.map { candidate + $0 }
+            return paths.contains {
+                FileManager.default.fileExists(atPath: (folder as NSString).appendingPathComponent($0))
+            }
+        }
+        var candidate = stem
         var n = 2
-        while FileManager.default.fileExists(atPath: target) {
-            let leaf = ext.isEmpty ? "\(stem) (\(n))" : "\(stem) (\(n)).\(ext)"
-            target = (folder as NSString).appendingPathComponent(leaf)
+        while taken(candidate) {
+            candidate = "\(stem) (\(n))"
             n += 1
         }
-        return target
+        return (folder as NSString).appendingPathComponent(ext.isEmpty ? candidate : "\(candidate).\(ext)")
     }
 
     /// A tag turned into something a file system will accept as a folder.

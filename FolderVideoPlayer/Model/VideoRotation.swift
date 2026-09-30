@@ -25,4 +25,13 @@ final class VideoRotation: ObservableObject {
         if next == 0 { turns.removeValue(forKey: key) } else { turns[key] = next }
         UserDefaults.standard.set(turns, forKey: Self.key)
     }
+
+    /// A renamed or moved video keeps the turn it was given.
+    func move(from oldPath: String, to newPath: String) {
+        let from = Paths.tagKey(oldPath)
+        let to = Paths.tagKey(newPath)
+        guard from != to, let turn = turns.removeValue(forKey: from) else { return }
+        turns[to] = turn
+        UserDefaults.standard.set(turns, forKey: Self.key)
+    }
 }

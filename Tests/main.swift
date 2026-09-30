@@ -748,7 +748,7 @@ await MainActor.run {
 }
 
 var movedReport = FileOps.Report()
-await MainActor.run { movedReport = FileOps.move([clipA], into: opsTo, library: opsLibrary) }
+movedReport = await FileOps.move([clipA], into: opsTo, library: opsLibrary)
 let landedAt = opsTo + "/Holiday1.mp4"
 check("a moved file lands in the destination",
       movedReport.done == [landedAt] && FileManager.default.fileExists(atPath: landedAt),
@@ -775,13 +775,13 @@ check("...and the star rating follows the file", starsAfterMove == 5,
 
 // Moving into the folder it already lives in is refused, not duplicated.
 var again = FileOps.Report()
-await MainActor.run { again = FileOps.move([landedAt], into: opsTo, library: opsLibrary) }
+again = await FileOps.move([landedAt], into: opsTo, library: opsLibrary)
 check("moving a file where it already is changes nothing",
       again.done.isEmpty && again.skipped.count == 1, "\(again.summary)")
 
 // Renaming keeps the extension when the new name omits one.
 var renamed = FileOps.Report()
-await MainActor.run { renamed = FileOps.rename(landedAt, to: "Bali Day One", library: opsLibrary) }
+renamed = await FileOps.rename(landedAt, to: "Bali Day One", library: opsLibrary)
 let renamedPath = opsTo + "/Bali Day One.mp4"
 check("renaming without an extension keeps the old one",
       renamed.done == [renamedPath], "\(renamed.done)")
@@ -793,7 +793,7 @@ check("...and the tags follow the rename (Favorite rode along — it is the 5-st
 // A rename onto a name already taken is refused rather than overwriting.
 makeClip(opsTo + "/Taken.mp4")
 var clash = FileOps.Report()
-await MainActor.run { clash = FileOps.rename(renamedPath, to: "Taken.mp4", library: opsLibrary) }
+clash = await FileOps.rename(renamedPath, to: "Taken.mp4", library: opsLibrary)
 check("a rename onto an existing name is refused",
       clash.done.isEmpty && clash.failed.count == 1, "\(clash.summary)")
 check("...and the original is still there",
@@ -801,7 +801,7 @@ check("...and the original is still there",
 
 // A name with a slash in it is refused: that is a path, not a file name.
 var slashed = FileOps.Report()
-await MainActor.run { slashed = FileOps.rename(renamedPath, to: "a/b.mp4", library: opsLibrary) }
+slashed = await FileOps.rename(renamedPath, to: "a/b.mp4", library: opsLibrary)
 check("a rename containing “/” is refused",
       slashed.done.isEmpty && slashed.failed.count == 1)
 
@@ -815,7 +815,7 @@ await MainActor.run {
     opsLibrary.setTags(["Cruise"], for: scatteredB)
 }
 var gathered = FileOps.Report()
-await MainActor.run { gathered = FileOps.gather(tag: "Cruise", into: opsDir, library: opsLibrary) }
+gathered = await FileOps.gather(tag: "Cruise", into: opsDir, library: opsLibrary)
 let cruiseFolder = opsDir + "/Cruise"
 check("gathering makes a folder named after the tag",
       FileManager.default.fileExists(atPath: cruiseFolder) && gathered.done.count == 2,

@@ -25,6 +25,9 @@ MODEL_SOURCES=(
     # a new Model/ file lands here or nothing compiles.
     "$model/MetadataFacts.swift"
     "$model/FileOps.swift" "$model/AutoTagCore.swift" "$model/MetadataTagger.swift"
+    # One relocation and the journal that makes a crash mid-move harmless
+    # (added Sep'26, folder management phase 1). FileOps and Library use it.
+    "$model/PathMap.swift"
     "$model/MovedScan.swift" "$model/NameIndex.swift" "$model/AnalysisModels.swift"
     "$model/AnalysisStore.swift" "$model/AnalysisEngine.swift"
     "$model/AICapability.swift" "$model/FaceStore.swift" "$model/SuggestionStore.swift"

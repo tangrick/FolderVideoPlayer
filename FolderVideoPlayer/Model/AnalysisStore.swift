@@ -183,6 +183,26 @@ final class AnalysisStore: ObservableObject {
         records[Paths.tagKey(path)]
     }
 
+    /// Carry a video's record to its new path: the machine's reading and this
+    /// profile's Safe/NSFW word both. A moved file is not a new video —
+    /// classifying it again would be wasted model time, and losing the mark
+    /// somebody gave it would be the library forgetting what it was told.
+    func move(from oldPath: String, to newPath: String) {
+        let from = Paths.tagKey(oldPath)
+        let to = Paths.tagKey(newPath)
+        guard from != to else { return }
+        var changed = false
+        if let record = records.removeValue(forKey: from) {
+            records[to] = record
+            changed = true
+        }
+        if let mark = marks.removeValue(forKey: from) {
+            marks[to] = mark
+            changed = true
+        }
+        if changed { save() }
+    }
+
     // MARK: - the queue
     //
     // The window offers a scan of whatever scope the player is showing; the

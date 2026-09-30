@@ -107,6 +107,7 @@ before these.
 | — | Pinned folders published for the Apple TV (`pins.json`, user request) | released 1.1.23 (one-way); TV 1.1 (7) on TestFlight reads them |
 | — | Pins follow the profile between Macs; People shelf on the TV (user request) | done, uncommitted, unreleased; `run_profile_travels.sh` covers a second Mac opening the profile |
 | 9 | Additional-format playback (VLCKit/libmpv) | KIV — on hold by the user's decision (2026-09-27); do not start without asking |
+| — | Folder management (user request) — design and phases in `features/FOLDER_MANAGEMENT.md` | phase 1 (relocation engine) built on `feature/folder-management`, uncommitted; phases 2–6 not started |
 
 ## Priority 1 — Transcript editor and export
 
@@ -342,6 +343,15 @@ in places (`PlaybackController.engine`, `VideoSurface(player:)`,
 - 2026-09-28 — TV 1.1 (10) uploaded (user requests from testing): captions were `.title2` (57 pt), now 38 pt with a Size choice (`player.subtitleSize`); Settings redesigned as rows with sub-screens; picking a name applies it (`PersonPicker.onChoose`, a Use button only for a typed name); Home's Change connection opens `ConnectionSettings` (shares on this server via `library.shares(on:)`, skipped via relay; saved connections; Edit details; Add a new server) and switches with `Library.switchTo`, which keeps the current connection until the new one opens; the connect flow's saved list and add steps are cards in `Shelf`s with a Step N of 4 header, a found server skips the name/address screen, and each step focuses its first card (`@FocusState`). Verified in the simulator: step 1 and its initial focus only (no remote input possible from here); the rest is for the user to test on the TV.
 
 - 2026-09-29 — TV 1.1 (12) (user request: pins under the tag profile, and the Mac should see TV pins). Mac: already per profile and already took share changes — no code change; `test_profile_travels.swift` now also proves a TV-written pin/unpin reaches the Mac and that two profiles on one Mac keep separate pins and separate `pins.json` (18 checks). TV: pins were per share and read-only; now `PinStore.folders` is the profile's `pins.json`, optimistic with revert on a failed write, `pinsRevision` drives `take(_:share:)`, and legacy `pinnedFolders` UserDefaults move into the profile once. Standalone PinStore checks (9) pass; a real write to the NAS from the TV is for the user to test.
+
+- 2026-09-30 — Folder management (user request), design in `features/FOLDER_MANAGEMENT.md`; the user confirmed every assumption there. Phase 1, the relocation engine, is built on branch `feature/folder-management`, uncommitted; no Apple TV change.
+  - **Engine:** `PathMap` and `RelocationJournal` (new `Model/PathMap.swift`, listed in `model_sources.sh`).
+  - **One carry:** `Library.moveTags` now carries the hidden flag (it used to fall off on a rename — a privacy bug), resume point, session, fingerprint and spared copy, and provenance.
+  - **The hook** now carries Safe/NSFW marks, suggestion verdicts, lengths and frames, rotation and track choices.
+  - **Crash recovery:** `recoverRelocations` runs once per launch.
+  - **`FileOps`:** move, rename and gather are `async`, with the file work off the main actor. Subtitle sidecars travel with their video, and case-only renames work.
+  - **Verified:** new `Tests/test_relocation.swift` (38 checks, mutation-checked); full `sh Tests/run.sh` (2,882 checks, exit 0 — baseline was 2,844); Debug app build with no new warnings in changed lines.
+  - **NOT verified:** the UI by hand, and anything on a real NAS.
 
 ## Next steps for whoever continues
 

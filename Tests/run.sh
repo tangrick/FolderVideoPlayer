@@ -138,6 +138,11 @@ sh "$here/run_media_tracks.sh"
 # Opt-in background upkeep: scan diffs, the queue, pausing, giving up, resuming.
 sh "$here/run_maintenance.sh"
 
+# Folder management, phase 1: a renamed or moved video keeps everything the app
+# knows about it, its subtitle files go with it, and a crash mid-move is finished
+# at the next launch.
+sh "$here/run_relocation.sh"
+
 # T08's first slice: a video becomes the one signal a speech model takes, with
 # nothing installed — real AAC decoded, silence left silent, no-audio answered,
 # and a time window really honoured, because a long film is read in pieces.
