@@ -192,8 +192,14 @@ final class MomentStore: ObservableObject {
     }
 
     func move(from oldPath: String, to newPath: String) {
+        move([(oldPath, newPath)])
+    }
+
+    /// Many at once — a folder moved — saved once.
+    func move(_ pairs: [(String, String)]) {
         var copy = book
-        guard copy.move(from: Paths.tagKey(oldPath), to: Paths.tagKey(newPath)) > 0 else { return }
+        let moved = pairs.reduce(0) { $0 + copy.move(from: Paths.tagKey($1.0), to: Paths.tagKey($1.1)) }
+        guard moved > 0 else { return }
         book = copy
         persist()
     }

@@ -188,19 +188,29 @@ final class AnalysisStore: ObservableObject {
     /// classifying it again would be wasted model time, and losing the mark
     /// somebody gave it would be the library forgetting what it was told.
     func move(from oldPath: String, to newPath: String) {
-        let from = Paths.tagKey(oldPath)
-        let to = Paths.tagKey(newPath)
-        guard from != to else { return }
+        move([(oldPath, newPath)])
+    }
+
+    /// Many at once — a folder moved — written once rather than per video.
+    func move(_ pairs: [(String, String)]) {
         var changed = false
-        if let record = records.removeValue(forKey: from) {
-            records[to] = record
-            changed = true
+        var moved = records
+        for (oldPath, newPath) in pairs {
+            let from = Paths.tagKey(oldPath)
+            let to = Paths.tagKey(newPath)
+            guard from != to else { continue }
+            if let record = moved.removeValue(forKey: from) {
+                moved[to] = record
+                changed = true
+            }
+            if let mark = marks.removeValue(forKey: from) {
+                marks[to] = mark
+                changed = true
+            }
         }
-        if let mark = marks.removeValue(forKey: from) {
-            marks[to] = mark
-            changed = true
-        }
-        if changed { save() }
+        guard changed else { return }
+        records = moved
+        save()
     }
 
     // MARK: - the queue

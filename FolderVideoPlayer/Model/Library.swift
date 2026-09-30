@@ -705,6 +705,7 @@ final class Library: ObservableObject {
     }
 
     func saveTags() {
+        if batching { deferredSaves.insert(.tags); return }
         // A closed profile owns nothing: the tags in hand are already empty,
         // and writing them would create a stray bundle for a person that does
         // not exist. Every real path here is a tagging action, and every
@@ -759,6 +760,7 @@ final class Library: ObservableObject {
     /// every video again to learn its date. `fromShare` is for facts that just
     /// arrived FROM a share, which have nothing to send back.
     func saveFacts(fromShare: Bool = false) {
+        if batching { deferredSaves.insert(.facts); return }
         guard profileOpen else { return }
         recountFacts()
         facts.save(to: Paths.metadataFile)
@@ -1038,6 +1040,51 @@ final class Library: ObservableObject {
     /// per-video data kept outside the library can follow it.
     var pathMoved: ((String, String) -> Void)?
 
+    /// The same, told a whole batch at once — a folder moved — so the stores
+    /// behind it write once rather than once per video. Unset, a batch falls
+    /// back to `pathMoved` per file.
+    var pathsMoved: (([(String, String)]) -> Void)?
+
+    // MARK: - moving many at once
+
+    /// A folder holds thousands of videos, and `moveTags` used to write the
+    /// tags, the facts and the watch log for every one of them — tens of
+    /// thousands of writes on the main thread for one rename. Inside a batch
+    /// every save is held and done once at the end; every move is still made,
+    /// and every edit for the share is still recorded.
+    enum DeferredSave: Hashable { case tags, facts, watch, provenance, sync }
+    private(set) var batching = false
+    private var deferredSaves: Set<DeferredSave> = []
+    private var batchedMoves: [(String, String)] = []
+
+    /// Many file moves at once, each saved once.
+    func moveTags(_ moves: [PathMap]) {
+        batch { for move in moves { moveTags(from: move.from, to: move.to) } }
+    }
+
+    /// Run `body` with every save held until it is done. Not re-entrant: a
+    /// batch inside a batch simply joins the outer one.
+    func batch(_ body: () -> Void) {
+        guard !batching else { return body() }
+        batching = true
+        body()
+        batching = false
+        let saves = deferredSaves
+        let moved = batchedMoves
+        deferredSaves = []
+        batchedMoves = []
+        if saves.contains(.sync) { saveSharedSyncState(sharedSyncState()) }
+        if saves.contains(.tags) { saveTags() }
+        if saves.contains(.facts) { saveFacts() }
+        if saves.contains(.watch) { saveWatch() }
+        if saves.contains(.provenance) { saveProvenance() }
+        guard !moved.isEmpty else { return }
+        if let pathsMoved { pathsMoved(moved) } else { for (old, new) in moved { pathMoved?(old, new) } }
+    }
+
+    /// For the share-sync state, which is held in hand while a batch runs.
+    func deferSave(_ save: DeferredSave) { deferredSaves.insert(save) }
+
     /// Re-point a file's library references at its new location — the
     /// moved-video scan's repair, and the carry behind FileOps' moves. Tags
     /// carry over — the stars among them, because stars are tags. Tags on the
@@ -1055,7 +1102,11 @@ final class Library: ObservableObject {
         // So do the stores that are not the library's own — the transcript,
         // corrections and all. A hook rather than a reference, the same shape as
         // `SuggestionStore.onVerdict`, so the library does not own the journal.
-        pathMoved?(Paths.tagPath(from), Paths.tagPath(to))
+        if batching {
+            batchedMoves.append((Paths.tagPath(from), Paths.tagPath(to)))
+        } else {
+            pathMoved?(Paths.tagPath(from), Paths.tagPath(to))
+        }
         if watch.entry(from) != nil {
             watch.move(from: from, to: to)
             watchRevision += 1
@@ -1113,6 +1164,59 @@ final class Library: ObservableObject {
         }
     }
 
+    // MARK: - folders, not files
+
+    /// Every file this library knows anything about under a folder, as
+    /// absolute paths — the videos a folder move must carry even when their
+    /// file is already gone (orphaned tags move with their folder too).
+    func keys(under folder: String) -> Set<String> {
+        let map = PathMap(from: folder, to: folder, isFolder: true)
+        var found = Set<String>()
+        func take<S: Sequence>(_ keys: S) where S.Element == String {
+            for key in keys where map.mapKey(key) != nil { found.insert(Paths.tagPath(key)) }
+        }
+        take(tags.keys)
+        take(facts.byKey.keys)
+        take(watch.entries.keys)
+        take(progress.keys.map(Paths.tagKey))
+        take(hidden)
+        take(prints.keys)
+        return found
+    }
+
+    /// A folder renamed or moved: the lists that name FOLDERS rather than
+    /// videos follow it — every profile's pinned and recent folders, the
+    /// duplicate scans, the discard folders, the session. The per-video carry
+    /// (`moveTags`) never reaches these.
+    func relocateFolderLists(_ map: PathMap) {
+        func moved(_ path: String) -> String { map.map(path) ?? path }
+        let pinsBefore = pinned
+        pinned = pinned.map(moved)
+        recent = recent.map(moved)
+        pinnedByProfile = pinnedByProfile.mapValues { $0.map(moved) }
+        recentByProfile = recentByProfile.mapValues { $0.map(moved) }
+        for i in scans.indices { scans[i].folders = scans[i].folders.map(moved) }
+        discardFolders = discardFolders.mapValues(moved)
+        if let root = session?.root { session?.root = moved(root) }
+        save()
+        if pinned != pinsBefore { pinsChanged() }
+    }
+
+    /// A folder deleted: it leaves every one of those lists.
+    func forgetFolderEverywhere(_ folder: String) {
+        let map = PathMap(from: folder, to: folder, isFolder: true)
+        func gone(_ path: String) -> Bool { map.map(path) != nil }
+        let pinsBefore = pinned
+        pinned.removeAll(where: gone)
+        recent.removeAll(where: gone)
+        pinnedByProfile = pinnedByProfile.mapValues { $0.filter { !gone($0) } }
+        recentByProfile = recentByProfile.mapValues { $0.filter { !gone($0) } }
+        for i in scans.indices { scans[i].folders.removeAll(where: gone) }
+        discardFolders = discardFolders.filter { !gone($0.value) }
+        save()
+        if pinned != pinsBefore { pinsChanged() }
+    }
+
     /// Finish any relocation a crash interrupted.
     ///
     /// A journal entry whose file is at its new path and gone from its old one
@@ -1134,7 +1238,9 @@ final class Library: ObservableObject {
             let there = exists(map.to)
             let left = !exists(map.from)
             if there && left {
-                moveTags(from: map.from, to: map.to)
+                // A folder is carried by `FolderOps.finishRelocation`, which
+                // walks it; here there is one file to re-point.
+                if !map.isFolder { moveTags(from: map.from, to: map.to) }
                 finished.append(map)
             } else if there || !left {
                 abandoned.append(map)
@@ -1230,7 +1336,10 @@ final class Library: ObservableObject {
         provenance.recordMetadata(names, on: Paths.tagKey(path))
     }
 
-    func saveProvenance() { provenance.save() }
+    func saveProvenance() {
+        if batching { deferredSaves.insert(.provenance); return }
+        provenance.save()
+    }
 
     /// The tags in use, most-used first — what the tag panel offers as chips.
     func popularTags() -> [String] { popular }
@@ -1827,6 +1936,7 @@ final class Library: ObservableObject {
 
     /// Written with the state file, and at once for a switch or a mark.
     func saveWatch() {
+        if batching { deferredSaves.insert(.watch); return }
         guard profileOpen else { return }
         watch.save(to: Paths.watchFile(person))
         watchDirty = false

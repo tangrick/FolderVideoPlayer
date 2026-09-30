@@ -276,6 +276,86 @@ enum ProfileRelocation {
         return moved
     }
 
+    // MARK: - a folder, not a file
+
+    /// A folder renamed or moved, for what names FOLDERS rather than videos,
+    /// past the profile in force: every other bundle's background upkeep
+    /// (`maintenance.json`) and pin merge base (`shared-extras.json`), and
+    /// every other person's `pins.json` on the share — so a folder somebody
+    /// pinned on their Apple TV's Home screen is still pinned.
+    static func carryFolder(_ map: PathMap, except active: String, device: String,
+                            root: String = Paths.support) {
+        changeFolders(except: active, device: device, root: root, share: share(of: map.from),
+                      maintenance: { $0.relocate(map) },
+                      pins: { $0.map { restOf(map.map(absolute($0, map.from)) ?? absolute($0, map.from)) ?? $0 } })
+    }
+
+    /// A folder deleted: it leaves the same lists.
+    static func forgetFolder(_ folder: String, except active: String, device: String,
+                             root: String = Paths.support) {
+        let gone = PathMap(from: folder, to: folder, isFolder: true)
+        changeFolders(except: active, device: device, root: root, share: share(of: folder),
+                      maintenance: { $0.forget(folder) },
+                      pins: { $0.filter { gone.map(absolute($0, folder)) == nil } })
+    }
+
+    private static func changeFolders(except active: String, device: String, root: String,
+                                      share: String?,
+                                      maintenance: (inout MaintenanceFile) -> Void,
+                                      pins: ([String]) -> [String]) {
+        for slug in ProfileBundle.slugs(root: root) where slug != active {
+            let file = ProfileBundle.file(in: slug, "maintenance.json", root: root)
+            if FileManager.default.fileExists(atPath: file) {
+                var upkeep = MaintenanceFile.load(at: file)
+                let before = upkeep
+                maintenance(&upkeep)
+                if upkeep != before { _ = upkeep.save(to: file) }
+            }
+            let extras = SharedExtras.stateFile(slug, root: root)
+            if let share, FileManager.default.fileExists(atPath: extras) {
+                var state = JSONStore.load(extras, fallback: SharedExtras.State())
+                if let base = state.pinBase[share] {
+                    state.pinBase[share] = pins(base)
+                    if state.pinBase[share] != base { JSONStore.save(extras, state) }
+                }
+            }
+        }
+        guard let share else { return }
+        for folder in personFolders(on: share) where (folder as NSString).lastPathComponent != active {
+            let path = (folder as NSString).appendingPathComponent(SharedExtras.pinsName)
+            guard FileManager.default.fileExists(atPath: path),
+                  let token = SharedTagDisk.lock(folder: folder, by: device, budget: lockBudget) else { continue }
+            if var file = SharedExtras.readJSON(SharedExtras.Pins.self, path),
+               file.format <= SharedExtras.currentFormat {
+                let now = pins(file.folders)
+                if now != file.folders {
+                    file.folders = now
+                    _ = SharedExtras.write(file, path, device: device)
+                }
+            }
+            SharedTagDisk.unlock(folder: folder, token: token)
+        }
+    }
+
+    /// The share a path is on, or nil for a Mac's own disk.
+    private static func share(of path: String) -> String? {
+        let key = Paths.tagKey(path)
+        guard !key.hasPrefix("/") else { return nil }
+        return key.split(separator: "/", maxSplits: 1).first.map(String.init)
+    }
+
+    /// A share-relative pin, as the absolute path on the share `near` is on.
+    private static func absolute(_ rest: String, _ near: String) -> String {
+        Paths.volumes + (share(of: near) ?? "") + "/" + rest
+    }
+
+    /// An absolute path, back to share-relative.
+    private static func restOf(_ path: String) -> String? {
+        let key = Paths.tagKey(path)
+        guard !key.hasPrefix("/"), let cut = key.firstIndex(of: "/") else { return nil }
+        return String(key[key.index(after: cut)...])
+    }
+
     // MARK: - a video sent to the Trash
 
     /// Take trashed videos out of every person's file on their share except

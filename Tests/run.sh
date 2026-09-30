@@ -152,6 +152,10 @@ sh "$here/run_profile_relocation.sh"
 # profile and person; Put Back returns them; discard folders are not scanned.
 sh "$here/run_trash_park.sh"
 
+# Folder management, phase 4: create, rename, move and delete-when-empty folders,
+# carried for every profile and person, in one batch.
+sh "$here/run_folder_ops.sh"
+
 # T08's first slice: a video becomes the one signal a speech model takes, with
 # nothing installed — real AAC decoded, silence left silent, no-audio answered,
 # and a time window really honoured, because a long film is read in pieces.

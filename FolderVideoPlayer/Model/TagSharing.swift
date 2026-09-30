@@ -269,6 +269,7 @@ extension Library {
         guard profileOpen else { return }
         _ = sharedSyncState()
         sharedSyncCache?.state = state
+        if batching { deferSave(.sync); return }
         JSONStore.save(Paths.sharedSyncFile(person), state)
     }
 

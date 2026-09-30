@@ -6,8 +6,8 @@
 |---|---|---|
 | 1 | Relocation engine: a renamed or moved video keeps everything the app knows about it | **Done**: commit `a561833` |
 | 2 | Every tag profile follows a move, on this Mac and on the NAS | **Done**: commit `d01f2a4` |
-| 3 | The Trash keeps tags, hidden; Put Back restores them | **Built**, uncommitted — [PHASE-3-TRASH.md](PHASE-3-TRASH.md) |
-| 4 | Folder operations: create, rename, move, delete-when-empty | [PHASE-4-FOLDERS.md](PHASE-4-FOLDERS.md) |
+| 3 | The Trash keeps tags, hidden; Put Back restores them | **Done**: commit `7943926` |
+| 4 | Folder operations: create, rename, move, delete-when-empty | **Built**, uncommitted — [PHASE-4-FOLDERS.md](PHASE-4-FOLDERS.md) |
 | 5 | The Organize window and sidebar folder actions | [PHASE-5-ORGANIZE-UI.md](PHASE-5-ORGANIZE-UI.md) |
 | 6 | *(optional)* Apple TV: follow `gone` before sending a `.set` for a path that no longer exists | Not specified; ask the user first |
 

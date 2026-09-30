@@ -122,6 +122,27 @@ struct FolderVideoPlayerApp: App {
                         rotation.move(from: old, to: new)
                         PlaybackController.moveTrackChoices(from: old, to: new)
                     }
+                    // A whole folder at once: each store writes once.
+                    library.pathsMoved = { pairs in
+                        journal.moveTranscripts(pairs)
+                        moments.move(pairs)
+                        analysis.move(pairs)
+                        for (old, new) in pairs {
+                            suggestions.move(from: old, to: new)
+                            media.move(from: old, to: new)
+                        }
+                        rotation.move(pairs)
+                        PlaybackController.moveTrackChoices(pairs)
+                    }
+                    // The app model lives as long as the app: held plainly.
+                    FolderOps.folderRelocated = { map in
+                        app.maintenance.followRelocation(map)
+                        app.playback?.followRelocation(map)
+                    }
+                    FolderOps.folderDeleted = { folder in
+                        app.maintenance.forgetFolder(folder)
+                        app.playback?.refreshAfterFileChanges()
+                    }
                     moments.reload(profile: Paths.activeProfile)
                     // A move a crash cut short finishes now, with every store
                     // above attached to follow it.
@@ -935,10 +956,10 @@ final class AppModel: ObservableObject {
     func recoverRelocationsOnce(_ library: Library) {
         guard !relocationsRecovered else { return }
         relocationsRecovered = true
-        let finished = library.recoverRelocations()
-        // The other profiles and people hear of those too, and any person's
-        // folder whose lock was held last time gets its moves now.
-        Task { await ProfileRelocation.spread(finished, library: library) }
+        // Files and folders alike; the other profiles and people hear of
+        // them too, and any person's folder whose lock was held last time
+        // gets its moves now.
+        Task { await FolderOps.recover(library: library) }
         // Videos put back from the Trash while the app was closed. Looked for
         // off the main thread, one at a time: a sleeping NAS answers slowly.
         let kept = ParkedTags.originals()

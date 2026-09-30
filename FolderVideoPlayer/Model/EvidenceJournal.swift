@@ -165,6 +165,20 @@ final class EvidenceJournal: ObservableObject {
         transcriptEdits += 1
     }
 
+    /// The same for a whole folder moved at once. Only a video that has a
+    /// transcript costs a statement — most of a folder has none — and the list
+    /// of transcribed videos is read again once, at the end.
+    func moveTranscripts(_ pairs: [(String, String)]) {
+        guard let store else { return }
+        var moved = false
+        for (old, new) in pairs where transcribedPaths.contains(old) {
+            if (try? store.moveTranscript(from: old, to: new)) == true { moved = true }
+        }
+        guard moved else { return }
+        refreshTranscribed()
+        transcriptEdits += 1
+    }
+
     /// Lines whose words match, anywhere in the profile. A query the store
     /// cannot understand returns nothing rather than everything.
     func transcriptMatches(_ query: String, limit: Int = 50) -> [TranscriptLine] {

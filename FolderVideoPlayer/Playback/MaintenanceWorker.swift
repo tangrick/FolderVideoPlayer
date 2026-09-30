@@ -78,6 +78,20 @@ final class MaintenanceWorker: ObservableObject {
 
     func isMaintained(_ folder: String) -> Bool { file.settings.folders.contains(folder) }
 
+    /// A folder renamed or moved: what this profile keeps up to date follows.
+    func followRelocation(_ map: PathMap) {
+        let before = file
+        file.relocate(map)
+        if file != before { persist() }
+    }
+
+    /// A folder deleted: it is no longer kept up to date.
+    func forgetFolder(_ folder: String) {
+        let before = file
+        file.forget(folder)
+        if file != before { persist() }
+    }
+
     /// Opt a folder in or out. Out forgets its snapshot and its queued work:
     /// the folder is none of this feature's business any more.
     func setMaintained(_ folder: String, _ on: Bool) {

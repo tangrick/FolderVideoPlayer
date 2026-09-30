@@ -28,10 +28,19 @@ final class VideoRotation: ObservableObject {
 
     /// A renamed or moved video keeps the turn it was given.
     func move(from oldPath: String, to newPath: String) {
-        let from = Paths.tagKey(oldPath)
-        let to = Paths.tagKey(newPath)
-        guard from != to, let turn = turns.removeValue(forKey: from) else { return }
-        turns[to] = turn
-        UserDefaults.standard.set(turns, forKey: Self.key)
+        move([(oldPath, newPath)])
+    }
+
+    /// Many at once — a folder moved — written once.
+    func move(_ pairs: [(String, String)]) {
+        var changed = false
+        for (oldPath, newPath) in pairs {
+            let from = Paths.tagKey(oldPath)
+            let to = Paths.tagKey(newPath)
+            guard from != to, let turn = turns.removeValue(forKey: from) else { continue }
+            turns[to] = turn
+            changed = true
+        }
+        if changed { UserDefaults.standard.set(turns, forKey: Self.key) }
     }
 }

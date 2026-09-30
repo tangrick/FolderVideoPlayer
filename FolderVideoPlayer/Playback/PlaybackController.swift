@@ -243,14 +243,23 @@ final class PlaybackController: ObservableObject {
     /// A renamed or moved video keeps the subtitles and the audio track that
     /// were chosen for it.
     static func moveTrackChoices(from oldPath: String, to newPath: String) {
-        let from = Paths.tagKey(oldPath)
-        let to = Paths.tagKey(newPath)
-        guard from != to else { return }
+        moveTrackChoices([(oldPath, newPath)])
+    }
+
+    /// Many at once — a folder moved — each list written once.
+    static func moveTrackChoices(_ pairs: [(String, String)]) {
         for key in [subtitleKey, audioKey] {
-            guard var saved = UserDefaults.standard.dictionary(forKey: key) as? [String: String],
-                  let choice = saved.removeValue(forKey: from) else { continue }
-            saved[to] = choice
-            UserDefaults.standard.set(saved, forKey: key)
+            guard var saved = UserDefaults.standard.dictionary(forKey: key) as? [String: String]
+            else { continue }
+            var changed = false
+            for (oldPath, newPath) in pairs {
+                let from = Paths.tagKey(oldPath)
+                let to = Paths.tagKey(newPath)
+                guard from != to, let choice = saved.removeValue(forKey: from) else { continue }
+                saved[to] = choice
+                changed = true
+            }
+            if changed { UserDefaults.standard.set(saved, forKey: key) }
         }
     }
 
@@ -1219,6 +1228,14 @@ final class PlaybackController: ObservableObject {
     /// paths that may no longer exist. A folder session is walked again; a
     /// tag or favorites session is re-queried. Whatever is still playable
     /// keeps playing.
+    /// A folder renamed or moved while its videos were in the list: the list,
+    /// and the folder it is of, follow before the listing is read again.
+    func followRelocation(_ map: PathMap) {
+        if let now = root.flatMap(map.map) { root = now }
+        playlist = playlist.map { map.map($0) ?? $0 }
+        refreshAfterFileChanges()
+    }
+
     func refreshAfterFileChanges() {
         let playingNow = currentPath
         switch mode {

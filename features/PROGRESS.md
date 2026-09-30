@@ -107,7 +107,7 @@ before these.
 | — | Pinned folders published for the Apple TV (`pins.json`, user request) | released 1.1.23 (one-way); TV 1.1 (7) on TestFlight reads them |
 | — | Pins follow the profile between Macs; People shelf on the TV (user request) | done, uncommitted, unreleased; `run_profile_travels.sh` covers a second Mac opening the profile |
 | 9 | Additional-format playback (VLCKit/libmpv) | KIV — on hold by the user's decision (2026-09-27); do not start without asking |
-| — | Folder management (user request) — **start at `features/folder-management/README.md`** | phases 1–2 committed on `feature/folder-management`; phase 3 built there, uncommitted; phases 4–5 specified in `features/folder-management/PHASE-*.md`, not started; phase 6 (TV) optional, ask first |
+| — | Folder management (user request) — **start at `features/folder-management/README.md`** | phases 1–3 committed on `feature/folder-management`; phase 4 built there, uncommitted; phase 5 specified in `features/folder-management/PHASE-5-ORGANIZE-UI.md`, not started; phase 6 (TV) optional, ask first |
 
 ## Priority 1 — Transcript editor and export
 
@@ -373,6 +373,17 @@ in places (`PlaybackController.engine`, `VideoSurface(player:)`,
   - **`FileOps.replace` and `PlaybackController.replaceOriginal` are `async`**, and a replace spreads before it trashes. `FileOps.sendsToTrash` (off in tests) keeps tests out of the user's Trash.
   - **Tests:** `Tests/test_trash_park.swift`, 19 checks, mutation-checked (no parking → checks 5, 7–9 and 11 fail; no ring 3 → checks 3 and 11 fail). Full suite 2,938 checks, exit 0. Debug build OK, no new warnings.
   - **NOT verified:** the real Trash and Finder's Put Back, and a real NAS.
+
+- 2026-09-30 — Folder management, phase 4 (spec: `features/folder-management/PHASE-4-FOLDERS.md`): **folder operations**, engine only (the window is phase 5).
+  - **New `Model/FolderOps.swift`:** `validateName` (now also used by `FileOps.rename`), `makeFolder`, `renameFolder`, `moveFolder` (same volume only; `sameVolume` is a test seam), `deleteFolder`, `finishRelocation` and `recover`.
+    - A folder move walks the folder and adds the library's orphaned keys under it (`Library.keys(under:)`), then carries every video in one batch.
+    - It then relocates the folder-level lists: `Library.relocateFolderLists` (pinned and recent for every profile, scans, discard folders, session); `MaintenanceFile.relocate` (the worker via `FolderOps.folderRelocated`); `PlaybackController.followRelocation`.
+    - Past this profile: `ProfileRelocation.spread` for the videos, plus `carryFolder` for other bundles' upkeep and pin base and other people's `pins.json`.
+  - **New `Model/FolderDelete.swift`:** `FolderContents`, clutter rules, and delete with fresh preflight → unlink clutter → `rmdir` deepest first, retrying once. It has no `removeItem`, and a test enforces that.
+  - **Batching:** `Library.batch` / `moveTags(_:)` hold every save and the `pathMoved` hook until the end, then call the new `pathsMoved` once. Batch `move(_:)` exists on `AnalysisStore`, `MomentStore`, `VideoRotation`, track choices, and `EvidenceJournal.moveTranscripts` (only transcribed videos cost a statement). 2,000 videos: 21.8 s before, well under 2 s after.
+  - **Recovery** of folder journal entries goes through `FolderOps.recover`, called once at launch.
+  - **Tests:** `Tests/test_folder_ops.swift`, 42 checks, mutation-checked (recursive delete, no orphans, no folder lists, no batching each fail their checks). Full suite 2,980 checks, exit 0. Debug build OK, no new warnings.
+  - **NOT verified:** a real NAS; no UI calls the folder operations yet (phase 5).
 
 ## Next steps for whoever continues
 

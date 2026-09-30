@@ -100,8 +100,8 @@ enum FileOps {
             report.skipped.append((name, "a name cannot be empty"))
             return report
         }
-        guard !wanted.contains("/") else {
-            report.failed.append((name, "a name cannot contain “/”"))
+        if let why = FolderOps.validateName(wanted, isFolder: false) {
+            report.failed.append((name, why))
             return report
         }
         guard FileManager.default.fileExists(atPath: path) else {

@@ -89,6 +89,40 @@ struct MaintenanceFile: Codable, Equatable {
     /// Videos given up on, and why — shown, never retried by themselves.
     var failed: [String: String] = [:]
 
+    /// A folder renamed or moved: every folder, video and relative path this
+    /// file holds under it follows. A maintained folder ABOVE the one that
+    /// moved keeps its own name, and its snapshot's relative paths are
+    /// re-rooted, so its next scan sees nothing new rather than a removal and
+    /// an addition.
+    mutating func relocate(_ map: PathMap) {
+        func moved(_ path: String) -> String { map.map(path) ?? path }
+        settings.folders = settings.folders.map(moved)
+        var newKnown: [String: [String: Int64]] = [:]
+        for (folder, snapshot) in known {
+            let prefix = folder.hasSuffix("/") ? folder : folder + "/"
+            var rerooted: [String: Int64] = [:]
+            for (relative, size) in snapshot {
+                let now = moved(prefix + relative)
+                rerooted[now.hasPrefix(prefix) ? String(now.dropFirst(prefix.count)) : relative] = size
+            }
+            newKnown[moved(folder)] = rerooted
+        }
+        known = newKnown
+        lastScan = Dictionary(lastScan.map { (moved($0.key), $0.value) }, uniquingKeysWith: max)
+        for i in queue.indices { queue[i].path = moved(queue[i].path) }
+        failed = Dictionary(failed.map { (moved($0.key), $0.value) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    /// A folder deleted: nothing under it is kept up to date any more.
+    mutating func forget(_ folder: String) {
+        func gone(_ path: String) -> Bool { PathMap(from: folder, to: folder, isFolder: true).map(path) != nil }
+        settings.folders.removeAll(where: gone)
+        known = known.filter { !gone($0.key) }
+        lastScan = lastScan.filter { !gone($0.key) }
+        queue.removeAll { gone($0.path) }
+        failed = failed.filter { !gone($0.key) }
+    }
+
     static func load(at path: String) -> MaintenanceFile {
         guard let data = FileManager.default.contents(atPath: path),
               let file = try? JSONDecoder().decode(MaintenanceFile.self, from: data) else { return MaintenanceFile() }

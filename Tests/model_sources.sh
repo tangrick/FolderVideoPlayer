@@ -33,6 +33,8 @@ MODEL_SOURCES=(
     "$model/ProfileRelocation.swift"
     # Tags of videos in the Trash, kept for Put Back (folder management, phase 3).
     "$model/ParkedTags.swift"
+    # Folder operations and the empty-only delete (folder management, phase 4).
+    "$model/FolderOps.swift" "$model/FolderDelete.swift"
     "$model/MovedScan.swift" "$model/NameIndex.swift" "$model/AnalysisModels.swift"
     "$model/AnalysisStore.swift" "$model/AnalysisEngine.swift"
     "$model/AICapability.swift" "$model/FaceStore.swift" "$model/SuggestionStore.swift"
