@@ -107,7 +107,7 @@ before these.
 | — | Pinned folders published for the Apple TV (`pins.json`, user request) | released 1.1.23 (one-way); TV 1.1 (7) on TestFlight reads them |
 | — | Pins follow the profile between Macs; People shelf on the TV (user request) | done, uncommitted, unreleased; `run_profile_travels.sh` covers a second Mac opening the profile |
 | 9 | Additional-format playback (VLCKit/libmpv) | KIV — on hold by the user's decision (2026-09-27); do not start without asking |
-| — | Folder management (user request) — design and phases in `features/FOLDER_MANAGEMENT.md` | phase 1 (relocation engine) built on `feature/folder-management`, uncommitted; phases 2–6 not started |
+| — | Folder management (user request) — design and phases in `features/FOLDER_MANAGEMENT.md` | phase 1 (relocation engine) committed on `feature/folder-management`; phase 2 (every tag profile follows) built there; phases 3–6 not started |
 
 ## Priority 1 — Transcript editor and export
 
@@ -352,6 +352,17 @@ in places (`PlaybackController.engine`, `VideoSurface(player:)`,
   - **`FileOps`:** move, rename and gather are `async`, with the file work off the main actor. Subtitle sidecars travel with their video, and case-only renames work.
   - **Verified:** new `Tests/test_relocation.swift` (38 checks, mutation-checked); full `sh Tests/run.sh` (2,882 checks, exit 0 — baseline was 2,844); Debug app build with no new warnings in changed lines.
   - **NOT verified:** the UI by hand, and anything on a real NAS.
+
+- 2026-09-30 — Folder management, phase 2 (user request): **every tag profile follows a move.** One person renaming a video on the NAS used to leave everyone else's tags at the old path, so their profiles opened with missing files. No Apple TV change: it reads a person's `tags.json`, `pins.json` and `facts.json` fresh from the share.
+  - **New `Model/ProfileRelocation.swift`**, listed in `model_sources.sh`:
+    - ring 2: every other profile bundle on this Mac, with the move queued in its `shared-sync.json` pending;
+    - ring 3: every person's folder on the share, as a `.move` in their `tags.json` under their `tags.lock`, plus re-keyed `facts.json` and `transcripts.json`;
+    - `relocations-owed.json` for a held lock, with a retry.
+  - **Another Mac replays** the `gone` records it hasn't seen (`SharedTagFile.unseenMoves`, `SharedSyncState.goneSeen`), so its Mac-only data follows too: watch state, resume point, hidden flag, marks, moments, transcripts.
+  - **`moveFiles` warns**, naming whoever tagged videos that are leaving their share.
+  - **`MediaCache.move`'s disk work is serialised** (NAS trickle rule).
+  - **Tests:** `Tests/test_profile_relocation.swift` (37 checks, mutation-checked; with ring 3 off, the reported bug reproduces). Full `sh Tests/run.sh`: 2,919 checks, exit 0. Debug app build OK, no new warnings.
+  - **NOT verified:** a real NAS, a real second Mac, or the Apple TV hardware.
 
 ## Next steps for whoever continues
 

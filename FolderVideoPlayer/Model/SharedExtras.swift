@@ -470,13 +470,13 @@ enum SharedExtras {
         (folder as NSString).appendingPathComponent(name)
     }
 
-    private static func readJSON<T: Decodable>(_ type: T.Type, _ path: String) -> T? {
+    static func readJSON<T: Decodable>(_ type: T.Type, _ path: String) -> T? {
         FileManager.default.contents(atPath: path).flatMap { try? JSONDecoder().decode(type, from: $0) }
     }
 
     /// Via a scratch file renamed into place, as `SharedTagDisk.write` does, so
     /// another device never reads half a file.
-    private static func write<T: Encodable>(_ value: T, _ path: String, device: String) -> Bool {
+    static func write<T: Encodable>(_ value: T, _ path: String, device: String) -> Bool {
         let scratch = "\(path).\(device).writing"
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]

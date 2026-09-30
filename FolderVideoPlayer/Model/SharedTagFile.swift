@@ -383,4 +383,10 @@ struct SharedSyncState: Codable, Equatable {
     var pending: [String: [SharedTagEdit]] = [:]
     /// Share → old file name → what it held when last read.
     var legacySeen: [String: [String: LegacySeen]] = [:]
+    /// Share → the file's `gone` records this Mac has replayed, path → time
+    /// (`SharedTagFile.unseenMoves`). Optional, so a state file written before
+    /// it existed still loads — and a first sync then replays every recent
+    /// move once, which is harmless: a move with nothing left to carry is a
+    /// no-op.
+    var goneSeen: [String: [String: Double]]?
 }

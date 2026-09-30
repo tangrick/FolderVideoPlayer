@@ -143,6 +143,11 @@ sh "$here/run_maintenance.sh"
 # at the next launch.
 sh "$here/run_relocation.sh"
 
+# Folder management, phase 2: every tag profile follows a move — the other
+# profiles on the Mac, every person's folder on the share, and another Mac at
+# its next sync.
+sh "$here/run_profile_relocation.sh"
+
 # T08's first slice: a video becomes the one signal a speech model takes, with
 # nothing installed — real AAC decoded, silence left silent, no-audio answered,
 # and a time window really honoured, because a long film is read in pieces.

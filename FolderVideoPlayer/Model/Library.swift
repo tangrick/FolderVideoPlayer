@@ -1119,10 +1119,12 @@ final class Library: ObservableObject {
     /// dropping it would orphan the tags for good the day it comes back.
     ///
     /// Run once the stores behind `pathMoved` are attached, so transcripts,
-    /// moments and marks follow as well as the tags.
+    /// moments and marks follow as well as the tags. Returns the moves it
+    /// finished, for the other profiles and the other people to hear of
+    /// (`ProfileRelocation.spread`).
     @discardableResult
     func recoverRelocations(exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) })
-        -> Int {
+        -> [PathMap] {
         var finished: [PathMap] = []
         var abandoned: [PathMap] = []
         for map in RelocationJournal.pending() {
@@ -1140,7 +1142,7 @@ final class Library: ObservableObject {
             save()
         }
         RelocationJournal.end(finished + abandoned)
-        return finished.count
+        return finished
     }
 
     /// Drop one tag reference entirely — a file that is gone for good. The

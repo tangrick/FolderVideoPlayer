@@ -62,6 +62,7 @@ enum FileOps {
         guard !paths.isEmpty else { return report }
         let undo = "moving \(paths.count) video\(paths.count == 1 ? "" : "s")"
         var journal: [PathMap] = []
+        var moved: [PathMap] = []
         var listings: [String: [String]] = [:]
         for path in paths {
             let name = (path as NSString).lastPathComponent
@@ -76,10 +77,11 @@ enum FileOps {
             }.value
             listings[source] = outcome.listing
             record(outcome, name: name, undo: undo, library: library,
-                   report: &report, journal: &journal)
+                   report: &report, journal: &journal, moved: &moved)
         }
         library.saveTags()
         library.save()
+        await ProfileRelocation.spread(moved, library: library)
         RelocationJournal.end(journal)
         return report
     }
@@ -118,10 +120,12 @@ enum FileOps {
             shift(path, into: folder, leaf: leaf, findFree: false, listing: nil)
         }.value
         var journal: [PathMap] = []
+        var moved: [PathMap] = []
         record(outcome, name: name, undo: "renaming “\(name)”", library: library,
-               report: &report, journal: &journal)
+               report: &report, journal: &journal, moved: &moved)
         library.saveTags()
         library.save()
+        await ProfileRelocation.spread(moved, library: library)
         RelocationJournal.end(journal)
         return report
     }
@@ -216,7 +220,8 @@ enum FileOps {
     /// batch: the tags have not changed until then, and a rename refused as a
     /// clash must not leave an Undo behind that puts back nothing.
     private static func record(_ outcome: Shifted, name: String, undo: String, library: Library,
-                               report: inout Report, journal: inout [PathMap]) {
+                               report: inout Report, journal: inout [PathMap],
+                               moved: inout [PathMap]) {
         switch outcome.result {
         case let .done(planned, landed, trouble):
             if journal.isEmpty { library.rememberForUndo(undo) }
@@ -224,6 +229,7 @@ enum FileOps {
             report.done.append(landed)
             for (companion, why) in trouble { report.failed.append((companion, why)) }
             journal.append(planned)
+            moved.append(PathMap(from: planned.from, to: landed))
         case .skipped(let why):
             report.skipped.append((name, why))
         case .failed(let why):
@@ -356,6 +362,9 @@ enum FileOps {
         carryBookkeeping(from: original, to: copy, library: library)
         library.saveTags()
         library.save()
+        // Everybody's tags take the copy, not only the profile in force's. Its
+        // own task: the caller is waiting on a report, not on the share.
+        Task { await ProfileRelocation.spread([PathMap(from: original, to: copy)], library: library) }
         return trash([original], library: library, askFolder: askFolder)
     }
 

@@ -155,6 +155,8 @@ final class MediaCache: ObservableObject {
         }
     }
 
+    private static let moveQueue = DispatchQueue(label: "MediaCache.move", qos: .utility)
+
     /// Carry a video's running time and its frames to its new path.
     ///
     /// Both are keyed by the path (the frames by a hash of it), so a renamed
@@ -179,7 +181,9 @@ final class MediaCache: ObservableObject {
                 memory.removeObject(forKey: oldPath + suffix as NSString)
             }
         }
-        Task.detached(priority: .utility) {
+        // One at a time: a batch of three hundred moves, or a sync replaying
+        // them, must trickle to the share rather than stat it all at once.
+        Self.moveQueue.async {
             guard let bytes = MediaCache.fileSize(newPath) else { return }
             let size = Int64(bytes)
             let fm = FileManager.default

@@ -145,6 +145,11 @@ enum Paths {
     static var relocationsFile: String {
         (support as NSString).appendingPathComponent("relocations-pending.json")
     }
+    /// Moves another person's folder on a share still has to hear about — its
+    /// lock was held, or the write failed. See `ProfileRelocation.retryOwed`.
+    static var relocationsOwedFile: String {
+        (support as NSString).appendingPathComponent("relocations-owed.json")
+    }
     /// The facts the app READ off the files — the capture date, the resolution,
     /// the camera, the place from GPS. Kept out of `tagsFile` because that one
     /// is published to the other devices verbatim, and because a reading is not

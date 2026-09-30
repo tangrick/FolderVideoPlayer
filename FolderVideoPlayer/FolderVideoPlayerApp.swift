@@ -930,7 +930,10 @@ final class AppModel: ObservableObject {
     func recoverRelocationsOnce(_ library: Library) {
         guard !relocationsRecovered else { return }
         relocationsRecovered = true
-        library.recoverRelocations()
+        let finished = library.recoverRelocations()
+        // The other profiles and people hear of those too, and any person's
+        // folder whose lock was held last time gets its moves now.
+        Task { await ProfileRelocation.spread(finished, library: library) }
     }
 
     /// Run one file operation, one at a time, then report it.
@@ -966,7 +969,52 @@ final class AppModel: ObservableObject {
                                         : "Where should these \(paths.count) videos go?",
                                       start: (paths[0] as NSString).deletingLastPathComponent)
         else { return }
-        runFileOp("Moved") { await FileOps.move(paths, into: folder, library: library) }
+        // Videos leaving their share take this profile's tags with them, but
+        // not anybody else's: the others cannot see where they went. Say whose
+        // before anything moves, and let the move go ahead.
+        let leaving = paths.filter { Self.share(of: $0).map { $0 != Self.share(of: folder) } ?? false }
+        guard !leaving.isEmpty else {
+            runFileOp("Moved") { await FileOps.move(paths, into: folder, library: library) }
+            return
+        }
+        let me = library.profileOpen ? slug(library.person) : ""
+        let shares = Set(leaving.compactMap(Self.share(of:))).sorted()
+        Task {
+            let people = await Task.detached(priority: .userInitiated) {
+                ProfileRelocation.peopleTagging(leaving, skip: me)
+            }.value
+            guard people.isEmpty || confirmLeavingShare(people, shares: shares) else { return }
+            runFileOp("Moved") { await FileOps.move(paths, into: folder, library: library) }
+        }
+    }
+
+    /// The share a path is on, or nil for a Mac's own disk.
+    private static func share(of path: String) -> String? {
+        let key = Paths.tagKey(path)
+        guard !key.hasPrefix("/") else { return nil }
+        return key.split(separator: "/", maxSplits: 1).first.map(String.init)
+    }
+
+    /// Whether to move tagged videos off their share when other people's tags
+    /// cannot follow them. Those tags are not touched: they stay on the share,
+    /// and come back if the videos do.
+    private func confirmLeavingShare(_ people: [String: Int], shares: [String]) -> Bool {
+        let names = people.keys.sorted().map { "“\($0)”" }
+        let who = names.count == 1 ? names[0]
+            : names.dropLast().joined(separator: ", ") + " and " + names[names.count - 1]
+        let place = shares.map { "“\($0)”" }.joined(separator: " and ")
+        let alert = NSAlert()
+        alert.messageText = "\(who) tagged some of these videos"
+        alert.informativeText = """
+        Their tags can't follow the videos off \(place): nobody else can see \
+        where the videos are going. The tags stay on \(place) as they are, and \
+        come back if the videos are moved back.
+
+        Your own tags go with the videos.
+        """
+        alert.addButton(withTitle: "Move Anyway")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     /// Send videos to the Trash — or, on a share without one, to a folder

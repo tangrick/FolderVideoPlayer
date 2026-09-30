@@ -176,7 +176,8 @@ extension Library {
                 recorded: state.pending[share] ?? [],
                 legacySeen: state.legacySeen[share] ?? [:],
                 knownMtime: sharedTagMtimes[share],
-                mergedUpTo: lastMerge)
+                mergedUpTo: lastMerge,
+                goneSeen: state.goneSeen?[share] ?? [:])
         }
     }
 
@@ -192,6 +193,7 @@ extension Library {
         var written: [(String, Int)] = []
         var skipped: [(String, String)] = []
         var fromOthers = 0
+        var replays: [[String]] = []
         for (input, output) in zip(inputs, outputs) {
             let share = input.share
             switch output.status {
@@ -223,11 +225,24 @@ extension Library {
             let left = Array((state.pending[share] ?? []).dropFirst(output.sentRecorded))
             state.pending[share] = left.isEmpty ? nil : left
             state.legacySeen[share] = output.legacySeen
+            if let seen = output.goneSeen {
+                var all = state.goneSeen ?? [:]
+                all[share] = seen
+                state.goneSeen = all
+            }
+            replays += output.replays.map { [share + "/" + $0[0], share + "/" + $0[1]] }
             sharedTagMtimes[share] = output.mtime
             written.append((share, file.videos.count))
         }
         saveSharedSyncState(state)
         if updated != tags { adoptSharedTags(updated) }
+        // Moves made on another device. The tags came with the file just now;
+        // what lives only on this Mac — watch state, moments, transcripts,
+        // resume points, marks — follows them here, through the same carry a
+        // move made on this Mac takes. The tags themselves are already at the
+        // new path, so nothing is sent back.
+        for pair in replays { moveTags(from: pair[0], to: pair[1]) }
+        if !replays.isEmpty { save() }
         return ((written, skipped), fromOthers)
     }
 
@@ -268,22 +283,9 @@ extension Library {
     /// the next sync works it out by comparing — but a move compared looks
     /// like a removal and an addition, and the file has to know it was a move.
     func recordSharedEdit(moving from: String, to: String?) {
-        guard profileOpen else { return }
-        func split(_ key: String) -> (share: String, rest: String)? {
-            guard !key.hasPrefix("/"), let cut = key.firstIndex(of: "/") else { return nil }
-            let rest = String(key[key.index(after: cut)...])
-            return rest.isEmpty ? nil : (String(key[..<cut]), rest)
-        }
-        guard let old = split(from) else { return }
-        let edit: SharedTagEdit
-        if let to, let new = split(to), new.share == old.share {
-            edit = .move(old.rest, new.rest)
-        } else {
-            // Gone from this share: another share, a local folder, or the bin.
-            edit = .remove(old.rest)
-        }
+        guard profileOpen, let edit = SharedTagEdit.forMove(from: from, to: to) else { return }
         var state = sharedSyncState()
-        state.pending[old.share, default: []].append(edit)
+        state.pending[edit.share, default: []].append(edit.edit)
         saveSharedSyncState(state)
     }
 
@@ -305,6 +307,8 @@ extension Library {
         /// Old files no newer than this were merged here before the shared
         /// file existed; see `Library.lastMerge`. Zero takes them all.
         var mergedUpTo: Double = 0
+        /// The file's `gone` records already replayed here, path → time.
+        var goneSeen: [String: Double] = [:]
 
         var hasSomethingToSend: Bool {
             guard let base else { return !local.isEmpty || !recorded.isEmpty }
@@ -330,6 +334,12 @@ extension Library {
         var dropped = 0
         /// Whether this sync wrote the file, rather than only reading it.
         var sentSomething = false
+        /// Moves made elsewhere that this Mac has not replayed, `[from, to]`
+        /// from the share root, each checked on disk: the old path gone, the
+        /// new one there. See `SharedTagFile.unseenMoves`.
+        var replays: [[String]] = []
+        /// What `goneSeen` should be now. Nil: leave it as it was.
+        var goneSeen: [String: Double]?
     }
 
     /// Sync one share. Blocking; see `SharedTagDisk`.
@@ -346,6 +356,16 @@ extension Library {
             fm.fileExists(atPath: (input.mount as NSString).appendingPathComponent(rest))
         }
         let lockPath = (folder as NSString).appendingPathComponent(SharedTagFile.lockName)
+        // Every answer that carries the file also carries the moves in it this
+        // Mac has not replayed. Checked here, off the main thread: each one is
+        // two round trips to the share, once, the first time it is seen.
+        func replaying(_ output: ShareSyncOutput, _ file: SharedTagFile) -> ShareSyncOutput {
+            var out = output
+            let unseen = file.unseenMoves(seen: input.goneSeen)
+            out.replays = unseen.moves.filter { !exists($0[0]) && exists($0[1]) }
+            out.goneSeen = unseen.seen
+            return out
+        }
 
         // Look first, without the lock: most syncs have nothing to write.
         var found: SharedTagFile?
@@ -392,8 +412,8 @@ extension Library {
                 if oldActive, foundMtime != input.knownMtime {
                     SharedTagDisk.writeCompatCopy(file.videos, folder: folder, device: me)
                 }
-                return ShareSyncOutput(status: .inLine, file: file, mtime: foundMtime,
-                                       legacySeen: input.legacySeen)
+                return replaying(ShareSyncOutput(status: .inLine, file: file, mtime: foundMtime,
+                                                 legacySeen: input.legacySeen), file)
             }
         }
 
@@ -460,9 +480,9 @@ extension Library {
             SharedTagDisk.retire(legacy.map(\.name), folder: folder)
             for old in legacy { seen[old.name] = nil }
         }
-        return ShareSyncOutput(status: .inLine, file: file, mtime: mtime,
-                               sentRecorded: input.recorded.count, legacySeen: seen,
-                               dropped: dropped, sentSomething: true)
+        return replaying(ShareSyncOutput(status: .inLine, file: file, mtime: mtime,
+                                         sentRecorded: input.recorded.count, legacySeen: seen,
+                                         dropped: dropped, sentSomething: true), file)
     }
 
     /// Drop the old un-owned tags.json once this person has a file. It has

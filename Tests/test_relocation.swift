@@ -199,7 +199,7 @@ struct RelocationTest {
         // ...and the app dies here. The next launch:
         let finished = library.recoverRelocations()
         check("a move a crash cut short is finished at the next launch",
-              finished == 1 && library.tagsFor(crash + "/after.mp4") == ["Crashed"]
+              finished.count == 1 && library.tagsFor(crash + "/after.mp4") == ["Crashed"]
                 && library.resumePoint(crash + "/after.mp4") == 99)
         check("...and struck off", RelocationJournal.pending().isEmpty && !exists(Paths.relocationsFile))
 
@@ -210,7 +210,7 @@ struct RelocationTest {
                              to: "/Volumes/fvp-not-mounted/b.mp4")
         RelocationJournal.begin(absent)
         check("a move that never happened is dropped and changes nothing",
-              library.recoverRelocations() == 0 && library.tagsFor(crash + "/stayed.mp4") == ["Stayed"])
+              library.recoverRelocations().isEmpty && library.tagsFor(crash + "/stayed.mp4") == ["Stayed"])
         check("a move on a share that is not mounted is kept for when it is",
               RelocationJournal.pending() == [absent])
         RelocationJournal.end([absent])

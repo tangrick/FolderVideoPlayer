@@ -28,6 +28,9 @@ MODEL_SOURCES=(
     # One relocation and the journal that makes a crash mid-move harmless
     # (added Sep'26, folder management phase 1). FileOps and Library use it.
     "$model/PathMap.swift"
+    # ...and the same move carried to the other profiles on this Mac and every
+    # person's folder on the share (folder management, phase 2).
+    "$model/ProfileRelocation.swift"
     "$model/MovedScan.swift" "$model/NameIndex.swift" "$model/AnalysisModels.swift"
     "$model/AnalysisStore.swift" "$model/AnalysisEngine.swift"
     "$model/AICapability.swift" "$model/FaceStore.swift" "$model/SuggestionStore.swift"
