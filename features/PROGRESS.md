@@ -107,7 +107,7 @@ before these.
 | — | Pinned folders published for the Apple TV (`pins.json`, user request) | released 1.1.23 (one-way); TV 1.1 (7) on TestFlight reads them |
 | — | Pins follow the profile between Macs; People shelf on the TV (user request) | done, uncommitted, unreleased; `run_profile_travels.sh` covers a second Mac opening the profile |
 | 9 | Additional-format playback (VLCKit/libmpv) | KIV — on hold by the user's decision (2026-09-27); do not start without asking |
-| — | Folder management (user request) — design and phases in `features/FOLDER_MANAGEMENT.md` | phase 1 (relocation engine) committed on `feature/folder-management`; phase 2 (every tag profile follows) built there; phases 3–6 not started |
+| — | Folder management (user request) — **start at `features/folder-management/README.md`** | phases 1–2 committed on `feature/folder-management`; phases 3–5 specified in `features/folder-management/PHASE-*.md`, not started; phase 6 (TV) optional, ask first |
 
 ## Priority 1 — Transcript editor and export
 
