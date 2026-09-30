@@ -177,6 +177,11 @@ final class Library: ObservableObject {
     @Published var playlistStyle: PlaylistStyle = .list { didSet { save() } }
     /// How wide the playlist is, dragged by its edge and remembered.
     @Published var playlistWidth: Double = 320
+    /// The narrowest and widest the playlist may be dragged. The ceiling was
+    /// 900 pt while the list was a table whose columns needed the room; with
+    /// rows that wrap, width past this only takes picture away. A window that
+    /// cannot spare it draws the panel narrower still (`PlayerScreen`).
+    static let playlistWidths: ClosedRange<Double> = 260...560
     /// How wide the library sidebar is, dragged by its edge and remembered.
     @Published var librarySidebarWidth: Double?
     @Published var playlistSort: PlaylistSort = .folder { didSet { save() } }
@@ -604,7 +609,8 @@ final class Library: ObservableObject {
         askProfileAtStartup = state.askProfileAtStartup ?? true
         showThumbnails = state.thumbnails ?? true
         playlistStyle = state.playlistStyle.flatMap(PlaylistStyle.init(rawValue:)) ?? .list
-        playlistWidth = min(max(state.playlistWidth ?? 320, 260), 900)
+        playlistWidth = min(max(state.playlistWidth ?? 320, Self.playlistWidths.lowerBound),
+                            Self.playlistWidths.upperBound)
         librarySidebarWidth = state.librarySidebarWidth.map { min(max($0, 200), 600) }
         playlistSort = state.playlistSort.flatMap(PlaylistSort.init(rawValue:)) ?? .folder
         sortDescending = state.sortDescending ?? playlistSort.defaultDescending

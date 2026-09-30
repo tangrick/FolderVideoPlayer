@@ -1,9 +1,13 @@
 import AppKit
 import SwiftUI
 
-/// The playlist, laid out the way Finder lays out a folder: a grid of poster
-/// frames or a list, and in the list a header whose columns sort — a click
-/// sorts by that column, a second click turns it around.
+/// The playlist: a grid of poster frames or a list, under a bar that sorts
+/// them — a click sorts by that key, a second click turns it around.
+///
+/// The list was Finder's table once, one line a video with a column per fact.
+/// A sidebar is too narrow for a table: at its usual width the columns left
+/// the name about sixty points, and every row read "vide…mov". Each row now
+/// takes the lines it needs instead — name, facts, tags, verdict.
 struct PlaylistSidebar: View {
     @ObservedObject var playback: PlaybackController
     @EnvironmentObject var library: Library
@@ -24,6 +28,10 @@ struct PlaylistSidebar: View {
     /// Where the drag on the edge started, so the width tracks the mouse
     /// rather than jumping by the delta each time.
     @State private var widthAtDragStart: Double?
+    /// The width the panel is actually drawn at, which the window may hold
+    /// below the one it was dragged to (`PlayerScreen`). The rows and tiles
+    /// are laid out against this, never against the wish.
+    @State private var drawnWidth: CGFloat?
     /// The cursor is on the drag edge, so the line shows itself.
     @State private var hoveringEdge = false
     /// Tag-review mode: when the playlist is a TAG (mode == .tag), the AI
@@ -98,7 +106,17 @@ struct PlaylistSidebar: View {
             Divider()
             footer
         }
-        .frame(width: library.playlistWidth)
+        // Any width from the floor up to the one it was dragged to: the window
+        // gives it as much of that as it can spare.
+        .frame(minWidth: CGFloat(Library.playlistWidths.lowerBound),
+               maxWidth: CGFloat(library.playlistWidth))
+        .background {
+            GeometryReader { proxy in
+                Color.clear.onChange(of: proxy.size.width, initial: true) { _, width in
+                    drawnWidth = width
+                }
+            }
+        }
         .background(.regularMaterial)
         // The drag zone and the line that marks it are drawn separately.
         // Chaining an overlay onto an already-.offset handle is ambiguous —
@@ -694,6 +712,12 @@ struct PlaylistSidebar: View {
 
     // MARK: - the edge you drag
 
+    /// The width the panel is drawn at: the one it was dragged to, unless the
+    /// window is too narrow to spare it.
+    private var panelWidth: CGFloat {
+        drawnWidth ?? CGFloat(library.playlistWidth)
+    }
+
     private var resizeHandle: some View {
         Rectangle()
             .fill(.clear)
@@ -719,13 +743,25 @@ struct PlaylistSidebar: View {
             .gesture(
                 DragGesture(coordinateSpace: .global)
                     .onChanged { drag in
-                        let start = widthAtDragStart ?? library.playlistWidth
+                        // From the width on screen, not the remembered one: a
+                        // panel the window is holding narrow would otherwise
+                        // jump on the first move.
+                        let start = widthAtDragStart ?? Double(panelWidth)
                         widthAtDragStart = start
                         // The panel is on the right, so dragging left widens it.
-                        library.playlistWidth = min(max(start - drag.translation.width, 260), 900)
+                        library.playlistWidth = min(max(start - drag.translation.width,
+                                                        Library.playlistWidths.lowerBound),
+                                                    Library.playlistWidths.upperBound)
                     }
                     .onEnded { _ in
                         widthAtDragStart = nil
+                        // Dragged past what the window can spare, the panel
+                        // stopped where it had to. Remember THAT width, or the
+                        // next drag back would move nothing until it had
+                        // travelled the difference.
+                        if let drawnWidth {
+                            library.playlistWidth = min(library.playlistWidth, Double(drawnWidth))
+                        }
                         library.save()
                     }
             )
@@ -1722,26 +1758,40 @@ struct PlaylistSidebar: View {
         rows.compactMap { if case .video(let path) = $0 { return path } else { return nil } }
     }
 
+    /// The rows cut into runs under their folder headings, so each heading can
+    /// stay pinned while its videos scroll under it. A list without headings
+    /// is one run with no title.
+    private var sections: [PlaylistSection] {
+        var out: [PlaylistSection] = []
+        for row in rows {
+            switch row {
+            case .heading(let name):
+                out.append(PlaylistSection(id: out.count, title: name))
+            case .video(let path):
+                if out.isEmpty { out.append(PlaylistSection(id: 0, title: nil)) }
+                out[out.count - 1].paths.append(path)
+            }
+        }
+        return out
+    }
+
     private var listView: some View {
         VStack(spacing: 0) {
-            ColumnHeader(playback: playback)
+            SortBar(playback: playback, offersPosters: true)
             Divider()
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(rows) { row in
-                            switch row {
-                            case .heading(let name):
-                                Text(name)
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                    .padding(.horizontal, 10)
-                                    .padding(.top, 8)
-                                    .padding(.bottom, 2)
-                                    .id(row.id)
-                            case .video(let path):
-                                VideoRow(path: path, playback: playback)
-                                    .id(row.id)
+                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                        ForEach(sections) { section in
+                            Section {
+                                ForEach(section.paths, id: \.self) { path in
+                                    VideoRow(path: path, playback: playback, width: panelWidth)
+                                        .id(path)
+                                }
+                            } header: {
+                                if let title = section.title {
+                                    FolderHeading(title: title, count: section.paths.count)
+                                }
                             }
                         }
                         if aiSuggest, playback.mode == .tag {
@@ -1762,27 +1812,51 @@ struct PlaylistSidebar: View {
     }
 
     private var iconsView: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 10)],
-                              spacing: 10) {
-                        ForEach(videos, id: \.self) { path in
-                            IconTile(path: path, playback: playback).id(path)
+        // Columns counted from the panel's width, so every tile is the same
+        // width and fills its column — an adaptive grid of fixed-width tiles
+        // left a ragged gap down the right-hand side.
+        let columns = PlaylistMetrics.tileColumns(for: panelWidth)
+        let grid = Array(repeating: GridItem(.flexible(), spacing: PlaylistMetrics.tileSpacing,
+                                             alignment: .top),
+                         count: columns)
+        let tileWidth = PlaylistMetrics.tileWidth(for: panelWidth, columns: columns)
+        return VStack(spacing: 0) {
+            // Sorting belongs to the grid as much as the list; only the list
+            // was ever given the control.
+            SortBar(playback: playback, offersPosters: false)
+            Divider()
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                        ForEach(sections) { section in
+                            Section {
+                                LazyVGrid(columns: grid, spacing: 12) {
+                                    ForEach(section.paths, id: \.self) { path in
+                                        IconTile(path: path, playback: playback, width: tileWidth)
+                                            .id(path)
+                                    }
+                                }
+                                .padding(.horizontal, PlaylistMetrics.gridInset)
+                                .padding(.vertical, 8)
+                            } header: {
+                                if let title = section.title {
+                                    FolderHeading(title: title, count: section.paths.count)
+                                }
+                            }
+                        }
+                        // The look-alike candidates belong in this view as much
+                        // as in the list: the toggle is offered in both, and a
+                        // control that turns nothing on is a broken control.
+                        if aiSuggest, playback.mode == .tag {
+                            aiGrid
                         }
                     }
-                    .padding(10)
-                    // The look-alike candidates belong in this view as much as
-                    // in the list: the toggle is offered in both, and a control
-                    // that turns nothing on is a broken control.
-                    if aiSuggest, playback.mode == .tag {
-                        aiGrid
-                    }
                 }
+                .onChange(of: playback.index) { reveal(proxy) }
+                .onChange(of: playback.tagName) { reveal(proxy) }
+                .onChange(of: app.selection) { if !holdStill { reveal(proxy) } }
+                .onAppear { reveal(proxy) }
             }
-            .onChange(of: playback.index) { reveal(proxy) }
-            .onChange(of: playback.tagName) { reveal(proxy) }
-            .onChange(of: app.selection) { if !holdStill { reveal(proxy) } }
         }
     }
 
@@ -1932,96 +2006,97 @@ struct PlaylistSidebar: View {
     }
 }
 
-// MARK: - the sortable header
+// MARK: - the sort bar
 
-/// Finder's column header: a click sorts by that column, a click on the one
-/// already sorting turns it around, and the arrow says which way it points.
-struct ColumnHeader: View {
+/// How the videos are ordered, and — in the list — whether rows carry poster
+/// frames.
+///
+/// It was Finder's column header, and a header is only as good as the columns
+/// under it: the rows stopped being columns, so the header kept its verbs and
+/// lost the columns. A click sorts by that key, a click on the one already
+/// sorting turns it around, and the arrow says which way it points.
+struct SortBar: View {
     @ObservedObject var playback: PlaybackController
+    /// Only the list has a choice about pictures: a grid of poster frames
+    /// without the frames would be a grid of names.
+    let offersPosters: Bool
     @EnvironmentObject var library: Library
 
     var body: some View {
-        let layout = PlaylistColumns.layout(for: library.playlistWidth)
-        HStack(spacing: 0) {
-            heading("Name", .name, alignment: .leading)
-                .frame(minWidth: PlaylistColumns.nameMin, maxWidth: .infinity,
-                       alignment: .leading)
-            if layout.showDate {
-                heading("Date Added", .date, alignment: .trailing)
-                    .frame(width: PlaylistColumns.date)
+        HStack(spacing: 2) {
+            Image(systemName: "arrow.up.arrow.down")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .padding(.trailing, 2)
+                .accessibilityHidden(true)
+            ForEach(PlaylistSort.allCases) { sort in
+                option(sort)
             }
-            if layout.showSize {
-                heading("Size", .size, alignment: .trailing)
-                    .frame(width: PlaylistColumns.size)
-            }
-            Text("Verdict")
-                .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                .frame(width: PlaylistColumns.classify, alignment: .center)
-            if layout.showRemark {
-                Text("Remark")
-                    .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .frame(width: layout.remark, alignment: .leading)
-            }
-            Menu {
-                // Folder Order has no column of its own — it is the order the
-                // scan found things in, which is what the headings describe.
-                ForEach(PlaylistSort.allCases) { sort in
-                    Button {
-                        adopt(sort)
-                    } label: {
-                        if library.playlistSort == sort {
-                            Label(sort.title, systemImage: "checkmark")
-                        } else {
-                            Text(sort.title)
-                        }
-                    }
+            Spacer(minLength: 4)
+            if offersPosters {
+                Toggle(isOn: $library.showThumbnails) {
+                    Image(systemName: "photo")
                 }
-                Divider()
-                Toggle("Poster Frames", isOn: $library.showThumbnails)
-            } label: {
-                Image(systemName: "chevron.down").font(.caption2)
+                .toggleStyle(.button)
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .help(library.showThumbnails
+                      ? "Hide the poster frames — shorter rows, quicker to scan"
+                      : "Show a poster frame on every row")
+                .accessibilityLabel("Poster frames")
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .frame(width: PlaylistColumns.trailing)
         }
-        .frame(height: 18)
         .font(.caption)
-        .padding(.horizontal, PlaylistColumns.inset)
+        .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(Color(nsColor: .windowBackgroundColor).opacity(0.6))
     }
 
-    @ViewBuilder
-    private func heading(_ title: String, _ sort: PlaylistSort,
-                         alignment: Alignment) -> some View {
+    private func option(_ sort: PlaylistSort) -> some View {
         let active = library.playlistSort == sort
-        Button {
+        return Button {
             adopt(sort)
         } label: {
             HStack(spacing: 2) {
-                if alignment == .trailing { Spacer(minLength: 0) }
-                Text(title)
+                Text(Self.shortTitle(sort))
                     .fontWeight(active ? .semibold : .regular)
                     .lineLimit(1)
-                if active {
+                // Folder Order has no direction to show: it is the order the
+                // scan found things in.
+                if active, sort != .folder {
                     Image(systemName: library.sortDescending ? "chevron.down" : "chevron.up")
-                        .font(.system(size: 8, weight: .bold))
+                        .font(.system(size: 7, weight: .bold))
                 }
-                if alignment == .leading { Spacer(minLength: 0) }
             }
-            .contentShape(.rect)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(active ? Color.primary.opacity(0.1) : .clear, in: .capsule)
+            .contentShape(.capsule)
         }
         .buttonStyle(.plain)
         .foregroundStyle(active ? Color.primary : Color.secondary)
-        // Padding on the inside edge only, so the heading's text starts (or
-        // ends) exactly where the values in its column do.
-        .padding(alignment == .leading ? .trailing : .leading, 4)
+        .help(help(sort, active: active))
     }
 
-    /// A column already sorting flips; a new one arrives pointing the way
-    /// Finder points it — A to Z by name, newest and largest first.
+    /// The bar's own words: "Date Added" and "File Size" do not fit four to a
+    /// 260-point panel, so the tooltip carries the long form.
+    static func shortTitle(_ sort: PlaylistSort) -> String {
+        switch sort {
+        case .folder: return "Folder"
+        case .name: return "Name"
+        case .date: return "Date"
+        case .size: return "Size"
+        }
+    }
+
+    private func help(_ sort: PlaylistSort, active: Bool) -> String {
+        guard active, sort != .folder else { return "Sort by \(sort.title)" }
+        return "Sorted by \(sort.title), \(library.sortDescending ? "descending" : "ascending")"
+            + " — click to reverse"
+    }
+
+    /// A key already sorting flips; a new one arrives pointing the way Finder
+    /// points it — A to Z by name, newest and largest first.
     private func adopt(_ sort: PlaylistSort) {
         if library.playlistSort == sort {
             guard sort != .folder else { return }
@@ -2034,62 +2109,81 @@ struct ColumnHeader: View {
     }
 }
 
-/// The column widths, in one place so the header and the rows beneath it
-/// cannot drift out of line.
-enum PlaylistColumns {
-    static let date: CGFloat = 78
-    static let size: CGFloat = 62
-    static let classify: CGFloat = 116
-    /// One verdict chip. Both are this wide, always — a chip sized to its
-    /// own text moves when the checkmark appears, and the pair drifts.
-    static let chip: CGFloat = 55
-    static let remark: CGFloat = 130
-    /// The strip at the far right: the header's sort menu, and the same
-    /// width of empty space on every row beneath it. Header and row must
-    /// reserve the SAME trailing width or every column above sits a dozen
-    /// points left of the values it names.
-    static let trailing: CGFloat = 22
-    /// The narrowest the name column may ask for. Without a floor, a row
-    /// carrying several long tag chips (each drawn at its own width) demands
-    /// more than the list is wide, and SwiftUI takes the difference out of
-    /// the fixed columns — which is what made tagged rows drift out of line.
-    static let nameMin: CGFloat = 90
-    /// The row's own left and right padding.
-    static let inset: CGFloat = 10
+/// One folder's run of videos under its heading — or the whole list, with no
+/// title, when it has no headings.
+struct PlaylistSection: Identifiable {
+    let id: Int
+    let title: String?
+    var paths: [String] = []
+}
 
-    /// Which columns fit a panel of this width.
-    ///
-    /// The fixed columns add up to more than a narrow panel has, and a
-    /// column that does not fit was being pushed off the right edge — the
-    /// header read "Rem…" with nothing beneath it. So the panel decides
-    /// what it can afford, dropping the least important column first:
-    /// Remark (a sentence you can also read in the player), then Date, then
-    /// Size. Name and Verdict always survive — one says which video, the
-    /// other is the whole point of the list.
-    ///
-    /// Header and rows BOTH read this, so they can never disagree.
-    struct Layout {
-        var showDate = true
-        var showSize = true
-        var showRemark = true
-        /// Remark takes what is spare, so a wide panel gives it room to say
-        /// the whole thing rather than leaving a gap at the edge.
-        var remark: CGFloat = PlaylistColumns.remark
+/// A folder's name over its videos, pinned to the top while they scroll under
+/// it, so a long folder never leaves you wondering which one you are in.
+struct FolderHeading: View {
+    let title: String
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "folder.fill")
+                .font(.system(size: 9))
+            // The head is what gives: a nested folder's own name is the end
+            // of its path, and that is the part worth keeping.
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .truncationMode(.head)
+            Spacer(minLength: 4)
+            Text("\(count)")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .monospacedDigit()
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, PlaylistMetrics.inset)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.bar)
+        .help(title)
+    }
+}
+
+/// The playlist's measurements, in one place so the rows, the tiles and the
+/// chip budgets worked out from them cannot drift apart.
+enum PlaylistMetrics {
+    /// A row's own left and right padding.
+    static let inset: CGFloat = 10
+    /// A row's poster frame, 16:9: big enough to tell one scene from another.
+    static let rowPoster: CGFloat = 96
+    /// The gap between a row's poster and its words.
+    static let rowGap: CGFloat = 10
+    /// One verdict chip. Both are this wide, always — a chip sized to its
+    /// own text moves when the checkmark appears, and the pair drifts. At 55
+    /// the chip's own padding left "NSFW" too little room and it read "NS…".
+    static let chip: CGFloat = 62
+    /// The room a row's words need before the verdict can sit at the end of
+    /// the facts line. Narrower, it takes a line of its own.
+    static let verdictBeside: CGFloat = 300
+    /// What a vertical scroller may take from the width, when the system
+    /// draws one beside the content rather than over it.
+    static let scroller: CGFloat = 8
+    /// The grid's side padding and the gap between its tiles.
+    static let gridInset: CGFloat = 10
+    static let tileSpacing: CGFloat = 10
+    /// The narrowest a tile may be before the grid drops a column: at 140 a
+    /// tile still has room for a two-line name and a line of facts.
+    static let tileMin: CGFloat = 140
+
+    /// How many tiles fit across a panel this wide — never fewer than one.
+    static func tileColumns(for panelWidth: CGFloat) -> Int {
+        let room = panelWidth - gridInset * 2 - scroller
+        return max(1, Int((room + tileSpacing) / (tileMin + tileSpacing)))
     }
 
-    static func layout(for panelWidth: CGFloat) -> Layout {
-        var l = Layout()
-        // What is left for the optional columns once the two that always
-        // show, the padding and the trailing strip are paid for.
-        let fixed = inset * 2 + trailing + nameMin + classify
-        var spare = panelWidth - fixed
-        if spare < remark { l.showRemark = false } else { spare -= remark }
-        if spare < date { l.showDate = false } else { spare -= date }
-        if spare < size { l.showSize = false } else { spare -= size }
-        // Anything still spare widens Remark rather than stretching Name
-        // past what a filename needs.
-        if l.showRemark { l.remark = remark + max(0, min(spare - 60, 120)) }
-        return l
+    /// How wide each tile then is.
+    static func tileWidth(for panelWidth: CGFloat, columns: Int) -> CGFloat {
+        let room = panelWidth - gridInset * 2 - scroller
+        return (room - tileSpacing * CGFloat(columns - 1)) / CGFloat(max(columns, 1))
     }
 }
 
@@ -2106,98 +2200,66 @@ func selectAndShow(_ path: String, _ app: AppModel, _ playback: PlaybackControll
     if app.click(path, from: playback.visibleVideos) { playback.jump(to: path) }
 }
 
+/// One video in the list, on as many lines as it needs: the poster frame, the
+/// name, what is known about it, its tags, and the verdict.
+///
+/// It was one line of a table. At the panel's usual width the columns left the
+/// name about sixty points — every row read "vide…mov" — and with poster
+/// frames on, the name was not drawn at all.
 struct VideoRow: View {
     let path: String
     @ObservedObject var playback: PlaybackController
+    /// The panel's width, which decides how many tag chips fit and whether the
+    /// verdict can sit at the end of the facts line.
+    let width: CGFloat
     @EnvironmentObject var library: Library
     @EnvironmentObject var app: AppModel
 
     private var isCurrent: Bool { playback.currentPath == path }
     private var tags: [String] { library.tagsFor(path) }
 
+    /// What the words beside the poster have to work with.
+    private var textWidth: CGFloat {
+        width - PlaylistMetrics.inset * 2 - PlaylistMetrics.scroller
+            - (library.showThumbnails ? PlaylistMetrics.rowPoster + PlaylistMetrics.rowGap : 0)
+    }
+
     var body: some View {
-        let layout = PlaylistColumns.layout(for: library.playlistWidth)
-        HStack(spacing: 0) {
-            HStack(spacing: 8) {
-                if library.showThumbnails {
-                    PosterView(path: path, big: false)
-                        .frame(width: 64, height: 36)
-                        .clipShape(.rect(cornerRadius: 3))
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 4) {
-                        if let problem = playback.problems[path] {
-                            FileBadge(problem: problem)
-                        }
-                        WatchMark(state: library.watchState(path))
-                        // Stars, not the favorite mark: the rating IS the
-                        // headline judgement now. A video carries a favorite
-                        // still shows it as a chip below, with its other tags.
-                        if library.rating(path) > 0 {
-                            Text(String(repeating: "★",
-                                        count: library.rating(path)))
-                                .font(.caption2)
-                                .foregroundStyle(.yellow)
-                                .fixedSize()
-                                .help("Rated \(library.rating(path)) of 5 stars")
-                        }
-                        Text((path as NSString).lastPathComponent)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .fontWeight(isCurrent ? .semibold : .regular)
-                        if !library.dupes(for: path).isEmpty {
-                            Image(systemName: "square.on.square")
-                                .font(.caption2)
-                                .foregroundStyle(.orange)
-                                .help("Another copy of this file is in the index")
-                        }
+        let verdictBeside = textWidth >= PlaylistMetrics.verdictBeside
+        HStack(alignment: .top, spacing: PlaylistMetrics.rowGap) {
+            if library.showThumbnails {
+                PosterCard(path: path, big: false, playing: isCurrent)
+                    .frame(width: PlaylistMetrics.rowPoster)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                name
+                if verdictBeside {
+                    // The chips at the far end, so down a list they stand in a
+                    // column of their own. The facts are the last to give way;
+                    // the remark gives first and keeps its words in the tooltip.
+                    HStack(spacing: 6) {
+                        facts.layoutPriority(1)
+                        Spacer(minLength: 6)
+                        remark(compact: false)
+                        ClassifyChips(path: path)
                     }
-                    // The same chips the tiles carry. They can be here now
-                    // because a chip is drawn at its own width and the row
-                    // clips what will not fit — before, a long tag in a
-                    // narrow column was squeezed until it set one letter per
-                    // line. Only tagged rows are taller.
-                    if !tags.isEmpty { ChipRow(names: tags) }
+                } else {
+                    facts
                 }
-                Spacer(minLength: 4)
+                if !tags.isEmpty {
+                    ChipCluster(names: tags, width: textWidth, maxLines: 2)
+                }
+                if !verdictBeside {
+                    HStack(spacing: 6) {
+                        ClassifyChips(path: path)
+                        remark(compact: true)
+                    }
+                }
             }
-            // The name column takes what is left and nothing more. Its tag
-            // chips are drawn at their own widths, so without a ceiling a
-            // heavily-tagged row asked for more room than the list has and
-            // SwiftUI squeezed the fixed columns to pay for it — which is
-            // why those rows sat out of line with their headings.
-            .frame(minWidth: PlaylistColumns.nameMin, maxWidth: .infinity,
-                   alignment: .leading)
-            .clipped()
-            .layoutPriority(-1)
-            if layout.showDate {
-                Text(columns?.date ?? "")
-                    .font(.caption2).foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .frame(width: PlaylistColumns.date, alignment: .trailing)
-            }
-            if layout.showSize {
-                Text(columns?.size ?? "")
-                    .font(.caption2).foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .frame(width: PlaylistColumns.size, alignment: .trailing)
-            }
-            ClassifyChips(path: path)
-                .frame(width: PlaylistColumns.classify, alignment: .center)
-            if layout.showRemark {
-                ClassifyRemark(path: path)
-                    .font(.caption2).foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(width: layout.remark, alignment: .leading)
-            }
-            Color.clear.frame(width: PlaylistColumns.trailing)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, PlaylistColumns.inset)
-        .padding(.vertical, 5)
-        // Every row the same height whether or not it carries tags: a list
-        // of rows of two different heights is what read as untidy.
-        .frame(minHeight: library.showThumbnails ? 46 : 34)
+        .padding(.horizontal, PlaylistMetrics.inset)
+        .padding(.vertical, 7)
         .background(rowTint)
         // A 3pt bar says WHICH row is playing even when a selection has
         // tinted half the list the same colour.
@@ -2206,19 +2268,60 @@ struct VideoRow: View {
                 .fill(isCurrent ? Color.accentColor : .clear)
                 .frame(width: 3)
         }
+        // A hairline between rows: once a row is several lines tall, the gap
+        // alone no longer says where one video ends and the next begins.
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.primary.opacity(0.07))
+                .frame(height: 1)
+                .padding(.leading, PlaylistMetrics.inset)
+        }
         .contentShape(.rect)
-        // The verdict buttons live in this row but are only drawn under the
-        // cursor — hover is tracked on the whole row so moving from the
-        // filename across to the chips never dismisses them.
         .onHover { hovering = $0 }
         .onTapGesture { selectAndShow(path, app, playback) }
         .contextMenu { RowMenu(path: path, playback: playback) }
         // Stat-ed when the row appears, off the main thread: a share that has
         // gone to sleep answers its first question in seconds.
-        .task(id: path) { columns = await library.stats(for: path) }
+        .task(id: path) { stats = await library.stats(for: path) }
     }
 
-    @State private var columns: (date: String, size: String)?
+    /// The name, allowed a second line before it gives up — cut in the middle,
+    /// so the end of it and the extension survive.
+    private var name: some View {
+        let file = (path as NSString).lastPathComponent
+        return HStack(alignment: .firstTextBaseline, spacing: 4) {
+            if let problem = playback.problems[path] {
+                FileBadge(problem: problem)
+            }
+            Text(file)
+                .font(.system(size: 12, weight: isCurrent ? .semibold : .regular))
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .help(file)
+            if !library.dupes(for: path).isEmpty {
+                Image(systemName: "square.on.square")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .help("Another copy of this file is in the index")
+            }
+        }
+    }
+
+    /// The running time rides on the poster frame when there is one.
+    private var facts: some View {
+        VideoFacts(path: path, stats: stats, showLength: !library.showThumbnails)
+            .font(.caption)
+    }
+
+    private func remark(compact: Bool) -> some View {
+        ClassifyRemark(path: path, compact: compact)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+    }
+
+    @State private var stats: (date: String, size: String)?
     @State private var hovering = false
 
     private var selected: Bool { app.selection.contains(path) }
@@ -2235,25 +2338,142 @@ struct VideoRow: View {
 
 }
 
-/// A tile in the icon grid: the poster frame with the name under it.
+/// A poster frame carrying what a glance at it should tell you: how long the
+/// video runs, how far into it you got, and whether it is the one playing.
+struct PosterCard: View {
+    let path: String
+    let big: Bool
+    let playing: Bool
+    var corner: CGFloat = 4
+    @EnvironmentObject var library: Library
+    @EnvironmentObject var media: MediaCache
+
+    var body: some View {
+        // 16:9 whatever the frame inside it is, so a column of rows or a row of
+        // tiles lines up even when the videos are portrait.
+        Color.clear
+            .aspectRatio(16 / 9, contentMode: .fit)
+            .overlay { PosterView(path: path, big: big) }
+            .overlay(alignment: .bottom) {
+                if let progress {
+                    GeometryReader { proxy in
+                        ZStack(alignment: .leading) {
+                            Rectangle().fill(Color.black.opacity(0.45))
+                            Rectangle().fill(Color.accentColor)
+                                .frame(width: proxy.size.width * progress)
+                        }
+                    }
+                    .frame(height: 3)
+                    .help("Stopped at \(clock(library.resumePoint(path)))")
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                // Only what is already known — a lookup, never a measurement.
+                if let seconds = media.length(path), seconds > 0 {
+                    Text(clock(seconds))
+                        .font(.system(size: big ? 10 : 9, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.black.opacity(0.7), in: .rect(cornerRadius: 3))
+                        .padding(.trailing, 3)
+                        .padding(.bottom, progress == nil ? 3 : 6)
+                }
+            }
+            .overlay(alignment: .bottomLeading) {
+                if playing {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: big ? 9 : 7, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(big ? 5 : 4)
+                        .background(Color.accentColor, in: .circle)
+                        .padding(4)
+                        .padding(.bottom, progress == nil ? 0 : 3)
+                        .accessibilityLabel("Playing")
+                }
+            }
+            .clipShape(.rect(cornerRadius: corner))
+            .overlay {
+                RoundedRectangle(cornerRadius: corner)
+                    .strokeBorder(playing ? Color.accentColor : Color.primary.opacity(0.1),
+                                  lineWidth: playing ? 2 : 0.5)
+            }
+    }
+
+    /// How far in the resume point is, for a video part-way through and of a
+    /// known length. Nil draws no bar: unwatched and watched say so elsewhere.
+    private var progress: Double? {
+        guard library.watchState(path) == .inProgress,
+              let seconds = media.length(path), seconds > 0 else { return nil }
+        let at = library.resumePoint(path)
+        return at > 0 ? min(at / seconds, 1) : nil
+    }
+}
+
+/// The line under a video's name: where you are with it, its stars, and the
+/// file's own facts as far as they are known yet. The caller sets the font.
+struct VideoFacts: View {
+    let path: String
+    let stats: (date: String, size: String)?
+    /// The running time, for when no poster frame is on screen to carry it.
+    var showLength = false
+    @EnvironmentObject var library: Library
+    @EnvironmentObject var media: MediaCache
+
+    var body: some View {
+        HStack(spacing: 4) {
+            WatchMark(state: library.watchState(path))
+            // Stars, not the favorite mark: the rating IS the headline
+            // judgement now. A favorite still shows as a chip, with its tags.
+            if library.rating(path) > 0 {
+                Text(String(repeating: "★", count: library.rating(path)))
+                    .foregroundStyle(.yellow)
+                    .fixedSize()
+                    .help("Rated \(library.rating(path)) of 5 stars")
+            }
+            Text(facts.joined(separator: " · "))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .help(stats.map { "Added \($0.date) · \($0.size)" } ?? "")
+        }
+        .foregroundStyle(.secondary)
+        .monospacedDigit()
+    }
+
+    private var facts: [String] {
+        var out: [String] = []
+        if showLength, let seconds = media.length(path), seconds > 0 { out.append(clock(seconds)) }
+        if let stats {
+            if !stats.size.isEmpty { out.append(stats.size) }
+            if !stats.date.isEmpty { out.append(stats.date) }
+        }
+        return out
+    }
+}
+
+/// A tile in the icon grid: the poster frame carrying the running time, how
+/// far you got and anything wrong with the file; the name under it on up to
+/// two lines; then the facts and the tags.
 struct IconTile: View {
     let path: String
     @ObservedObject var playback: PlaybackController
+    /// The grid column's width, which the tags are budgeted against.
+    let width: CGFloat
     @EnvironmentObject var library: Library
     @EnvironmentObject var app: AppModel
+    @EnvironmentObject var analysis: AnalysisStore
+
+    @State private var stats: (date: String, size: String)?
+    @State private var hovering = false
 
     private var selected: Bool { app.selection.contains(path) }
+    private var isCurrent: Bool { playback.currentPath == path }
 
     var body: some View {
-        VStack(spacing: 4) {
-            PosterView(path: path, big: true)
-                .frame(width: 132, height: 74)
-                .clipShape(.rect(cornerRadius: 4))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 4)
-                        .strokeBorder(playback.currentPath == path
-                                      ? Color.accentColor : .clear, lineWidth: 2)
-                }
+        let file = (path as NSString).lastPathComponent
+        VStack(alignment: .leading, spacing: 3) {
+            PosterCard(path: path, big: true, playing: isCurrent, corner: 6)
                 .overlay(alignment: .topLeading) {
                     // A tick on the picture, drawn only on tiles that are
                     // picked. There is no mode to turn on any more, so it
@@ -2268,32 +2488,71 @@ struct IconTile: View {
                             .padding(4)
                     }
                 }
-            HStack(spacing: 3) {
-                if let problem = playback.problems[path] {
-                    FileBadge(problem: problem, small: true)
-                }
-                if library.rating(path) > 0 {
-                    Text(String(repeating: "★", count: library.rating(path)))
-                        .font(.system(size: 8))
-                        .foregroundStyle(.yellow)
-                        .fixedSize()
-                }
-                Text((path as NSString).lastPathComponent)
-                    .font(.caption2)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.center)
-            }
-            .frame(width: 132)
+                .overlay(alignment: .topTrailing) { marks.padding(4) }
+            Text(file)
+                .font(.caption.weight(isCurrent ? .semibold : .regular))
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 2)
+                .help(file)
+            VideoFacts(path: path, stats: stats)
+                .font(.caption2)
             if !library.tagsFor(path).isEmpty {
-                ChipCluster(names: library.tagsFor(path)).frame(width: 132)
+                ChipCluster(names: library.tagsFor(path), width: width - 10)
             }
         }
-        .padding(3)
-        .background(selected ? Color.accentColor.opacity(0.22) : .clear,
-                    in: .rect(cornerRadius: 6))
+        .padding(5)
+        .background(tint, in: .rect(cornerRadius: 8))
         .contentShape(.rect)
+        .onHover { hovering = $0 }
         .onTapGesture { selectAndShow(path, app, playback) }
         .contextMenu { RowMenu(path: path, playback: playback) }
+        .task(id: path) { stats = await library.stats(for: path) }
+    }
+
+    /// What is worth a mark on the picture itself: trouble with the file, a
+    /// second copy, and an NSFW verdict. Safe is the ordinary case and draws
+    /// nothing — a badge on every tile would say nothing at all.
+    private var marks: some View {
+        HStack(spacing: 3) {
+            if nsfw {
+                Text(NsfwLabel.nsfw.title)
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(Color.red.opacity(0.85), in: .capsule)
+                    .help("Marked NSFW")
+            }
+            if !library.dupes(for: path).isEmpty {
+                Image(systemName: "square.on.square")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.orange)
+                    .padding(3)
+                    .background(Color.black.opacity(0.6), in: .circle)
+                    .help("Another copy of this file is in the index")
+            }
+            if let problem = playback.problems[path] {
+                FileBadge(problem: problem)
+                    .padding(2)
+                    .background(Color.black.opacity(0.6), in: .circle)
+            }
+        }
+    }
+
+    /// The verdict in force — the user's mark, else the machine's filing.
+    private var nsfw: Bool {
+        guard let record = analysis.analysis(for: path) else { return false }
+        return (record.userLabel ?? AnalysisStore.machineVerdict(record)) == .nsfw
+    }
+
+    /// The same ranking the rows use: selection first, then playing, then
+    /// the one under the cursor.
+    private var tint: Color {
+        if selected { return Color.accentColor.opacity(0.22) }
+        if isCurrent { return Color.accentColor.opacity(0.12) }
+        return hovering ? Color.secondary.opacity(0.10) : .clear
     }
 }
 
@@ -2466,51 +2725,18 @@ struct RowMenu: View {
     }
 }
 
-/// Tags, drawn as chips.
+/// Tags, drawn as chips that wrap rather than squeeze.
 ///
 /// Every chip is held to one line and given no chance to compress: a long tag
-/// in a narrow column was being squeezed until it set one letter per line.
-/// What will not fit is truncated, and the tooltip carries the lot.
-struct ChipRow: View {
-    let names: [String]
-
-    var body: some View {
-        HStack(spacing: 4) {
-            ForEach(names.prefix(3), id: \.self) { name in
-                Text(name)
-                    .font(.caption2)
-                    .lineLimit(1)
-                    // Its own width, never squeezed into one: compressing a
-                    // chip is what let a long tag wrap to a letter a line.
-                    // What does not fit is clipped by the row instead.
-                    .fixedSize(horizontal: true, vertical: false)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(Color.secondary.opacity(0.18), in: .capsule)
-            }
-            if names.count > 3 {
-                Text("+\(names.count - 3)")
-                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .clipped()
-        .help(names.joined(separator: ", "))
-    }
-}
-
-/// Tags under a tile, wrapped rather than squeezed.
-///
-/// A tile is 132pt wide and its tags were being laid out on one line and
-/// clipped, so three tags arrived on top of each other. Here they flow onto
-/// as many lines as they need, up to two — past that the rest become "+N",
-/// because a tile is a picture with a label, not a tag list.
+/// in a narrow space was once squeezed until it set one letter per line. They
+/// flow onto as many lines as they need, up to `maxLines` — past that the rest
+/// become "+N", and the tooltip carries the lot.
 struct ChipCluster: View {
     let names: [String]
-    /// Two lines of tags under a 74pt-tall poster is the most that reads as
-    /// a caption rather than a wall.
+    /// The width the chips are laid out in, which decides how many are drawn.
+    var width: CGFloat = 132
+    /// Two lines of tags is the most that reads as a caption rather than a
+    /// wall.
     var maxLines = 2
 
     var body: some View {
@@ -2538,7 +2764,7 @@ struct ChipCluster: View {
     /// How many chips to draw before giving up and counting the rest.
     /// The arithmetic lives in the model layer, where the tests can reach it.
     private var shown: [String] {
-        Array(names.prefix(chipsThatFit(names, width: 132, lines: maxLines)))
+        Array(names.prefix(chipsThatFit(names, width: width, lines: maxLines)))
     }
 }
 
@@ -2657,7 +2883,7 @@ struct ClassifyChips: View {
         // the checkmark grew and pushed its neighbour sideways, so the pair
         // wandered from row to row instead of standing in a column.
         .buttonStyle(LabelChipStyle(applied: inForce, minWidth: nil))
-        .frame(width: PlaylistColumns.chip)
+        .frame(width: PlaylistMetrics.chip)
         .disabled(current == label)
     }
 }
@@ -2667,14 +2893,19 @@ struct ClassifyChips: View {
 /// runs (queued / being analysed).
 struct ClassifyRemark: View {
     let path: String
+    /// Leaves out the verdict word the filled chip beside it already says —
+    /// "machine 3%" for "machine: safe 3%" — for a row with no room to say it
+    /// twice. The whole remark is the tooltip either way.
+    var compact = false
     @EnvironmentObject var analysis: AnalysisStore
     @EnvironmentObject var engine: AnalysisEngine
 
     var body: some View {
-        Text(remark)
+        Text(remark(compact: compact))
+            .help(remark(compact: false))
     }
 
-    private var remark: String {
+    private func remark(compact: Bool) -> String {
         guard let record = analysis.analysis(for: Paths.tagKey(path)) else { return "" }
         if engine.isBusy {
             switch record.phase {
@@ -2684,14 +2915,19 @@ struct ClassifyRemark: View {
             }
         }
         if let label = record.userLabel {
-            var text = "you: \(label.title.lowercased())"
+            var text = compact ? "you" : "you: \(label.title.lowercased())"
             if let score = record.prediction?.score { text += String(format: " (%.0f%%)", score * 100) }
             return text
         }
         if let score = record.prediction?.score {
+            let verdict = AnalysisStore.machineVerdict(record)
+            // No chip is filled when the machine is unsure, so the short form
+            // has to say that itself.
+            if compact {
+                return String(format: "%@ %.0f%%", verdict == nil ? "unsure" : "machine", score * 100)
+            }
             return String(format: "machine: %@ %.0f%%",
-                          AnalysisStore.machineVerdict(record)?.title.lowercased() ?? "n/a",
-                          score * 100)
+                          verdict?.title.lowercased() ?? "n/a", score * 100)
         }
         switch record.phase {
         case .failed: return "failed"

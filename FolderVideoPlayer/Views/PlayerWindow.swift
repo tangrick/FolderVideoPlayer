@@ -203,6 +203,16 @@ struct PlayerScreen: View {
                     }
                 }
             }
+            // The picture column is laid out last, with its minimum held back
+            // for it — the row of transport controls cannot go narrower than it
+            // is. So the playlist takes what the window can spare, up to the
+            // width it was dragged to, and never pushes the window's contents
+            // past its edges: dragged wide, it slid the library off the left
+            // and cut its own rows off the right.
+            //
+            // Lowered here rather than raised on the playlist: a priority set
+            // on a view inside an `if` is not seen by this stack at all.
+            .layoutPriority(-1)
             if showingPlaylist {
                 Divider()
                 PlaylistSidebar(playback: playback)
