@@ -18,6 +18,7 @@ import Foundation
 ///         jobs.json             the explicit-job ledger
 ///         suggestions.json      machine guesses and the accept/reject verdicts
 ///         marks.json            the human Safe/NSFW decisions
+///         removed-folders.json  folders taken out of this profile's library
 ///         heads/<encoder>_…     fitted heads and priors, one set per encoder
 ///
 /// What is deliberately NOT here is the machine's own work — fingerprints, the

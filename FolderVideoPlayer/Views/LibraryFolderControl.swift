@@ -43,6 +43,7 @@ extension AppModel {
             if showing.contains(where: { LibraryFolders.contains(folder, $0) }) {
                 playback.closePlaylist()
             } else {
+                playback.dropMembers(under: folder)
                 playback.refreshMembership()
             }
         }

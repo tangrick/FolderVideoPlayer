@@ -219,6 +219,11 @@ enum Paths {
         (profileDir(profile) as NSString).appendingPathComponent("watch.json")
     }
 
+    /// The folders one profile took out of its library (`Library.removedFolders`).
+    static func removedFoldersFile(_ profile: String) -> String {
+        (profileDir(profile) as NSString).appendingPathComponent("removed-folders.json")
+    }
+
     /// One profile's saved smart collections (`SmartCollections`).
     static func smartCollectionsFile(_ profile: String) -> String {
         (profileDir(profile) as NSString).appendingPathComponent("smart-collections.json")

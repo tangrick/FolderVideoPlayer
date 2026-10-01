@@ -439,6 +439,7 @@ final class Library: ObservableObject {
             provenance = TagProvenance.load()
             pinned = []
             recent = []
+            removedFolders = []
             lastPublishedAt = 0
             publishedClean = true
             recount()
@@ -466,6 +467,8 @@ final class Library: ObservableObject {
         recountFacts()
         watch = WatchLog.load(at: Paths.watchFile(name))
         watchRevision += 1
+        removedFolders = JSONStore.load(Paths.removedFoldersFile(name), fallback: [String]())
+        lastFolderRemoval = nil
         pinned = pinnedByProfile[slug(name)] ?? []
         // Pinned folders live in Pinned only — never also in Recent.
         recent = (recentByProfile[slug(name)] ?? []).filter { !pinned.contains($0) }
@@ -1286,11 +1289,42 @@ final class Library: ObservableObject {
         fileprivate var pinned: [(index: Int, path: String)] = []
         fileprivate var recent: [(index: Int, path: String)] = []
         fileprivate var session: Session?
+        fileprivate var removedBefore: [String] = []
         fileprivate var putBackOutside: (() -> Void)?
     }
 
     /// The last removal, while it can still be undone.
     @Published private(set) var lastFolderRemoval: FolderRemoval?
+
+    /// Folders this profile took out of its library, kept in its bundle so the
+    /// next launch still knows. Opening or pinning one again lifts it.
+    @Published private(set) var removedFolders: [String] = []
+
+    private var isRemovalActive: Bool { !removedFolders.isEmpty }
+
+    /// Whether a video — by tag key — is under a folder this profile removed.
+    func isInRemovedFolder(key: String) -> Bool {
+        let path = Paths.tagPath(key)
+        return removedFolders.contains { folder in
+            path == folder || path.hasPrefix(folder.hasSuffix("/") ? folder : folder + "/")
+        }
+    }
+
+    /// Replace the list and write it. The caller moves `folderRevision`.
+    @discardableResult
+    private func setRemovedFolders(_ folders: [String]) -> Bool {
+        guard folders != removedFolders else { return false }
+        removedFolders = folders
+        if profileOpen { JSONStore.save(Paths.removedFoldersFile(person), folders) }
+        return true
+    }
+
+    /// Opening or pinning a folder says it is wanted again: a removal of it,
+    /// or of a folder inside it, no longer holds.
+    private func liftRemoval(for root: String) {
+        let kept = removedFolders.filter { $0 != root && !LibraryFolders.contains(root, $0) }
+        if setRemovedFolders(kept) { folderRevision += 1 }
+    }
 
     /// Counts every removal and every undo. A list of folders that rebuilt
     /// only when some count happened to change missed a removal that changed
@@ -1350,6 +1384,9 @@ final class Library: ObservableObject {
             }
         }
         removal.putBackOutside = forgetOutside?(folder)
+        removal.removedBefore = removedFolders
+        // A folder that holds earlier removals takes them into itself.
+        setRemovedFolders(removedFolders.filter { !LibraryFolders.contains(folder, $0) } + [folder])
         lastFolderRemoval = removal
         folderRevision += 1
         save()
@@ -1384,6 +1421,7 @@ final class Library: ObservableObject {
             if !removal.facts.isEmpty { saveFacts() }
         }
         removal.putBackOutside?()
+        setRemovedFolders(removal.removedBefore)
         lastFolderRemoval = nil
         folderRevision += 1
         save()
@@ -1647,7 +1685,12 @@ final class Library: ObservableObject {
         keys.formUnion(facts.byKey.keys)
         keys.formUnion(watch.keys)
         keys.formUnion(progress.keys.map { Paths.tagKey($0) })
-        keys.formUnion(extra)
+        // What the stores shared between profiles add (the AI's readings, the
+        // transcripts) is held back for a folder this profile removed — they
+        // are not cleared by a removal, and would list its videos again. What
+        // the profile itself holds is never held back: a video tagged or played
+        // since is the profile's own business.
+        keys.formUnion(isRemovalActive ? extra.filter { !isInRemovedFolder(key: $0) } : extra)
         keys.subtract(hidden)
         // A plain sort, not the natural one: this can be every video the
         // analysis has ever seen (twelve thousand on one library), and the
@@ -2117,6 +2160,7 @@ final class Library: ObservableObject {
     }
 
     func remember(folder root: String) {
+        liftRemoval(for: root)
         // Pinned folders stay out of Recent: one sidebar entry each.
         guard !isPinned(root) else { return }
         recent.removeAll { $0 == root }
@@ -2136,6 +2180,7 @@ final class Library: ObservableObject {
     /// most recent folder pins itself — the one you are looking at is the
     /// one you are most likely to want back.
     func pin(folder root: String) {
+        liftRemoval(for: root)
         guard !isPinned(root) else { return }
         pinned.insert(root, at: 0)
         recent.removeAll { $0 == root }   // pinned folder leaves Recent
@@ -2621,6 +2666,8 @@ extension Library {
                               : MetadataFacts.load(at: Paths.profileFactsFile(name))
         watch = startingEmpty ? WatchLog() : WatchLog.load(at: Paths.watchFile(name))
         watchRevision += 1
+        removedFolders = startingEmpty ? [] : JSONStore.load(Paths.removedFoldersFile(name), fallback: [String]())
+        lastFolderRemoval = nil
         recount()
         lastPublishedAt = ProfileBundle.manifest(name)?.lastPublishedAt ?? 0
         publishedClean = ProfileBundle.manifest(name)?.publishedClean ?? (lastPublishedAt == 0)
@@ -2725,6 +2772,8 @@ extension Library {
         facts = MetadataFacts()
         watch = WatchLog()
         watchRevision += 1
+        removedFolders = []
+        lastFolderRemoval = nil
         recount()
         undoable = nil
         try? FileManager.default.removeItem(atPath: Paths.tagsBackup)
@@ -2768,6 +2817,8 @@ extension Library {
         facts = MetadataFacts.load(at: Paths.profileFactsFile(name))
         watch = WatchLog.load(at: Paths.watchFile(name))
         watchRevision += 1
+        removedFolders = JSONStore.load(Paths.removedFoldersFile(name), fallback: [String]())
+        lastFolderRemoval = nil
         pinned = pinnedByProfile[slug(name)] ?? []
         // Pinned folders live in Pinned only — never also in Recent.
         recent = (recentByProfile[slug(name)] ?? []).filter { !pinned.contains($0) }

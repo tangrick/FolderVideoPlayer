@@ -189,10 +189,63 @@ struct LibraryFoldersTest {
               alex.removeFolderFromLibrary(media + "/Nowhere") == nil && alex.folderRevision == steady)
         alex.undoFolderRemoval()                              // puts the home folder back for the checks below
 
+        // --- 3c. a removed folder stays out of what the shared stores add -----------------------
+
+        // The AI's readings belong to no profile and the transcripts are not
+        // cleared by a removal. The Library Overview and the smart collections
+        // add what those hold to the videos the profile knows, so without a
+        // memory of the removal they would list the folder's videos again.
+        check("undoing the second removal left the first one remembered",
+              alex.removedFolders == [home], "\(alex.removedFolders)")
+        let analysed = home + "/analysed-only.mp4"            // known to a shared store alone
+        let analysedElsewhere = media + "/Clips/analysed-too.mp4"
+        let sharedKeys: Set<String> = [Paths.tagKey(analysed), Paths.tagKey(analysedElsewhere)]
+        let listed = alex.knownVideoKeys(adding: sharedKeys)
+        check("a removed folder's videos known only to a shared store are held back",
+              !listed.contains(Paths.tagKey(analysed)))
+        check("...and another folder's are not",
+              listed.contains(Paths.tagKey(analysedElsewhere)))
+        check("the removal is written into the profile's bundle, to survive a relaunch",
+              JSONStore.load(Paths.removedFoldersFile(alex.person), fallback: [String]()) == [home])
+        alex.setTags(["Fresh"], for: analysed)
+        check("a video the profile tags afterwards counts again: what it holds itself is never held back",
+              alex.knownVideoKeys(adding: sharedKeys).contains(Paths.tagKey(analysed)))
+        alex.setTags([], for: analysed)
+        let beforeLift = alex.folderRevision
+        alex.remember(folder: home)
+        check("opening the folder again lifts the removal",
+              alex.removedFolders.isEmpty
+                && alex.knownVideoKeys(adding: sharedKeys).contains(Paths.tagKey(analysed)))
+        check("...writes that down, and tells the lists watching the revision",
+              JSONStore.load(Paths.removedFoldersFile(alex.person), fallback: [String]()).isEmpty
+                && alex.folderRevision == beforeLift + 1)
+        // Each of these needs something to remove, so they hold something first.
+        alex.setTags(["Beach"], for: a)
+        alex.setTags(["Tent"], for: b)
+        alex.removeFolderFromLibrary(home)
+        check("a removal is remembered", alex.removedFolders == [home], "\(alex.removedFolders)")
+        alex.pin(folder: home)
+        check("pinning it lifts it too", alex.removedFolders.isEmpty, "\(alex.removedFolders)")
+
+        alex.setTags(["Beach"], for: a)
+        alex.setTags(["Tent"], for: b)
+        alex.removeFolderFromLibrary(home + "/sub")
+        check("a folder inside it can be removed on its own", alex.removedFolders == [home + "/sub"],
+              "\(alex.removedFolders)")
+        alex.removeFolderFromLibrary(home)
+        check("a removal absorbs earlier removals of folders inside it",
+              alex.removedFolders == [home], "\(alex.removedFolders)")
+        alex.undoFolderRemoval()
+        check("...and undoing it brings the inner one back to the list",
+              alex.removedFolders == [home + "/sub"], "\(alex.removedFolders)")
+        check("...the undo is a single step: there is no earlier one behind it",
+              !alex.undoFolderRemoval() && alex.removedFolders == [home + "/sub"])
+
         // --- 4. a closed profile ------------------------------------------------------------
 
         alex.closeProfile()
-        check("with no profile open there is nothing to remove", alex.removeFolderFromLibrary(home) == nil)
+        check("with no profile open there is nothing to remove, remembered or removable",
+              alex.removeFolderFromLibrary(home) == nil && alex.removedFolders.isEmpty)
 
         print(failures == 0 ? "\nall library folder checks passed" : "\n\(failures) FAILED")
         exit(failures == 0 ? 0 : 1)

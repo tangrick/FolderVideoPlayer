@@ -402,6 +402,17 @@ final class PlaybackController: ObservableObject {
         if paths.isEmpty { trouble = "Nothing in “\(title)” right now." }
     }
 
+    /// A folder taken out of the library. A list opened from the Library
+    /// Overview is a snapshot of paths, and would go on playing the videos of
+    /// a folder that has since been removed.
+    func dropMembers(under folder: String) {
+        guard let list = namedList else { return }
+        let kept = list.members.filter { !LibraryFolders.contains(folder, $0) }
+        guard kept.count != list.members.count else { return }
+        namedList = NamedList(title: list.title, members: kept)
+        refreshMembership()
+    }
+
     /// The collection was renamed or deleted in its editor.
     func collectionChanged(_ id: UUID, name: String?) {
         guard smartCollection?.id == id else { return }

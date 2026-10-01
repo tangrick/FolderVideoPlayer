@@ -50,7 +50,9 @@ struct LibraryOverviewWindow: View {
             .padding(16)
         }
         .frame(minWidth: 520, minHeight: 420)
-        .task(id: library.watchRevision) { await rebuild() }
+        // A removal or an undo changes what the profile knows without touching
+        // the watch log, so the revision is part of what it rebuilds on.
+        .task(id: "\(library.watchRevision)|\(library.folderRevision)") { await rebuild() }
         .onChange(of: library.profileOpen) { _, _ in Task { await rebuild() } }
     }
 
