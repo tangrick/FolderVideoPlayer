@@ -603,7 +603,17 @@ struct MainMenu: Commands {
         CommandMenu("Tags") {
             Button("Tag This Video…") { app.showTagPanel.toggle() }
                 .keyboardShortcut("t")
-                .disabled(!library.profileOpen)
+                .disabled(!library.profileOpen || app.triage != nil)
+            // Walk the list one video at a time, answering from the keyboard.
+            // Left enabled with a profile open, so that choosing it can say
+            // why it cannot start (no videos, the Hidden view) instead of
+            // greying out with nothing to read.
+            Button(app.triage == nil ? "Start Triage" : "Stop Triage") {
+                if app.triage == nil { app.startTriage() } else { app.endTriage() }
+            }
+            .keyboardShortcut("t", modifiers: [.command, .shift])
+            .disabled(!library.profileOpen && app.triage == nil)
+            .help("Go through the videos in this list one at a time, tagging from the keyboard")
             // Stars on what is playing, straight from the menu. The tick
             // tracks the current rating. Star tags are tags, so a closed
             // profile refuses them like every other tagging surface.

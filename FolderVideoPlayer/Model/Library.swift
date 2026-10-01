@@ -723,6 +723,10 @@ final class Library: ObservableObject {
         // not exist. Every real path here is a tagging action, and every
         // tagging surface is disabled while closed.
         guard profileOpen else { return }
+        // A write held back by `saveTagsSoon` is overtaken by this one.
+        tagsWriteTask?.cancel()
+        tagsWriteTask = nil
+        tagsWritePending = false
         recount()
         JSONStore.save(Paths.tagsFile, tags)
         tagsDirty = true
@@ -730,6 +734,46 @@ final class Library: ObservableObject {
         ProfileBundle.markEdited(profile: person)
         scheduleAutoPublish()
     }
+
+    /// `saveTags` for a caller that answers many times a second.
+    ///
+    /// The file is the cost: measured with 10,000 tagged videos, a save takes
+    /// 42 ms of which 38 are rewriting the whole of `tags.json` (150 ms at
+    /// 30,000), and triage mode saves once per key. So the counts, the sync and
+    /// the "edited" mark happen now, and the write waits until the answers stop
+    /// for `delay` seconds. `flushTags` forces it — at the end of a session and
+    /// on the way out — so the most a crash can cost is the last `delay`
+    /// seconds of answers, and the shared copy on the NAS goes out from memory
+    /// as it always did.
+    func saveTagsSoon(after delay: TimeInterval = 2) {
+        if batching { deferredSaves.insert(.tags); return }
+        guard profileOpen else { return }
+        recount()
+        tagsDirty = true
+        publishedClean = false
+        ProfileBundle.markEdited(profile: person)
+        scheduleAutoPublish()
+        tagsWritePending = true
+        tagsWriteTask?.cancel()
+        tagsWriteTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            self?.flushTags()
+        }
+    }
+
+    /// Write the tags now if `saveTagsSoon` is holding a write back.
+    func flushTags() {
+        tagsWriteTask?.cancel()
+        tagsWriteTask = nil
+        guard tagsWritePending else { return }
+        tagsWritePending = false
+        guard profileOpen else { return }
+        JSONStore.save(Paths.tagsFile, tags)
+    }
+
+    private var tagsWriteTask: Task<Void, Never>?
+    private var tagsWritePending = false
 
     /// Tags that changed because the shared file did. Kept and shown, but not
     /// an edit of this Mac's: there is nothing to send, and the published
@@ -976,6 +1020,7 @@ final class Library: ObservableObject {
     /// A last push on the way out, for changes the hold above has not reached
     /// yet. Blocks for at most a few seconds on another device's lock.
     func publishOnQuit() {
+        flushTags()
         guard profileOpen else { return }
         syncOnQuit()
     }

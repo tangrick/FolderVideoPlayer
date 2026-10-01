@@ -698,6 +698,10 @@ struct PlayerScreen: View {
                     closedProfileNotice
                 }
             }
+            if let triage = app.triage {
+                Divider()
+                TriageBar(session: triage, playback: playback)
+            }
             if app.showTranscriptPanel {
                 Divider()
                 // Transcripts live in the profile's store, so with no profile
@@ -724,6 +728,7 @@ struct PlayerScreen: View {
         .animation(.easeInOut(duration: 0.2), value: app.showTagPanel)
         .animation(.easeInOut(duration: 0.2), value: app.showTranscriptPanel)
         .animation(.easeInOut(duration: 0.2), value: app.showMomentsPanel)
+        .animation(.easeInOut(duration: 0.2), value: app.triage != nil)
     }
 
     /// What the tag panel's place says when no profile is open. The player

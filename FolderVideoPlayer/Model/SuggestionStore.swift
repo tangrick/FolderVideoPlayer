@@ -72,6 +72,16 @@ struct VideoSuggestions: Codable {
     /// shape as `facesDetected` above.
     var evidenceCovered: Bool?
 
+    /// When triage mode last finished with this video and left it untagged
+    /// ("nothing to tag here"), so it is not put in front of the user again.
+    ///
+    /// It lives here and not in a file of its own because this entry already
+    /// follows a moved video (`SuggestionStore.move`) and already travels in the
+    /// profile bundle; a second per-video store would need both written again.
+    /// Nil in everything written before triage existed, and it does not make an
+    /// entry look analysed: `hasSuggestions` is decided by `suggestedAt`.
+    var triagedAt: Date?
+
     /// Suggestions the user has not ruled on yet, strongest first.
     var pending: [TagSuggestion] {
         suggestions
@@ -304,6 +314,29 @@ final class SuggestionStore: ObservableObject {
     func restore(_ taken: [String: VideoSuggestions]) {
         guard profileOpen, !taken.isEmpty else { return }
         for (key, entry) in taken { byVideo[key] = entry }
+        scheduleSave()
+    }
+
+    /// When triage left this video untagged on purpose, if it did.
+    func triagedAt(_ path: String) -> Date? {
+        byVideo[Paths.tagKey(path)]?.triagedAt
+    }
+
+    /// Record, or with nil take back, that triage finished with this video.
+    ///
+    /// Taking it back removes an entry that held nothing else, so undoing the
+    /// first mark on a video the engine never looked at leaves no residue.
+    func setTriaged(_ path: String, to date: Date?) {
+        guard profileOpen else { return }
+        let key = Paths.tagKey(path)
+        if date == nil, byVideo[key] == nil { return }
+        var e = byVideo[key] ?? VideoSuggestions()
+        e.triagedAt = date
+        if date == nil, e.suggestions.isEmpty, e.verdicts.isEmpty, e.suggestedAt == nil {
+            byVideo.removeValue(forKey: key)
+        } else {
+            byVideo[key] = e
+        }
         scheduleSave()
     }
 

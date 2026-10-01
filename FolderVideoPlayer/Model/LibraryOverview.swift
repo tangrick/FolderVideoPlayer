@@ -11,7 +11,7 @@ import Foundation
 struct LibraryOverview: Equatable {
 
     enum Kind: String, CaseIterable, Identifiable {
-        case continueWatching, recentlyAdded, recentlyWatched, unwatched, awaitingReview, analysisTrouble
+        case continueWatching, recentlyAdded, recentlyWatched, unwatched, awaitingReview, needsTags, analysisTrouble
         var id: String { rawValue }
 
         var title: String {
@@ -21,7 +21,29 @@ struct LibraryOverview: Equatable {
             case .recentlyWatched: return "Recently Watched"
             case .unwatched: return "Unwatched"
             case .awaitingReview: return "Tag Suggestions to Review"
+            case .needsTags: return "Needs Tags"
             case .analysisTrouble: return "Analysis Not Finished"
+            }
+        }
+
+        /// What a section counts, when that is less than it sounds like. The
+        /// library has no list of every file on every share, so "needs tags"
+        /// can only be about the videos the app has met.
+        var coverage: String? {
+            switch self {
+            case .needsTags:
+                return "Counts the videos this library has seen — opened, tagged, rated, analysed or "
+                    + "read for facts — not every file on every share."
+            default: return nil
+            }
+        }
+
+        /// The triage filter that works through this section, if one does.
+        var triageFilter: TriageFilter? {
+            switch self {
+            case .awaitingReview: return .hasSuggestions
+            case .needsTags: return .needsTags
+            default: return nil
             }
         }
 
@@ -33,6 +55,7 @@ struct LibraryOverview: Equatable {
             case .recentlyWatched: return "Videos you play appear here."
             case .unwatched: return "Videos the library knows but you have not played appear here."
             case .awaitingReview: return "When the AI suggests tags, the videos waiting for your answer appear here."
+            case .needsTags: return "Videos with no tag of yours yet appear here, once the app has seen them. A star rating alone does not count."
             case .analysisTrouble: return "Videos whose analysis failed or is still queued appear here."
             }
         }
@@ -44,6 +67,7 @@ struct LibraryOverview: Equatable {
             case .recentlyWatched: return "clock.arrow.circlepath"
             case .unwatched: return "circle.fill"
             case .awaitingReview: return "tag"
+            case .needsTags: return "tag.square"
             case .analysisTrouble: return "exclamationmark.triangle"
             }
         }
@@ -70,6 +94,9 @@ struct LibraryOverview: Equatable {
         /// Date added, by absolute path; missing when not yet known.
         var addedOn: [String: Double]
         var hasPendingSuggestions: (String) -> Bool
+        /// Triage's own rule (`TriageFilter.needsTags`), so this section and
+        /// the mode that works through it cannot disagree about what is left.
+        var needsTags: (String) -> Bool = { _ in false }
         var analysis: (String) -> AnalysisBucket
         var now: Double = Date().timeIntervalSince1970
     }
@@ -111,6 +138,10 @@ struct LibraryOverview: Equatable {
 
         out.sections[.awaitingReview] = known
             .filter(input.hasPendingSuggestions)
+            .map { Paths.tagPath($0) }
+
+        out.sections[.needsTags] = known
+            .filter(input.needsTags)
             .map { Paths.tagPath($0) }
 
         out.sections[.analysisTrouble] = known

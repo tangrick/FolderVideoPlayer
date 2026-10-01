@@ -194,6 +194,14 @@ private struct QuickStartPage: View {
                  "AI ▾ → Train Tags from These. From then on that tag is offered "
                  + "by your own trained head rather than a guess.")
 
+            Text("A lot to tag? Tags ▸ Start Triage (⇧⌘T) goes through the videos on "
+                 + "screen one at a time and takes your answers from the keyboard — "
+                 + "see Keyboard shortcuts. The Library Overview (⌘0) lists what still "
+                 + "needs tags.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
             Divider().padding(.vertical, 4)
 
             VStack(alignment: .leading, spacing: 6) {
@@ -265,6 +273,7 @@ private struct ShortcutsPage: View {
 
     private let tagging: [Row] = [
         Row(keys: ["⌘T"], what: "Tag what is playing", where_: "Tags menu"),
+        Row(keys: ["⇧⌘T"], what: "Start triage, or stop it", where_: "Tags menu"),
         Row(keys: ["⌘⇧D"], what: "Rate the playing video 5 stars", where_: "Tags menu"),
         Row(keys: ["Esc"], what: "Close the tag panel", where_: "Tag panel"),
         Row(keys: ["⌘-click", "⇧-click"], what: "Add one video to the selection, or take a run", where_: "Playlist"),
@@ -274,6 +283,21 @@ private struct ShortcutsPage: View {
         Row(keys: ["⌘⌫"], what: "Move what is picked to the Trash", where_: "Edit menu"),
         Row(keys: ["⌃⌘H"], what: "Hide what is picked — the file is untouched", where_: "Edit menu"),
         Row(keys: ["Space"], what: "Preview a duplicate copy, Quick Look style", where_: "Find Duplicates"),
+    ]
+
+    /// Only while triage is on (Tags ▸ Start Triage). A key does nothing while a
+    /// text field has the keyboard.
+    private let triage: [Row] = [
+        Row(keys: ["1–9"], what: "Add the tag on that chip, or take it off again", where_: "Triage"),
+        Row(keys: ["⌥1–9"], what: "That suggestion is wrong — it is not offered again", where_: "Triage"),
+        Row(keys: ["A"], what: "Accept every suggestion shown, then move on", where_: "Triage"),
+        Row(keys: ["Return"], what: "Done with this video — on to the next", where_: "Triage"),
+        Row(keys: ["↓", "⌘→"], what: "Skip: leave it for later, record nothing", where_: "Triage"),
+        Row(keys: ["↑", "⌘←"], what: "Back to the video before", where_: "Triage"),
+        Row(keys: ["T", "/"], what: "Type another tag — Return adds it, Esc goes back to the keys", where_: "Triage"),
+        Row(keys: ["⌘Z"], what: "Take back the last answer", where_: "Triage"),
+        Row(keys: ["M"], what: "Mute for this session", where_: "Triage"),
+        Row(keys: ["Esc"], what: "Leave triage", where_: "Triage"),
     ]
 
     var body: some View {
@@ -290,6 +314,7 @@ private struct ShortcutsPage: View {
             group("Playing", playing)
             group("Windows and views", windows)
             group("Tagging and files", tagging)
+            group("Triage", triage)
             Text("⌘, opens Settings, where the skip step, the default speed and "
                  + "Face Recognition live.")
                 .font(.caption)

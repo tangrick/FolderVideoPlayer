@@ -57,7 +57,7 @@ extension AppModel {
             guard event.keyCode == 53 else { return event }
             var swallowed = false
             MainActor.assumeIsolated {
-                guard self.fullScreen, !self.showTagPanel else { return }
+                guard self.fullScreen, !self.showTagPanel, self.triage == nil else { return }
                 self.leaveFullScreen()
                 swallowed = true
             }
@@ -120,6 +120,21 @@ extension AppModel {
                     if key == 124 { pb.next() } else { pb.previous() }
                     swallowed = true
                 }
+            }
+            return swallowed ? nil : event
+        }
+
+        // Triage mode's keys. A monitor for the reason the others are: a bare
+        // digit or Return is asked of the menu first, and nothing in the window
+        // is a responder that would take it. Only what is needed crosses into
+        // the isolated block; NSEvent itself does not.
+        triageKeyWatcher = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let code = event.keyCode
+            let chars = event.charactersIgnoringModifiers ?? ""
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            var swallowed = false
+            MainActor.assumeIsolated {
+                swallowed = self.triageKey(code: code, characters: chars, flags: flags, in: window)
             }
             return swallowed ? nil : event
         }

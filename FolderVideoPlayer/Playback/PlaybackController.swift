@@ -142,6 +142,17 @@ final class PlaybackController: ObservableObject {
     /// exactly as they were — previewing must not feel like navigation.
     @Published private(set) var previewPath: String?
 
+    /// Triage mode is walking videos through the player: each one is shown by
+    /// `triage(_:)`, apart from the playlist, from the start, looping, and
+    /// remembered by nothing.
+    @Published private(set) var triaging = false
+    /// Sound off for the rest of the session. The volume the user chose is not
+    /// touched, so it is exactly as they left it afterwards.
+    @Published private(set) var triageMuted = false
+    /// Set while triage runs: Next and Previous mean Skip and Back, whoever
+    /// asks — the menu, ⌘→, the transport bar.
+    var stepOverride: ((Int) -> Void)?
+
     /// The words a `.said` playlist was searched for, and each video's
     /// moments where they are said (seconds, in order).
     @Published private(set) var saidQuery: String?
@@ -603,6 +614,9 @@ final class PlaybackController: ObservableObject {
     /// the last one across would leave rows on screen that the new profile
     /// has no claim to, and a video playing that it never chose.
     func closePlaylist() {
+        triaging = false
+        triageMuted = false
+        stepOverride = nil
         stopConverting()
         conversionOffer = nil
         stop()
@@ -673,8 +687,14 @@ final class PlaybackController: ObservableObject {
 
     func play(at i: Int) {
         guard !playlist.isEmpty else { return }
+        // Navigation leaves triage, and what was on screen for it is not the
+        // list's video: its position must not be noted against the list's.
+        let wasTriaging = triaging
+        triaging = false
+        triageMuted = false
+        stepOverride = nil
         previewPath = nil                    // navigation leaves preview mode
-        notePosition()
+        if !wasTriaging { notePosition() }
         index = ((i % playlist.count) + playlist.count) % playlist.count
         let path = playlist[index]
         trouble = nil
@@ -743,20 +763,88 @@ final class PlaybackController: ObservableObject {
     /// here rather than advancing into the tag list — the user is judging,
     /// not queueing. `next`/`previous`/clicking a real row all leave preview.
     func preview(_ path: String) {
+        showApart(path, startAt: library.resumePoint(path), volume: library.volume)
+        // Deliberately no saveSession(): the session must keep describing
+        // the tag playlist, not a candidate that is not in it.
+    }
+
+    private func showApart(_ path: String, startAt: Double, volume: Int) {
         previewPath = path
         trouble = nil
         problems.removeValue(forKey: path)
         head.position = 0
         head.duration = media.length(path) ?? 0
         engine.rate = library.speed
-        engine.volume = library.volume
+        engine.volume = volume
         conversionOffer = nil
-        engine.load(URL(fileURLWithPath: path), startAt: library.resumePoint(path))
+        engine.load(URL(fileURLWithPath: path), startAt: startAt)
         prepareTracks(for: path)
         engine.play()
         head.playing = true
-        // Deliberately no saveSession(): the session must keep describing
-        // the tag playlist, not a candidate that is not in it.
+    }
+
+    // MARK: - triage
+
+    /// Triage mode begins: from here until `endTriage`, `triage(_:)` puts a
+    /// video on screen and Next and Previous call `stepping`.
+    func beginTriage(stepping: @escaping (Int) -> Void) {
+        // Where the playing video had got to is kept, as leaving it by any
+        // other route would keep it.
+        notePosition()
+        triaging = true
+        triageMuted = false
+        stepOverride = stepping
+    }
+
+    /// Show one video for triage.
+    ///
+    /// A preview in all but three ways, each deliberate. It starts at the top,
+    /// not at the resume point: the job is to recognise what it is. It loops
+    /// instead of stopping, because `itemFinished` clearing `previewPath` would
+    /// hand `currentPath` back to the playlist's own video, and the next tag
+    /// would land on the wrong one. And nothing is remembered about it —
+    /// `notePosition` returns early — because a preview still records a resume
+    /// point (`Library.note` writes one whether or not it is "watching"), and a
+    /// few seconds' look at a hundred videos must not fill Continue Watching.
+    func triage(_ path: String) {
+        guard triaging else { return }
+        showApart(path, startAt: 0, volume: triageMuted ? 0 : library.volume)
+    }
+
+    /// Nothing left to show: stop the picture, keep the last video on screen.
+    func pauseTriage() {
+        guard triaging else { return }
+        engine.pause()
+        head.playing = false
+    }
+
+    func toggleTriageMute() {
+        guard triaging else { return }
+        triageMuted.toggle()
+        engine.volume = triageMuted ? 0 : library.volume
+    }
+
+    /// Triage is over. The last video stays on screen, paused at the top, and
+    /// the list is pointed at it so Next carries on from there; nothing starts
+    /// playing. If that video has left the list (an unrated or untagged view
+    /// can lose members as they are tagged), it stays up as a preview instead.
+    func endTriage(landingOn path: String?) {
+        guard triaging else { return }
+        triaging = false
+        stepOverride = nil
+        triageMuted = false
+        engine.volume = library.volume
+        engine.pause()
+        // At the top, so the position the paused video is left at is not
+        // written down as a resume point.
+        engine.seek(to: 0)
+        head.position = 0
+        head.playing = false
+        if let path, let found = playlist.firstIndex(of: path) {
+            index = found
+            previewPath = nil
+            saveSession()
+        }
     }
 
     /// Stop the picture and the sound because the window has gone. Not
@@ -792,8 +880,8 @@ final class PlaybackController: ObservableObject {
         head.playing = false
     }
 
-    func next() { play(at: step(1)) }
-    func previous() { play(at: step(-1)) }
+    func next() { if let stepOverride { stepOverride(1) } else { play(at: step(1)) } }
+    func previous() { if let stepOverride { stepOverride(-1) } else { play(at: step(-1)) } }
 
     func skip(_ seconds: Double) {
         let target = max(0, position + seconds)
@@ -833,6 +921,11 @@ final class PlaybackController: ObservableObject {
         // happened to catch — a short clip can end between two of them.
         if previewPath == nil, let path = currentPath, duration > 0 {
             library.note(position: duration, total: duration, for: path)
+        }
+        if triaging {
+            engine.seek(to: 0)
+            engine.play()
+            return
         }
         if tagPanelOpen {
             // Hold here rather than moving on under an open tag panel.
@@ -1085,7 +1178,7 @@ final class PlaybackController: ObservableObject {
     }
 
     func notePosition() {
-        guard let path = currentPath, position > 0 else { return }
+        guard !triaging, let path = currentPath, position > 0 else { return }
         library.note(position: position, total: duration, for: path, watching: previewPath == nil)
     }
 

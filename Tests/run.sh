@@ -134,6 +134,9 @@ sh "$here/run_moments.sh"
 # Library folders: every folder the library draws videos from, and taking one
 # out of the profile's library — what leaves, what must not, and undo.
 sh "$here/run_library_folders.sh"
+# Triage mode: the review queue, the numbered strip, what each answer records
+# for training, and an undo that puts tags, verdicts and the reviewed mark back.
+sh "$here/run_triage.sh"
 
 # Subtitle files and track choices: SRT/VTT parsing, discovery, and a saved
 # choice never applied to a file that lacks it.

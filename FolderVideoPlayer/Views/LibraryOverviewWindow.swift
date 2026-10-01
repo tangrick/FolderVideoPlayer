@@ -110,10 +110,25 @@ struct LibraryOverviewWindow: View {
                     Text((path as NSString).lastPathComponent)
                         .font(.callout).lineLimit(1).truncationMode(.middle)
                 }
-                Button("Play \(paths.count == 1 ? "It" : "All \(paths.count)")") {
-                    app.playback?.playList(kind.title, paths)
+                HStack {
+                    Button("Play \(paths.count == 1 ? "It" : "All \(paths.count)")") {
+                        app.playback?.playList(kind.title, paths)
+                    }
+                    // The sections that are about tagging can be worked through,
+                    // not just played.
+                    if let filter = kind.triageFilter {
+                        Button("Triage") {
+                            app.triageList(kind.title, paths, filter: filter)
+                        }
+                        .help("Go through these one at a time, tagging from the keyboard")
+                    }
                 }
                 .controlSize(.small)
+            }
+            if let coverage = kind.coverage {
+                Text(coverage)
+                    .font(.caption).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(12)
@@ -143,6 +158,7 @@ struct LibraryOverviewWindow: View {
             let when = library.addedOn(path)
             if when > 0 { added[path] = when }
         }
+        let reader = TriageSession.reader(library, suggestions)
         let input = LibraryOverview.Input(
             known: known, hidden: library.hidden,
             watch: { library.watchState(Paths.tagPath($0)) },
@@ -150,6 +166,7 @@ struct LibraryOverviewWindow: View {
             progressSeen: library.progressSeen,
             addedOn: added,
             hasPendingSuggestions: { !suggestions.pending(Paths.tagPath($0)).isEmpty },
+            needsTags: { reader.matches(Paths.tagPath($0), .needsTags) },
             analysis: { AnalysisStore.bucket(record: analysis.records[$0]) })
         overview = LibraryOverview.build(input)
         loading = false
