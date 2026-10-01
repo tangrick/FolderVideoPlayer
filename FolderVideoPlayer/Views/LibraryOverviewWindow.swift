@@ -14,6 +14,12 @@ struct LibraryOverviewWindow: View {
 
     @State private var overview = LibraryOverview()
     @State private var loading = true
+    /// When the lists below were last built, so Reset can be seen to have run.
+    @State private var builtAt: Date?
+    /// Bumped by Reset. It is part of what the rebuild task runs on, so a bump
+    /// starts the rebuild again and cancels one still in progress, which could
+    /// otherwise finish later and put its older answer back.
+    @State private var resets = 0
 
     private let columns = [GridItem(.adaptive(minimum: 230), spacing: 12)]
 
@@ -23,6 +29,20 @@ struct LibraryOverviewWindow: View {
                 if !library.profileOpen {
                     Text("No profile is open.").foregroundStyle(.secondary)
                 } else {
+                    HStack {
+                        Text(loading ? "Looking…" : builtAt.map {
+                            "Updated " + $0.formatted(date: .omitted, time: .standard)
+                        } ?? "")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button {
+                            reset()
+                        } label: {
+                            Label("Reset", systemImage: "arrow.counterclockwise")
+                        }
+                        .help("Throw this away and build it again from what the open profile holds now")
+                        .accessibilityLabel("Reset the overview")
+                    }
                     LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
                         ForEach(LibraryOverview.Kind.allCases) { kind in
                             card(kind)
@@ -52,8 +72,17 @@ struct LibraryOverviewWindow: View {
         .frame(minWidth: 520, minHeight: 420)
         // A removal or an undo changes what the profile knows without touching
         // the watch log, so the revision is part of what it rebuilds on.
-        .task(id: "\(library.watchRevision)|\(library.folderRevision)") { await rebuild() }
+        .task(id: "\(library.watchRevision)|\(library.folderRevision)|\(resets)") { await rebuild() }
         .onChange(of: library.profileOpen) { _, _ in Task { await rebuild() } }
+    }
+
+    /// Empty the lists and build them again. The window rebuilds itself when the
+    /// watch log or a folder changes; it cannot know about everything else —
+    /// suggestions arriving, an analysis finishing — and this is for those.
+    private func reset() {
+        overview = LibraryOverview()
+        loading = true
+        resets += 1
     }
 
     private var duplicateLabel: String {
@@ -124,5 +153,6 @@ struct LibraryOverviewWindow: View {
             analysis: { AnalysisStore.bucket(record: analysis.records[$0]) })
         overview = LibraryOverview.build(input)
         loading = false
+        builtAt = Date()
     }
 }
