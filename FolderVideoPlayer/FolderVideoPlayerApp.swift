@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import OSLog
 import SwiftUI
 
@@ -617,6 +618,22 @@ final class AppModel: ObservableObject {
     var selectAllWatcher: Any?
     /// Bare arrows → the text being typed, not the Playback menu.
     var textArrowWatcher: Any?
+    /// The review session, while triage mode is on (`TriageSession`; the rest
+    /// of what the mode does is in `TriageControl.swift`).
+    @Published var triage: TriageSession?
+    /// The number keys, Return, A, T, M, ⌘Z and Esc while triage is on.
+    var triageKeyWatcher: Any?
+    var triageObservers: [AnyCancellable] = []
+    /// Follows the session's queue, to put the cursor's video on screen. Kept
+    /// apart from the player-side ones above so a change of filter can replace
+    /// it alone.
+    var triageQueueWatch: AnyCancellable?
+    /// The video triage last put on screen, so one that is already there is
+    /// not loaded again.
+    var triageShown: String?
+    /// The playlist triage was started from, kept so a change of filter can
+    /// begin again over the same videos.
+    var triagePlaylist: [String] = []
     private var foregroundWatchers: [NSObjectProtocol] = []
     @Published var showTagPanel = false {
         // Opening the panel is about to show tags: check whether another

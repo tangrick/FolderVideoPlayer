@@ -14,14 +14,22 @@ no account, no cloud service, and no video, frame or tag leaves the machine.
   in it, on loop, with resume positions and a poster-frame or list playlist.
 - **Tags and favorites** — kept in their own files beside your videos; the video
   files themselves are never modified.
+- **Triage** — *Tags ▸ Start Triage* (⇧⌘T) goes through the videos on screen
+  one at a time and takes your answers from the keyboard. Each video shows
+  numbered chips — the AI's suggestions, then your usual tags: **1–9** add or
+  remove one, **⌥1–9** say a suggestion is wrong, **A** accepts everything
+  shown, **Return** moves on, **↓** skips, **⌘Z** takes an answer back. A video
+  you leave with no tag is set aside so it does not come round again. Nothing
+  you look at is marked watched or given a resume point.
 - **Combined playlists** — ⌘-click several tags, star ratings, people or file
   facts in the library panel to play every video carrying **any** of them, or
   only those carrying **all** of them.
 - **Watch state and Library Overview** — each video is unwatched, in progress
   or watched (Mark Watched / Unwatched by hand, for a selection too); View ▸
   Library Overview (⌘0) lists Continue Watching, Recently Added, Recently
-  Watched, Unwatched, tag suggestions to review and unfinished analysis, each
-  one click from a playlist.
+  Watched, Unwatched, tag suggestions to review, videos that still need tags
+  and unfinished analysis, each one click from a playlist — and the last two
+  one click from triage.
 - **Moments** — mark a point or a stretch of a video (⌘B, or from a transcript
   line or something the AI saw), name it, add a note, jump back from the list or
   the marks on the scrubber, and export a stretch as its own clip.

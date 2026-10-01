@@ -106,6 +106,9 @@ MODEL_SOURCES=(
     "$model/LibraryOverview.swift"
     # Moments (added Sep'26).
     "$model/Moments.swift"
+    # Triage mode: the queue and the strip are pure; the session applies a
+    # decision to the tags and the suggestion verdicts (added Oct'26).
+    "$model/TriageQueue.swift" "$model/TriageSession.swift"
     # Audio and subtitle tracks (added Sep'26).
     "$model/MediaTracks.swift"
     # Opt-in background upkeep (added Sep'26).

@@ -131,6 +131,10 @@ sh "$here/run_library_overview.sh"
 # Moments: bookmarks and ranges in a video, per profile, carried by a move.
 sh "$here/run_moments.sh"
 
+# Triage mode: the review queue, the numbered strip, what each answer records
+# for training, and an undo that puts tags, verdicts and the reviewed mark back.
+sh "$here/run_triage.sh"
+
 # Subtitle files and track choices: SRT/VTT parsing, discovery, and a saved
 # choice never applied to a file that lacks it.
 sh "$here/run_media_tracks.sh"
