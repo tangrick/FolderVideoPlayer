@@ -81,8 +81,10 @@ final class TriageSession: ObservableObject {
 
     var current: String? { queue.current }
     var canUndo: Bool { !steps.isEmpty }
-    /// The number on the bar. Linear in the queue; see `TriageQueue.left`.
-    var left: Int { queue.left(reader) }
+    /// The number on the bar. Counting it reads every video not yet reached
+    /// (20 ms over eleven thousand), so it is counted when the cursor moves
+    /// and kept, not counted again each time the bar is drawn.
+    @Published private(set) var left = 0
 
     // MARK: - what the strip shows
 
@@ -275,6 +277,7 @@ final class TriageSession: ObservableObject {
     }
 
     private func openCurrent() {
+        left = queue.left(reader)
         guard let path = queue.current else { strip = TriageStrip(); return }
         if var seen = strips[path] {
             seen.appendLate(suggestions.pending(path), carried: carried(path))

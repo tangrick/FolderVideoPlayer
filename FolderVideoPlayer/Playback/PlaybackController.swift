@@ -1244,7 +1244,12 @@ final class PlaybackController: ObservableObject {
         switch mode {
         case .tag:
             guard let members = tagMembers() else { return rebuildRows() }
-            playlist = library.sorted(library.hiddenFilter.apply(to: members))
+            let visible = library.hiddenFilter.apply(to: members)
+            // The same videos as before: the order in hand stands. Sorting is
+            // the cost here (97 ms by name over eleven thousand), and triage
+            // asks after every answer.
+            if visible.count == playlist.count, Set(visible) == Set(playlist) { return rebuildRows() }
+            playlist = library.sorted(visible)
         case .favorites:
             break
         case .hidden:

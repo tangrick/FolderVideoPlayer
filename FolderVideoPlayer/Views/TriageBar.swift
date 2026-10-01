@@ -13,6 +13,10 @@ struct TriageBar: View {
     @EnvironmentObject var library: Library
     @EnvironmentObject var suggestions: SuggestionStore
     @State private var typed = ""
+    /// The other filters that would show something in this list, and how many.
+    /// Counted once when the nothing-matched screen appears: it reads every
+    /// video in the list for each filter.
+    @State private var otherFilters: [(filter: TriageFilter, count: Int)] = []
     @FocusState private var typing: Bool
 
     /// When the engine last produced suggestions for the video in view. A change
@@ -363,6 +367,7 @@ struct TriageBar: View {
             }
             .controlSize(.small)
         }
+        .task(id: ObjectIdentifier(session)) { otherFilters = countOtherFilters() }
     }
 
     private var finishedHeadline: String {
@@ -387,9 +392,8 @@ struct TriageBar: View {
             : "No video here matches “\(session.queue.filter.title)”. Go through another set instead:"
     }
 
-    /// The other filters that would show something in this list, and how many.
-    /// Asked only on the nothing-matched screen: it reads every video once.
-    private var otherFilters: [(filter: TriageFilter, count: Int)] {
+    private func countOtherFilters() -> [(filter: TriageFilter, count: Int)] {
+        guard session.queue.finished.isEmpty, !session.queue.onlySkippedLeft else { return [] }
         let reader = TriageSession.reader(library, suggestions)
         return TriageFilter.allCases.compactMap { filter in
             guard filter != session.queue.filter else { return nil }
