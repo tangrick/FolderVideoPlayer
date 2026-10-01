@@ -8,17 +8,20 @@ extension AppModel {
 
     /// Ask, then remove. From the sidebar's folder menus and from the Library
     /// Folders list; both come here, so both ask the same thing.
-    func removeFromLibrary(_ folder: String) {
+    /// True when the folder was removed; false when it was not (no profile,
+    /// nothing to remove, or Cancel).
+    @discardableResult
+    func removeFromLibrary(_ folder: String) -> Bool {
         guard let library, library.profileOpen else {
             say("No profile is open", "A library belongs to a profile. Open one from the File menu first.")
-            return
+            return false
         }
         let plan = library.folderPlan(folder)
         let name = (folder as NSString).lastPathComponent
         guard plan.videos > 0 || plan.sidebarEntries > 0 else {
             say("Nothing to remove", "“\(name)” holds nothing in \(library.person)’s library and is not "
                 + "pinned or in Recent.")
-            return
+            return false
         }
 
         let alert = NSAlert()
@@ -30,9 +33,9 @@ extension AppModel {
         alert.addButton(withTitle: "Cancel")
         let remove = alert.addButton(withTitle: "Remove from Library")
         remove.hasDestructiveAction = true
-        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        guard alert.runModal() == .alertSecondButtonReturn else { return false }
 
-        guard library.removeFolderFromLibrary(folder) != nil else { return }
+        guard library.removeFolderFromLibrary(folder) != nil else { return false }
         // What was on screen from that folder cannot stay: a list of videos the
         // library no longer holds. A tag list just loses the members.
         if let playback {
@@ -43,6 +46,7 @@ extension AppModel {
                 playback.refreshMembership()
             }
         }
+        return true
     }
 
     func undoFolderRemoval() {

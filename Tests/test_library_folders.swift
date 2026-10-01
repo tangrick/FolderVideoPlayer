@@ -118,6 +118,7 @@ struct LibraryFoldersTest {
                 && plan.sidebarEntries == 2, "\(plan)")
         check("...and a folder nothing is held for plans nothing", alex.folderPlan(media + "/Nowhere").videos == 0)
 
+        let revisionBefore = alex.folderRevision
         let removal = alex.removeFolderFromLibrary(home)
         check("removal reports the plan it carried out", removal?.plan == plan && removal?.folder == home)
         check("tags and stars leave the videos under the folder",
@@ -153,6 +154,8 @@ struct LibraryFoldersTest {
         check("nothing was done to a file",
               !fm.fileExists(atPath: a) && alex.lastFolderRemoval != nil)
 
+        check("the revision moves on a removal", alex.folderRevision == revisionBefore + 1)
+
         // --- 3. undo ----------------------------------------------------------------------
 
         check("undo reports it put something back", alex.undoFolderRemoval())
@@ -167,6 +170,24 @@ struct LibraryFoldersTest {
         check("suggestions, verdicts and moments are back",
               suggestions.entry(a)?.verdicts["Sea"] == .rejected && moments.moments(for: a).count == 1)
         check("a second undo has nothing to do", !alex.undoFolderRemoval() && alex.lastFolderRemoval == nil)
+
+        // --- 3b. the list watches the revision --------------------------------------------
+
+        // The list of folders rebuilds when this moves. It used to rebuild only
+        // when a count happened to change, and missed a second removal.
+        let r0 = alex.folderRevision
+        alex.removeFolderFromLibrary(home)
+        alex.removeFolderFromLibrary(media + "/Clips")      // while the first is still the last removal
+        check("every removal moves the revision, a second one made with the first undoable included",
+              alex.folderRevision == r0 + 2, "\(r0) \(alex.folderRevision)")
+        check("...and the undo is for the latest",
+              alex.lastFolderRemoval?.folder == media + "/Clips")
+        alex.undoFolderRemoval()
+        check("an undo moves it too", alex.folderRevision == r0 + 3)
+        let steady = alex.folderRevision
+        check("removing a folder with nothing in it changes nothing, and spends no undo",
+              alex.removeFolderFromLibrary(media + "/Nowhere") == nil && alex.folderRevision == steady)
+        alex.undoFolderRemoval()                              // puts the home folder back for the checks below
 
         // --- 4. a closed profile ------------------------------------------------------------
 

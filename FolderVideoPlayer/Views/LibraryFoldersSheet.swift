@@ -21,10 +21,12 @@ struct LibraryFoldersSheet: View {
         return rows.filter { row in words.allSatisfy { row.path.lowercased().contains($0) } }
     }
 
-    /// Rebuild the list when anything it is made of changes.
+    /// Rebuild the list when anything it is made of changes. The revision is
+    /// the one that matters for removals and undos; the counts catch the
+    /// changes made elsewhere while the list is open.
     private var token: String {
-        "\(library.person)|\(library.pinned.count)|\(library.recent.count)|\(library.tags.count)"
-            + "|\(library.lastFolderRemoval == nil)|\(app.maintenance.file.settings.folders.count)"
+        "\(library.person)|\(library.folderRevision)|\(library.pinned.count)|\(library.recent.count)"
+            + "|\(library.tags.count)|\(app.maintenance.file.settings.folders.count)"
     }
 
     var body: some View {
@@ -97,7 +99,13 @@ struct LibraryFoldersSheet: View {
             Button("Organize") { organize(folder.path) }
                 .controlSize(.small)
                 .help("Work on this folder in Organize Folders")
-            Button("Remove from Library…") { app.removeFromLibrary(folder.path) }
+            Button("Remove from Library…") {
+                // Gone from the list as soon as it is confirmed, not when the
+                // list next rebuilds; the rebuild then confirms it.
+                if app.removeFromLibrary(folder.path) {
+                    rows.removeAll { LibraryFolders.contains(folder.path, $0.path) }
+                }
+            }
                 .controlSize(.small)
                 .help("Forget what this profile holds for the videos under this folder")
         }

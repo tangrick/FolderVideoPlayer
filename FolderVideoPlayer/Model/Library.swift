@@ -1292,6 +1292,11 @@ final class Library: ObservableObject {
     /// The last removal, while it can still be undone.
     @Published private(set) var lastFolderRemoval: FolderRemoval?
 
+    /// Counts every removal and every undo. A list of folders that rebuilt
+    /// only when some count happened to change missed a removal that changed
+    /// none of them — a folder held by watch history alone, removed second.
+    @Published private(set) var folderRevision = 0
+
     /// Take a folder out of the profile's library: out of Pinned and Recent,
     /// and everything this profile holds for the videos under it — tags and
     /// stars (also off this profile's copy on the shares, which is what the
@@ -1311,6 +1316,8 @@ final class Library: ObservableObject {
         guard profileOpen else { return nil }
         let map = PathMap(from: folder, to: folder, isFolder: true)
         var removal = FolderRemoval(folder: folder, plan: folderPlan(folder))
+        // Nothing to take: leave the last removal's undo where it is.
+        guard removal.plan.videos > 0 || removal.plan.sidebarEntries > 0 else { return nil }
         let keys = knownProfileVideoKeys().filter { map.mapKey($0) != nil }
         let pinsBefore = pinned
 
@@ -1344,6 +1351,7 @@ final class Library: ObservableObject {
         }
         removal.putBackOutside = forgetOutside?(folder)
         lastFolderRemoval = removal
+        folderRevision += 1
         save()
         if pinned != pinsBefore { pinsChanged() }
         return removal
@@ -1377,6 +1385,7 @@ final class Library: ObservableObject {
         }
         removal.putBackOutside?()
         lastFolderRemoval = nil
+        folderRevision += 1
         save()
         if pinned != pinsBefore { pinsChanged() }
         return true
