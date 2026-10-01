@@ -122,15 +122,52 @@ struct TriageBar: View {
 
     // MARK: - the numbered strip
 
+    /// Two labelled rows, so a guess from the picture (which can be refused)
+    /// is never mistaken for one of the user's own tags (which cannot: nobody
+    /// claimed it). A chip keeps its number whichever row it is in.
     private var strip: some View {
-        ChipFlow(spacing: 6) {
-            ForEach(Array(session.strip.entries.enumerated()), id: \.offset) { index, entry in
-                chip(entry, key: session.strip.key(at: index))
+        VStack(alignment: .leading, spacing: 6) {
+            stripRow("Suggested", .suggestion, empty: noSuggestions) {
+                Button("Accept All") { session.acceptAll() }
+                    .disabled(!session.canAcceptAll)
+                    .help("Add every suggestion shown, then move on (A)")
+                Button("Reject All") { session.rejectAll() }
+                    .disabled(!session.canRejectAll)
+                    .help("None of these fit: records each as a negative example for training (X)")
             }
-            if session.strip.entries.isEmpty {
-                Text("Nothing to offer yet. Type a tag, or press T.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            stripRow("Your tags", .quick, empty: "None to offer. Type a tag below (T).") { EmptyView() }
+        }
+    }
+
+    /// Why the Suggested row is empty: the engine is looking now, it looked
+    /// and has nothing left to offer, or it has not looked.
+    private var noSuggestions: String {
+        guard let path = session.current else { return "" }
+        if app.suggestingPath == path { return "Looking at this video…" }
+        if suggestions.entry(path)?.suggestedAt != nil { return "No suggestions for this video." }
+        return "Not analysed yet."
+    }
+
+    private func stripRow<Trailing: View>(_ title: String, _ kind: TriageStrip.Entry.Kind, empty: String,
+                                          @ViewBuilder trailing: () -> Trailing) -> some View {
+        let entries = Array(session.strip.entries.enumerated()).filter { $0.element.kind == kind }
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 70, alignment: .leading)
+            ChipFlow(spacing: 6) {
+                ForEach(entries, id: \.offset) { index, entry in
+                    chip(entry, key: session.strip.key(at: index))
+                }
+                if entries.isEmpty {
+                    Text(empty)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(minHeight: 22)
+                }
+                trailing()
+                    .controlSize(.small)
             }
         }
     }
@@ -178,8 +215,9 @@ struct TriageBar: View {
             .accessibilityLabel(chipLabel(entry, key: key, applied: applied, refused: refused))
 
             // The no, as a button of its own like the tag panel's ✕: the key
-            // is ⌥ and the number.
-            if suggestion && !applied && !refused {
+            // is ⌥ and the number. Once refused it keeps its place, unseen, so
+            // the chips after it do not slide under the pointer.
+            if suggestion {
                 Button {
                     session.reject(entry)
                 } label: {
@@ -193,6 +231,9 @@ struct TriageBar: View {
                 .help("Not “\(entry.tag)” — records a negative example for training"
                       + (key.map { " (⌥\($0))" } ?? ""))
                 .accessibilityLabel("Not \(entry.tag)")
+                .opacity(refused ? 0 : 1)
+                .disabled(refused)
+                .accessibilityHidden(refused)
             }
         }
     }
@@ -235,9 +276,6 @@ struct TriageBar: View {
                 .font(.caption)
             }
             Spacer()
-            Button("Accept All") { session.acceptAll() }
-                .disabled(!session.strip.entries.contains { $0.kind == .suggestion })
-                .help("Add every suggestion shown, then move on (A)")
             Button("Back") { session.back() }
                 .disabled(!session.queue.canGoBack)
                 .help("The video before this one (↑)")
@@ -288,8 +326,8 @@ struct TriageBar: View {
     }
 
     private var legend: some View {
-        Text("1–9 add or remove · ⌥1–9 not this · A accept all · Return done · ↓ skip · ↑ back · "
-             + "T type a tag · M mute · ⌘Z undo · esc leave")
+        Text("1–9 add or remove a tag · ✕ or ⌥1–9 suggestion is wrong · A accept all · X reject all · "
+             + "Return next video · ↓ skip · ↑ back · T type a tag · M mute · ⌘Z undo · esc leave")
             .font(.caption2)
             .foregroundStyle(.tertiary)
             .lineLimit(2)
@@ -313,6 +351,13 @@ struct TriageBar: View {
                     Button("Undo") { session.undo() }
                         .help("Take the last answer back (⌘Z)")
                 }
+                // Nothing matched: say what in this list would, rather than
+                // leave the filter menu to be found.
+                if session.queue.finished.isEmpty, !session.queue.onlySkippedLeft {
+                    ForEach(otherFilters, id: \.filter) { other in
+                        Button("\(other.filter.title) (\(other.count))") { app.setTriageFilter(other.filter) }
+                    }
+                }
                 Button("Leave Triage") { app.endTriage() }
                     .help("esc")
             }
@@ -334,8 +379,22 @@ struct TriageBar: View {
         if session.queue.onlySkippedLeft {
             return "Everything else is done. The skipped ones have had nothing recorded."
         }
-        return session.queue.finished.isEmpty
-            ? "Try another filter from the menu above, or leave triage."
-            : "\(session.queue.finished.count) finished this session."
+        guard session.queue.finished.isEmpty else {
+            return "\(session.queue.finished.count) finished this session."
+        }
+        return otherFilters.isEmpty
+            ? "Try another list, or leave triage."
+            : "No video here matches “\(session.queue.filter.title)”. Go through another set instead:"
+    }
+
+    /// The other filters that would show something in this list, and how many.
+    /// Asked only on the nothing-matched screen: it reads every video once.
+    private var otherFilters: [(filter: TriageFilter, count: Int)] {
+        let reader = TriageSession.reader(library, suggestions)
+        return TriageFilter.allCases.compactMap { filter in
+            guard filter != session.queue.filter else { return nil }
+            let count = app.triagePlaylist.filter { reader.matches($0, filter) }.count
+            return count > 0 ? (filter, count) : nil
+        }
     }
 }

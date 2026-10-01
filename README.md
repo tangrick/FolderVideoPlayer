@@ -16,9 +16,9 @@ no account, no cloud service, and no video, frame or tag leaves the machine.
   files themselves are never modified.
 - **Triage** — *Tags ▸ Start Triage* (⇧⌘T) goes through the videos on screen
   one at a time and takes your answers from the keyboard. Each video shows
-  numbered chips — the AI's suggestions, then your usual tags: **1–9** add or
-  remove one, **⌥1–9** say a suggestion is wrong, **A** accepts everything
-  shown, **Return** moves on, **↓** skips, **⌘Z** takes an answer back. A video
+  numbered chips in two rows — the AI's suggestions, and your usual tags:
+  **1–9** add or remove one, **⌥1–9** say a suggestion is wrong, **A** accepts
+  every suggestion shown, **X** rejects them all, **Return** moves on, **↓** skips, **⌘Z** takes an answer back. A video
   you leave with no tag is set aside so it does not come round again. Nothing
   you look at is marked watched or given a resume point.
 - **Combined playlists** — ⌘-click several tags, star ratings, people or file

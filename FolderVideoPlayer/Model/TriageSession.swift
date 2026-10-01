@@ -22,7 +22,7 @@ struct TriageStep: Equatable {
 /// verdicts are training data (see `SuggestionVerdict`):
 ///   - accepting a suggestion records `accepted`; so does a tag typed by hand
 ///     that happens to be a pending suggestion, once the video is finished with;
-///   - only `reject` records `rejected`, a real negative;
+///   - only `reject` and `rejectAll` record `rejected`, a real negative;
 ///   - finishing a video records `ignored` for the suggestions it leaves, as
 ///     Dismiss All does: walking away is not saying no;
 ///   - skipping, going back and moving past a video record nothing.
@@ -34,6 +34,11 @@ final class TriageSession: ObservableObject {
 
     @Published private(set) var queue: TriageQueue
     @Published private(set) var strip = TriageStrip()
+    /// The strip each video had when it was last in view, so coming back to
+    /// one (Back, or an undo) shows the same chips under the same numbers.
+    /// Without it a finished video came back bare: its suggestions are no
+    /// longer pending, and the tags it was given are left out of a new strip.
+    private var strips: [String: TriageStrip] = [:]
     /// The decisions made so far, newest last. In memory: it ends with the
     /// session, and what was already written stays written.
     @Published private(set) var steps: [TriageStep] = []
@@ -98,6 +103,7 @@ final class TriageSession: ObservableObject {
     func refreshSuggestions() {
         guard let path = queue.current else { return }
         strip.appendLate(suggestions.pending(path), carried: carried(path))
+        strips[path] = strip
     }
 
     // MARK: - answers
@@ -146,6 +152,29 @@ final class TriageSession: ObservableObject {
         suggestions.decide(path, tag: entry.tag, verdict: .rejected)
     }
 
+    /// The suggestions shown that `rejectAll` would answer no: not on the video,
+    /// and not refused already.
+    private var rejectable: [TriageStrip.Entry] {
+        guard let path = queue.current else { return [] }
+        return strip.entries.filter {
+            $0.kind == .suggestion && !library.hasTag(path, $0.tag) && verdict(path, $0.tag) != .rejected
+        }
+    }
+
+    var canRejectAll: Bool { !rejectable.isEmpty }
+
+    /// `X`: every suggestion shown that was not taken is wrong. One step, so
+    /// one undo. It stays on the video: wrong guesses do not mean there is
+    /// nothing to tag. A suggestion already put on the video is left alone.
+    func rejectAll() {
+        let wrong = rejectable
+        guard library.profileOpen, let path = queue.current, !wrong.isEmpty else { return }
+        record(path)
+        for entry in wrong {
+            suggestions.decide(path, tag: entry.tag, verdict: .rejected)
+        }
+    }
+
     /// Tags typed by hand, comma separated as in the tag panel.
     func addTyped(_ text: String) {
         let names = parseTags(text)
@@ -155,12 +184,20 @@ final class TriageSession: ObservableObject {
         library.saveTagsSoon()
     }
 
-    /// `A`: accept every suggestion shown, then move on. With none shown it
-    /// does nothing, so it cannot be mistaken for Done. A suggestion answered
-    /// no is not brought back.
+    /// Whether there is a suggestion `acceptAll` would take or keep: one that
+    /// was not answered no.
+    var canAcceptAll: Bool {
+        guard let path = queue.current else { return false }
+        return strip.entries.contains {
+            $0.kind == .suggestion && (verdict(path, $0.tag) != .rejected || library.hasTag(path, $0.tag))
+        }
+    }
+
+    /// `A`: accept every suggestion shown, then move on. With none to accept
+    /// it does nothing, so it cannot be mistaken for Done. A suggestion
+    /// answered no is not brought back.
     func acceptAll() {
-        guard library.profileOpen, let path = queue.current,
-              strip.entries.contains(where: { $0.kind == .suggestion }) else { return }
+        guard library.profileOpen, let path = queue.current, canAcceptAll else { return }
         record(path)
         for entry in strip.entries where entry.kind == .suggestion {
             if verdict(path, entry.tag) == .rejected, !library.hasTag(path, entry.tag) { continue }
@@ -239,8 +276,14 @@ final class TriageSession: ObservableObject {
 
     private func openCurrent() {
         guard let path = queue.current else { strip = TriageStrip(); return }
-        strip = TriageStrip.open(suggestions: suggestions.pending(path),
-                                 carried: carried(path), quick: quick)
+        if var seen = strips[path] {
+            seen.appendLate(suggestions.pending(path), carried: carried(path))
+            strip = seen
+        } else {
+            strip = TriageStrip.open(suggestions: suggestions.pending(path),
+                                     carried: carried(path), quick: quick)
+        }
+        strips[path] = strip
     }
 
     private func record(_ path: String) {

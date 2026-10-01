@@ -88,8 +88,8 @@ Two files, no UI, no file I/O, so the rules are tested without a window.
 
 One row of numbered chips under the picture, built **when the video opens** and then only ever **appended to**:
 
-1. the video's pending suggestions, strongest first, at most five (dashed border and sparkle, as in the tag panel, so a guess never looks like a tag the user vouched for);
-2. then the session's **quick tags**, up to nine slots in all: the nine most-used tags in the scope, chosen at session start and not reshuffled;
+1. every pending suggestion for the video, strongest first (dashed border and sparkle, as in the tag panel, so a guess never looks like a tag the user vouched for). All are shown, because Done dismisses what is left and none should be dismissed unseen;
+2. then the session's **quick tags**: the nine most-used tags in the scope, chosen at session start and not reshuffled. The first nine chips have keys; the rest are for the mouse. The bar draws the two kinds as two labelled rows, "Suggested" and "Your tags";
 3. a tag the video already carries is left out, case-insensitively, as `TagPanel.pendingSuggestions` does.
 
 If the suggestion pass finishes after the video opened, its chips are added **to the right** with the next numbers. They never push an existing chip to a new number, so a key pressed in good faith still does what the screen said a moment ago. While the pass runs the strip shows "Looking…" and the quick tags are already usable.
@@ -103,6 +103,7 @@ Active only while the player window is key, triage is on, and no editable text v
 | `1`…`9` | toggle chip N: apply the tag, or take it off again | a suggestion chip: `.accepted` (`SuggestionStore.decide`). A quick tag: just the tag |
 | `⌥1`…`⌥9` | reject suggestion N: takes it off if carried, never offer it again | `.rejected`. Same as the tag panel's `⌥`click and ✕. Does nothing on a quick tag |
 | `A` | accept every suggestion shown, then move on | `.accepted` for each |
+| `X` | reject every suggestion shown that is not on the video; stays on the video | `.rejected` for each, as one undo step |
 | `Return` | **Done**: move on | a pending suggestion whose tag the video now carries (typed by hand) becomes `.accepted`; every other unruled one becomes `.ignored` (`dismissRest`). If the video has no tags, it is marked reviewed (§4.3) and the bar says so |
 | `↓`, `⌘→` | **Skip**: leave it for later | nothing |
 | `↑`, `⌘←` | **Back** | nothing |
@@ -112,7 +113,7 @@ Active only while the player window is key, triage is on, and no editable text v
 
 **The line that must not move.** `SuggestionVerdict` separates `rejected` (a real negative, safe to train on) from `ignored` (walked away, never trained on). Triage keeps that exactly:
 
-- only `⌥n` ever writes `.rejected`;
+- only `⌥n` and `X` (reject all) ever write `.rejected`;
 - Skip writes **nothing**: the suggestions stay pending;
 - Done writes `.ignored` for what was left, as Dismiss All does, except a suggestion whose tag the user put on by hand, which is an explicit yes and is recorded as `.accepted`;
 - advancing past a video is never read as a no.
@@ -144,6 +145,7 @@ A mode of the main window, not a new window. The architecture note says choosing
 - the numbered strip, then the tag field;
 - Done, Skip, Back, Undo and Exit buttons with their keys in the labels;
 - one line of key legend.
+- when nothing in the list matches the filter: a button for each other filter that would show something, with its count, so the filter menu does not have to be found.
 
 The playlist on the right stays. The cursor's video is shown as the single selection (`app.selection = [path]`, so a stray multi-selection cannot become a batch tag target) and the list scrolls to it.
 
@@ -230,7 +232,7 @@ Number keys need an `NSEvent` monitor like the arrows do: the app's own notes sa
 - Done with pending suggestions writes `.ignored`; Skip writes nothing; only the reject action writes `.rejected`
 - Done on an untagged video sets `triagedAt`, and the video leaves the queue and stays out in a new session
 - Undo restores tags, verdicts and `triagedAt` exactly, including a tag that was newly added and a verdict that was newly written
-- the strip: numbering is stable when late suggestions are added; a carried tag is excluded; at most five suggestions and nine entries in all
+- the strip: numbering is stable when late suggestions are added; a carried tag is excluded; every suggestion is shown and only the first nine chips have keys; Back to a finished video shows the strip it had
 - hidden videos never enter a queue built from a locked playlist
 - `suggestions.json` written without `triagedAt` decodes; an entry holding only `triagedAt` does not read as analysed; `move(from:to:)` carries it
 - `exampleCounts` is unchanged by `triagedAt`

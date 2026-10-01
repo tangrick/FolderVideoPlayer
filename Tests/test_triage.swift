@@ -149,15 +149,17 @@ struct TriageTest {
             suggestions: [sugg("Sea", 0.03), sugg("Wave", 0.06), sugg("Beach", 0.05), sugg("Surf", 0.04),
                           sugg("Foam", 0.02), sugg("Gull", 0.01), sugg("Pier", 0.01)],
             carried: ["tent"], quick: quick)
-        check("suggestions come first, strongest first, at most five",
-              opened.entries.prefix(5).map(\.tag) == ["Wave", "Beach", "Surf", "Sea", "Foam"]
-                && opened.entries.prefix(5).allSatisfy { $0.kind == .suggestion },
+        check("suggestions come first, strongest first, and every one of them is shown",
+              opened.entries.prefix(7).map(\.tag) == ["Wave", "Beach", "Surf", "Sea", "Foam", "Gull", "Pier"]
+                && opened.entries.prefix(7).allSatisfy { $0.kind == .suggestion },
               "\(opened.entries.map(\.tag))")
-        check("quick tags fill the rest up to nine, without repeating a suggestion or a carried tag",
-              opened.entries.map(\.tag) == ["Wave", "Beach", "Surf", "Sea", "Foam", "Kite", "Boat", "Sand"],
+        check("quick tags follow, without repeating a suggestion or a carried tag",
+              opened.entries.suffix(3).map(\.tag) == ["Kite", "Boat", "Sand"]
+                && opened.entries.suffix(3).allSatisfy { $0.kind == .quick } && opened.entries.count == 10,
               "\(opened.entries.map(\.tag))")
-        check("key 1 is the first entry and key 9 is nothing when there are only eight",
-              opened.entry(forKey: 1)?.tag == "Wave" && opened.entry(forKey: 9) == nil
+        check("keys 1 to 9 are the first nine chips; the tenth is shown but has no key",
+              opened.entry(forKey: 1)?.tag == "Wave" && opened.entry(forKey: 9)?.tag == "Boat"
+                && opened.key(at: 9) == nil
                 && opened.entry(forKey: 0) == nil && opened.entry(forKey: 10) == nil)
         check("equal strengths keep the order they arrived in", {
             let s = TriageStrip.open(suggestions: [sugg("B", 0.05), sugg("A", 0.05)], carried: [], quick: [])
@@ -256,6 +258,23 @@ struct TriageTest {
         check("skip and back recorded nothing: suggestions still pending, verdicts unchanged",
               store.pending(a).map(\.tag) == pendingBefore && verdicts(a) == verdictsBefore)
 
+        // Reject all: one step, the rest of the suggestions, and it stays put.
+        session.rejectAll()
+        check("reject all refuses every suggestion not taken, leaves quick tags alone, and stays",
+              verdicts(a) == ["Sea": .rejected, "Sand": .rejected, "Beach": .rejected, "Boat": .rejected]
+                && library.tagsFor(a) == ["Kite"] && session.current == a && !session.canRejectAll,
+              "\(verdicts(a)) \(library.tagsFor(a))")
+        let stepsAfterRejectAll = session.steps.count
+        session.rejectAll()
+        check("with nothing left to refuse it does nothing", session.steps.count == stepsAfterRejectAll)
+        check("one undo takes reject-all back",
+              session.undo() && verdicts(a) == ["Sand": .rejected] && session.canRejectAll, "\(verdicts(a))")
+        session.toggle(key: 1)
+        session.rejectAll()
+        check("reject all leaves a suggestion that was taken",
+              library.hasTag(a, "Sea") && verdicts(a)["Sea"] == .accepted && verdicts(a)["Boat"] == .rejected)
+        session.undo(); session.undo()
+
         // Accept all.
         session.acceptAll()
         check("accept all takes every suggestion shown, but not the one that was refused",
@@ -327,6 +346,35 @@ struct TriageTest {
               Array(lateSession.strip.entries.prefix(lateBefore.count)) == lateBefore
                 && lateSession.strip.entries.suffix(2).map(\.tag) == ["Wave", "Surf"],
               "\(lateSession.strip.entries.map(\.tag))")
+
+        // Back to a finished video: the strip it had, so it can be judged again.
+        let j = media + "/j.mp4", j2 = media + "/j2.mp4"
+        store.record(j, suggestions: [sugg("Wave", 0.06), sugg("Surf", 0.04)], model: "test", framesSeen: 3)
+        store.record(j2, suggestions: [sugg("Pier", 0.06), sugg("Gull", 0.04)], model: "test", framesSeen: 3)
+        let revisit = TriageSession(library: library, suggestions: store, playlist: [j, j2], filter: .everything)
+        let jStrip = revisit.strip.entries
+        revisit.toggle(key: 1)
+        revisit.done()
+        check("done moved on, and what was left on j is ignored",
+              revisit.current == j2 && verdicts(j)["Surf"] == .ignored)
+        revisit.back()
+        check("back to a finished video shows the strip it had",
+              revisit.current == j && revisit.strip.entries == jStrip, "\(revisit.strip.entries.map(\.tag))")
+        check("...the tag it was given is there to take off, and what was left can still be answered",
+              revisit.isApplied(jStrip[0]) && !revisit.isRejected(jStrip[1]) && revisit.canRejectAll)
+        revisit.toggle(key: 2)
+        check("...and answering it now records the answer",
+              library.hasTag(j, "Surf") && verdicts(j)["Surf"] == .accepted)
+        revisit.done()
+
+        // Accept all with nothing left to accept is not another way to say Done.
+        check("there is something to accept on the next video", revisit.current == j2 && revisit.canAcceptAll)
+        revisit.rejectAll()
+        let stepsOnK = revisit.steps.count
+        revisit.acceptAll()
+        check("accept all does nothing when every suggestion was refused",
+              revisit.current == j2 && revisit.steps.count == stepsOnK && !revisit.canAcceptAll
+                && library.tagsFor(j2).isEmpty && store.triagedAt(j2) == nil)
 
         // The one-slot library undo is left alone.
         let h = media + "/h.mp4"

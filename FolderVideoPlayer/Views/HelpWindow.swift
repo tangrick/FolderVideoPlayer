@@ -291,6 +291,7 @@ private struct ShortcutsPage: View {
         Row(keys: ["1–9"], what: "Add the tag on that chip, or take it off again", where_: "Triage"),
         Row(keys: ["⌥1–9"], what: "That suggestion is wrong — it is not offered again", where_: "Triage"),
         Row(keys: ["A"], what: "Accept every suggestion shown, then move on", where_: "Triage"),
+        Row(keys: ["X"], what: "Reject every suggestion shown that you have not taken", where_: "Triage"),
         Row(keys: ["Return"], what: "Done with this video — on to the next", where_: "Triage"),
         Row(keys: ["↓", "⌘→"], what: "Skip: leave it for later, record nothing", where_: "Triage"),
         Row(keys: ["↑", "⌘←"], what: "Back to the video before", where_: "Triage"),

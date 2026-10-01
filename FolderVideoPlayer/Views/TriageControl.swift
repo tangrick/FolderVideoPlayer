@@ -152,6 +152,7 @@ extension AppModel {
         guard mods.isEmpty else { return false }
         switch characters.lowercased() {
         case "a": session.acceptAll()
+        case "x": session.rejectAll()
         case "t", "/": NotificationCenter.default.post(name: Self.triageFocusFieldNotification, object: nil)
         case "m": playback?.toggleTriageMute()
         default: return false

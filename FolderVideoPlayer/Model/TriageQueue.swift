@@ -214,25 +214,25 @@ struct TriageStrip: Equatable {
 
     /// Keys `1` to `9`.
     static let keyed = 9
-    /// Suggestions placed when the video opens; the rest of the row is quick tags.
-    static let suggestionLimit = 5
 
     private(set) var entries: [Entry] = []
 
     /// Build the strip for a video that has just opened.
     ///
-    /// Suggestions first, strongest first, at most five; then the session's
-    /// quick tags up to nine in all. A tag the video already carries is left
-    /// out — the engine is right, and saying so wastes a key — and a tag is
-    /// never listed twice, case aside.
+    /// Every pending suggestion first, strongest first, then the session's
+    /// quick tags. All of them are shown, because finishing a video dismisses
+    /// the suggestions it leaves and none should go unseen; the first nine
+    /// chips have keys and the rest are for the mouse. A tag the video already
+    /// carries is left out — the engine is right, and saying so wastes a key —
+    /// and a tag is never listed twice, case aside.
     static func open(suggestions: [TagSuggestion], carried: Set<String>, quick: [String]) -> TriageStrip {
         var strip = TriageStrip()
         var seen = carried
-        for s in strongestFirst(suggestions) where strip.entries.count < suggestionLimit {
+        for s in strongestFirst(suggestions) {
             guard seen.insert(s.tag.lowercased()).inserted else { continue }
             strip.entries.append(Entry(tag: s.tag, kind: .suggestion, confidence: s.confidence))
         }
-        for tag in quick where strip.entries.count < keyed {
+        for tag in quick {
             guard seen.insert(tag.lowercased()).inserted else { continue }
             strip.entries.append(Entry(tag: tag, kind: .quick, confidence: nil))
         }
