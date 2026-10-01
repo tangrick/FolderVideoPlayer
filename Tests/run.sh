@@ -131,6 +131,10 @@ sh "$here/run_library_overview.sh"
 # Moments: bookmarks and ranges in a video, per profile, carried by a move.
 sh "$here/run_moments.sh"
 
+# Library folders: every folder the library draws videos from, and taking one
+# out of the profile's library — what leaves, what must not, and undo.
+sh "$here/run_library_folders.sh"
+
 # Subtitle files and track choices: SRT/VTT parsing, discovery, and a saved
 # choice never applied to a file that lacks it.
 sh "$here/run_media_tracks.sh"

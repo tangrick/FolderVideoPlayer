@@ -120,6 +120,14 @@ struct MomentBook: Codable, Equatable {
 
     mutating func forget(_ key: String) { moments.removeAll { $0.key == key } }
 
+    /// Take out the moments on every video `belongs` says yes to, and return
+    /// them — a folder removed from the library.
+    mutating func take(where belongs: (String) -> Bool) -> [Moment] {
+        let taken = moments.filter { belongs($0.key) }
+        moments.removeAll { belongs($0.key) }
+        return taken
+    }
+
     static func load(at path: String) -> MomentBook {
         guard let data = FileManager.default.contents(atPath: path),
               let book = try? JSONDecoder().decode(MomentBook.self, from: data) else { return MomentBook() }
@@ -160,6 +168,29 @@ final class MomentStore: ObservableObject {
     }
 
     func moments(for path: String) -> [Moment] { book.moments(for: Paths.tagKey(path)) }
+
+    /// The videos this profile has marked moments on.
+    var videoKeys: Set<String> { Set(book.moments.map(\.key)) }
+
+    /// A folder removed from the library: its videos' moments go, and are
+    /// handed back for the undo.
+    func take(under folder: String) -> [Moment] {
+        let map = PathMap(from: folder, to: folder, isFolder: true)
+        var copy = book
+        let taken = copy.take { map.mapKey($0) != nil }
+        guard !taken.isEmpty else { return [] }
+        book = copy
+        persist()
+        return taken
+    }
+
+    func restore(_ moments: [Moment]) {
+        guard !moments.isEmpty else { return }
+        var copy = book
+        for moment in moments { try? copy.upsert(moment, now: moment.modifiedAt) }
+        book = copy
+        persist()
+    }
 
     /// A new moment at `seconds` on `path`, titled by its time. Returns it, so
     /// the list can put it into editing.

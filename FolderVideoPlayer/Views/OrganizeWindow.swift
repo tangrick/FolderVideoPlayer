@@ -42,6 +42,7 @@ struct OrganizeWindow: View {
     @State private var pendingVideo: String?
     @State private var handledRequest: UUID?
     @State private var scrollTarget: String?
+    @State private var showLibraryFolders = false
 
     /// Move To lists at most this many folders, the shallow ones first; the
     /// rest are one "Other…" away. A menu of every folder on a big share is
@@ -81,6 +82,17 @@ struct OrganizeWindow: View {
             if root == nil { root = app.playback?.root ?? library.pinned.first ?? library.recent.first }
         }
         .onChange(of: app.organizeRequest) { _, request in if let request { handle(request) } }
+        .sheet(isPresented: $showLibraryFolders) {
+            LibraryFoldersSheet(
+                organize: { folder in
+                    root = folder
+                    selectedFolder = nil
+                    showLibraryFolders = false
+                },
+                close: { showLibraryFolders = false })
+                .environmentObject(library)
+                .environmentObject(app)
+        }
         .task(id: "\(root ?? "")|\(app.organizeRevision)") { await reloadTree() }
         .task(id: "\(selectedFolder ?? "")|\(app.organizeRevision)") { await reloadVideos() }
     }
@@ -100,6 +112,12 @@ struct OrganizeWindow: View {
                 Label(root.map { ($0 as NSString).lastPathComponent } ?? "Choose a Folder", systemImage: "folder")
             }
             .fixedSize()
+            Button {
+                showLibraryFolders = true
+            } label: {
+                Label("Library Folders…", systemImage: "books.vertical")
+            }
+            .help("Every folder the library gets videos from — and a way to take one out")
             if loading {
                 ProgressView().controlSize(.small)
                 Text("Reading folders…").font(.caption).foregroundStyle(.secondary)

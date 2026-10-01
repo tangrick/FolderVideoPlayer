@@ -106,6 +106,8 @@ MODEL_SOURCES=(
     "$model/LibraryOverview.swift"
     # Moments (added Sep'26).
     "$model/Moments.swift"
+    # The list of every folder the library draws videos from (added Oct'26).
+    "$model/LibraryFolders.swift"
     # Audio and subtitle tracks (added Sep'26).
     "$model/MediaTracks.swift"
     # Opt-in background upkeep (added Sep'26).

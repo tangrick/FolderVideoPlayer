@@ -1125,6 +1125,8 @@ struct LibrarySidebar: View {
                         app.maintenance.setMaintained(root, false)
                         library.unpin(folder: root)
                     }
+                    Divider()
+                    Button("Remove from Library…") { app.removeFromLibrary(root) }
                 }
                 .onDrag {
                     NSItemProvider(object: String(index) as NSString)
@@ -1193,6 +1195,8 @@ struct LibrarySidebar: View {
                     if !library.isPinned(root) {
                         Button("Pin") { library.pin(folder: root) }
                     }
+                    Divider()
+                    Button("Remove from Library…") { app.removeFromLibrary(root) }
                 }
             }
         }

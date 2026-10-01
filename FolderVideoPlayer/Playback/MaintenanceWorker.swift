@@ -92,6 +92,16 @@ final class MaintenanceWorker: ObservableObject {
         if file != before { persist() }
     }
 
+    /// A folder taken out of the library: it, and any kept-up-to-date folder
+    /// inside it, stop being kept up to date. Returns the ones switched off,
+    /// so the undo can switch them back on.
+    func forgetFolders(under folder: String) -> [String] {
+        let map = PathMap(from: folder, to: folder, isFolder: true)
+        let off = file.settings.folders.filter { map.map($0) != nil }
+        forgetFolder(folder)
+        return off
+    }
+
     /// Opt a folder in or out. Out forgets its snapshot and its queued work:
     /// the folder is none of this feature's business any more.
     func setMaintained(_ folder: String, _ on: Bool) {

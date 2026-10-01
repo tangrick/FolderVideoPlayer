@@ -1228,6 +1228,160 @@ final class Library: ObservableObject {
         if pinned != pinsBefore { pinsChanged() }
     }
 
+    // MARK: - taking a folder out of the library
+
+    /// Videos in stores outside the library that hold something for this
+    /// profile — suggestions, moments — as tag keys. Set by the app, the same
+    /// shape as `pathMoved`, so the library does not own those stores.
+    var outsideKeys: (() -> Set<String>)?
+
+    /// Take every video under a folder out of the stores outside the library,
+    /// and hand back the way to put them back.
+    var forgetOutside: ((String) -> (() -> Void))?
+
+    /// Every video this profile holds anything for — tagged, rated, read for
+    /// facts, played, resumed, or with a suggestion or a moment — hidden ones
+    /// left out. Memory only.
+    func knownProfileVideoKeys() -> [String] {
+        knownVideoKeys(adding: outsideKeys?() ?? [])
+    }
+
+    /// What taking a folder out of this profile's library would remove,
+    /// counted from memory, for the question asked before it is done.
+    struct FolderPlan: Equatable {
+        var folder: String
+        /// Videos the profile holds anything for, under the folder.
+        var videos = 0
+        var tagged = 0
+        var withReadings = 0
+        /// A watch record or a resume point.
+        var withHistory = 0
+        /// Pinned and Recent entries at or under the folder.
+        var sidebarEntries = 0
+    }
+
+    func folderPlan(_ folder: String) -> FolderPlan {
+        let map = PathMap(from: folder, to: folder, isFolder: true)
+        var plan = FolderPlan(folder: folder)
+        for key in knownProfileVideoKeys() where map.mapKey(key) != nil {
+            plan.videos += 1
+            if !(tags[key] ?? []).isEmpty { plan.tagged += 1 }
+            if !facts.names(for: key).isEmpty { plan.withReadings += 1 }
+            if watch.entry(key) != nil || progress[Paths.tagPath(key)] != nil { plan.withHistory += 1 }
+        }
+        plan.sidebarEntries = (pinned + recent).filter { map.map($0) != nil }.count
+        return plan
+    }
+
+    /// What a removal took, kept for the undo. This session only: it is not
+    /// written down, so a quit ends the chance to take it back.
+    struct FolderRemoval {
+        let folder: String
+        let plan: FolderPlan
+        fileprivate var tags: [String: [String]] = [:]
+        fileprivate var facts: [String: [String]] = [:]
+        fileprivate var watch: [String: WatchLog.Entry] = [:]
+        fileprivate var progress: [String: Double] = [:]
+        fileprivate var progressSeen: [String: Double] = [:]
+        fileprivate var pinned: [(index: Int, path: String)] = []
+        fileprivate var recent: [(index: Int, path: String)] = []
+        fileprivate var session: Session?
+        fileprivate var putBackOutside: (() -> Void)?
+    }
+
+    /// The last removal, while it can still be undone.
+    @Published private(set) var lastFolderRemoval: FolderRemoval?
+
+    /// Take a folder out of the profile's library: out of Pinned and Recent,
+    /// and everything this profile holds for the videos under it — tags and
+    /// stars (also off this profile's copy on the shares, which is what the
+    /// Apple TV reads), readings, watch history, resume points, suggestions
+    /// and their verdicts, moments.
+    ///
+    /// Not touched: the files, other profiles, the AI's reading of the videos
+    /// (one file shared by every profile), transcripts (a share's transcripts
+    /// only ever accumulate, so a removal here would be sent straight back by
+    /// the next Mac to sync), and hidden videos, which stay as they are.
+    ///
+    /// Resume points are the one thing here that belongs to the Mac and not to
+    /// the profile. They are cleared all the same: left, they put the videos
+    /// back under Continue Watching in whichever profile is open.
+    @discardableResult
+    func removeFolderFromLibrary(_ folder: String) -> FolderRemoval? {
+        guard profileOpen else { return nil }
+        let map = PathMap(from: folder, to: folder, isFolder: true)
+        var removal = FolderRemoval(folder: folder, plan: folderPlan(folder))
+        let keys = knownProfileVideoKeys().filter { map.mapKey($0) != nil }
+        let pinsBefore = pinned
+
+        batch {
+            for key in keys {
+                let path = Paths.tagPath(key)
+                if let names = tags[key] { removal.tags[key] = names }
+                let readings = facts.names(for: key)
+                if !readings.isEmpty { removal.facts[key] = readings }
+                if let entry = watch.entry(key) { removal.watch[key] = entry }
+                forgetPath(path)
+            }
+            // One assignment each: `progress` is published, and thousands of
+            // single removals would tell every view thousands of times.
+            removal.progress = progress.filter { map.map($0.key) != nil && !isHidden($0.key) }
+            if !removal.progress.isEmpty { progress = progress.filter { removal.progress[$0.key] == nil } }
+            removal.progressSeen = progressSeen.filter { map.map($0.key) != nil && !isHidden($0.key) }
+            if !removal.progressSeen.isEmpty {
+                progressSeen = progressSeen.filter { removal.progressSeen[$0.key] == nil }
+            }
+            removal.pinned = pinned.enumerated().filter { map.map($0.element) != nil }
+                .map { (index: $0.offset, path: $0.element) }
+            removal.recent = recent.enumerated().filter { map.map($0.element) != nil }
+                .map { (index: $0.offset, path: $0.element) }
+            pinned.removeAll { map.map($0) != nil }
+            recent.removeAll { map.map($0) != nil }
+            if let current = session, map.map(current.path) != nil || current.root.map({ map.map($0) != nil }) == true {
+                removal.session = current
+                session = nil
+            }
+        }
+        removal.putBackOutside = forgetOutside?(folder)
+        lastFolderRemoval = removal
+        save()
+        if pinned != pinsBefore { pinsChanged() }
+        return removal
+    }
+
+    /// Put back what the last removal took. The tags and readings go out to the
+    /// shares again with the next sync, as any added tag does.
+    @discardableResult
+    func undoFolderRemoval() -> Bool {
+        guard profileOpen, let removal = lastFolderRemoval else { return false }
+        let pinsBefore = pinned
+        batch {
+            for (key, names) in removal.tags { setTags(names, for: Paths.tagPath(key)) }
+            for (key, names) in removal.facts { setFacts(names, for: Paths.tagPath(key)) }
+            if !removal.watch.isEmpty {
+                watch.restore(removal.watch)
+                watchRevision += 1
+                saveWatch()
+            }
+            progress.merge(removal.progress) { current, _ in current }
+            progressSeen.merge(removal.progressSeen) { current, _ in current }
+            for (index, path) in removal.pinned where !pinned.contains(path) {
+                pinned.insert(path, at: min(index, pinned.count))
+            }
+            for (index, path) in removal.recent where !recent.contains(path) && !pinned.contains(path) {
+                recent.insert(path, at: min(index, recent.count))
+            }
+            if session == nil { session = removal.session }
+            saveTags()
+            if !removal.facts.isEmpty { saveFacts() }
+        }
+        removal.putBackOutside?()
+        lastFolderRemoval = nil
+        save()
+        if pinned != pinsBefore { pinsChanged() }
+        return true
+    }
+
     /// Finish any relocation a crash interrupted.
     ///
     /// A journal entry whose file is at its new path and gone from its old one

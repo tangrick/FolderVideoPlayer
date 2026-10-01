@@ -122,6 +122,21 @@ struct FolderVideoPlayerApp: App {
                         rotation.move(from: old, to: new)
                         PlaybackController.moveTrackChoices(from: old, to: new)
                     }
+                    // The stores outside the library, for removing a folder from
+                    // it: what they hold for a profile's videos, taken out and
+                    // handed back for the undo. Background upkeep goes with it,
+                    // or it would read the folder straight back in.
+                    library.outsideKeys = { Set(suggestions.byVideo.keys).union(moments.videoKeys) }
+                    library.forgetOutside = { folder in
+                        let verdicts = suggestions.take(under: folder)
+                        let marked = moments.take(under: folder)
+                        let kept = app.maintenance.forgetFolders(under: folder)
+                        return {
+                            suggestions.restore(verdicts)
+                            moments.restore(marked)
+                            for folder in kept { app.maintenance.setMaintained(folder, true) }
+                        }
+                    }
                     // A whole folder at once: each store writes once.
                     library.pathsMoved = { pairs in
                         journal.moveTranscripts(pairs)

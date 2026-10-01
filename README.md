@@ -46,6 +46,12 @@ no account, no cloud service, and no video, frame or tag leaves the machine.
   nothing. Tags, stars, resume points and subtitle files go with every move —
   for everyone who tagged the videos, on this Mac, other Macs and the Apple TV.
   A video moved to the Trash keeps its tags out of sight until it is put back.
+  **Library Folders…** in that window lists every folder the open profile gets
+  videos from — including ones that are there only because of tags or watch
+  history — and **Remove from Library…** (also in a folder's right-click menu)
+  forgets what the profile holds for a folder's videos and its place in Pinned
+  and Recent, after asking, with an undo until you quit. The files are never
+  touched.
 - **Optional AI features**, downloaded from inside the app (Settings → AI):
 
   | Bundle | What it adds | Download |

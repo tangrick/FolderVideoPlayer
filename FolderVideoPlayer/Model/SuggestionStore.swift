@@ -287,6 +287,26 @@ final class SuggestionStore: ObservableObject {
         for tag in dismissed { onVerdict?(path, tag, .ignored) }
     }
 
+    /// Take out every entry for a video under `folder` and hand it back — a
+    /// folder removed from the library. The verdicts go with it: they are this
+    /// profile's judgement of those videos, and the profile is saying it has
+    /// none. `restore` puts them back.
+    func take(under folder: String) -> [String: VideoSuggestions] {
+        guard profileOpen else { return [:] }
+        let map = PathMap(from: folder, to: folder, isFolder: true)
+        let taken = byVideo.filter { map.mapKey($0.key) != nil }
+        guard !taken.isEmpty else { return [:] }
+        for key in taken.keys { byVideo.removeValue(forKey: key) }
+        scheduleSave()
+        return taken
+    }
+
+    func restore(_ taken: [String: VideoSuggestions]) {
+        guard profileOpen, !taken.isEmpty else { return }
+        for (key, entry) in taken { byVideo[key] = entry }
+        scheduleSave()
+    }
+
     /// Forget everything about a video (used when its file is gone).
     func forget(_ path: String) {
         byVideo.removeValue(forKey: Paths.tagKey(path))

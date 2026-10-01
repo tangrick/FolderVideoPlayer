@@ -134,6 +134,11 @@ struct WatchLog: Codable, Equatable {
 
     mutating func forget(_ key: String) { entries.removeValue(forKey: key) }
 
+    /// Put entries back that were forgotten — the undo of removing a folder.
+    mutating func restore(_ saved: [String: Entry]) {
+        for (key, entry) in saved { entries[key] = entry }
+    }
+
     // MARK: - disk
 
     /// An absent or unreadable file is an empty log; a file from a NEWER build

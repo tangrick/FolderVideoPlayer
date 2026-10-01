@@ -325,6 +325,14 @@ struct MainMenu: Commands {
             }
             .keyboardShortcut("o", modifiers: [.command, .option])
 
+            // The last "Remove from Library…", while it can still be taken back.
+            Button(library.lastFolderRemoval.map {
+                "Undo Remove “\(($0.folder as NSString).lastPathComponent)” from Library"
+            } ?? "Undo Remove from Library") {
+                app.undoFolderRemoval()
+            }
+            .disabled(library.lastFolderRemoval == nil)
+
             // Named for what it lists. There are two recent lists in this menu
             // now, and "Open Recent" alone would not say which.
             Menu("Open Recent Folder") {
