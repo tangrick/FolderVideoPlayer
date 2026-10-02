@@ -137,6 +137,9 @@ MODEL_SOURCES=(
     # 6.3: the half of face recognition that is not a model — the crop-keyed
     # cache, the per-profile registry, the matcher and the prominence clustering.
     "$model/FaceRegistry.swift"
+    # The people found in each video, kept so the Add Faces sheet looks once.
+    # `FaceStore` holds one, so nothing compiles without it.
+    "$model/VideoFaceCache.swift"
     # A profile as one document: its bundle layout, manifest and the one-time
     # migration of the legacy files into it. `Paths` builds every per-profile
     # path from this, so the whole suite stops compiling without it.

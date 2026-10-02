@@ -433,10 +433,18 @@ struct FacePickerSheet: View {
     }
 }
 
-/// Step-by-step "add a person": the engine detects the biggest few faces in a
-/// source (a video or photo) and the user picks which one to name. When opened
-/// from the classify panel it is seeded with the current video, so the faces
-/// already on screen are offered immediately — no file picker needed.
+/// Name the faces in a video, one after another, until Done.
+///
+/// The engine finds the most prominent people in a source (a video or photo)
+/// and the user says who each one is: pick a face, pick the person or type a
+/// new name, and go on to the next. Every add is saved as it is made — the
+/// sheet used to close after ONE face, and looked at the whole video again
+/// each time it was reopened for the next. Now the video is looked at once
+/// (`FaceStore.detectFaces` keeps what it found), a face that is already
+/// someone says so, and a wrong one can be taken back where it was made.
+///
+/// When opened from the classify panel it is seeded with the current video, so
+/// the faces already on screen are offered immediately — no file picker needed.
 struct AddPersonSheet: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var faceStore: FaceStore
@@ -448,9 +456,18 @@ struct AddPersonSheet: View {
 
     @State private var sourcePath: String?
     @State private var faces: [String] = []
+    /// Who each face is — bound to a person, or only looking like one — read
+    /// again after every add and removal so the grid shows what was saved,
+    /// not what the sheet hoped was saved.
+    @State private var identities: [String: FaceIdentity] = [:]
     @State private var selectedFace: String?
     @State private var name = ""
     @State private var detecting = false
+    /// An add or a removal is on its way to the registry. The buttons wait for
+    /// it, so Return held down cannot add one face twice.
+    @State private var working = false
+    /// Bumped by Look Again: the same file, looked at afresh.
+    @State private var lookAgain = 0
     /// Set when the user picked someone they already have, instead of typing a
     /// new name. The chosen face is then MERGED into that person.
     @State private var pickedExisting: String?
@@ -458,10 +475,39 @@ struct AddPersonSheet: View {
     /// face instead of a blurry mid-video crop. Only applies to new people —
     /// matching to an existing person reuses that person's own photo.
     @State private var photoPath: String?
+    /// The video each name was put on by an add made in this sitting, keyed by
+    /// the folded name. Taking the last such face back takes the tag off again;
+    /// a tag the video already carried is never this sheet's to remove.
+    @State private var taggedHere: [String: String] = [:]
+    @State private var problem: String?
+
+    /// What the detection pass is for: a file, and how many times it has been
+    /// asked to look again.
+    private struct Pass: Equatable {
+        var path: String?
+        var again: Int
+    }
 
     init(initialVideo: String? = nil) {
         self.initialVideo = initialVideo
         _sourcePath = State(initialValue: initialVideo)
+    }
+
+    /// The name the selected face is about to be given.
+    private var target: String {
+        (pickedExisting ?? name).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The person the selected face already belongs to, when it has one.
+    private var selectedOwner: String? {
+        guard let face = selectedFace, let who = identities[face], who.bound else { return nil }
+        return who.name
+    }
+
+    /// Who the selected face looks like, when nobody has said.
+    private var selectedGuess: String? {
+        guard let face = selectedFace, let who = identities[face], !who.bound else { return nil }
+        return who.name
     }
 
     var body: some View {
@@ -471,7 +517,7 @@ struct AddPersonSheet: View {
             // state without a close control is a dead end: the user asked
             // to leave, and there was nothing on screen that let them.
             HStack {
-                Text("Add a face").font(.headline)
+                Text("Add faces").font(.headline)
                 Spacer()
                 Button {
                     dismiss()
@@ -481,10 +527,11 @@ struct AddPersonSheet: View {
                 }
                 .buttonStyle(.borderless)
                 .keyboardShortcut(.escape, modifiers: [])
-                .help("Close without adding anyone")
-                .accessibilityLabel("Close without adding anyone")
+                .help("Close — everything added so far is kept")
+                .accessibilityLabel("Close")
             }
-            Text("Pick a face the app found, then match it to a person you know.")
+            Text("Pick a face, say who it is, and go on to the next. "
+                 + "Each one is saved as you add it.")
                 .font(.caption).foregroundStyle(.secondary)
 
             if let path = sourcePath {
@@ -496,7 +543,8 @@ struct AddPersonSheet: View {
             if detecting {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("Detecting faces…").font(.caption).foregroundStyle(.secondary)
+                    Text("Looking for faces — only needed once for each video.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             } else if sourcePath == nil {
                 VStack(alignment: .leading, spacing: 6) {
@@ -507,15 +555,29 @@ struct AddPersonSheet: View {
             } else if faces.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("No faces found in that file.").font(.caption).foregroundStyle(.secondary)
-                    Button("Choose a different file…") { sourcePath = nil }
+                    HStack {
+                        Button("Look Again") { lookAgain += 1 }
+                            .help("Go through the file again instead of using what was found last time")
+                        Button("Choose a different file…") { setSource(nil) }
+                    }
                 }
             } else {
-                // Section 1 — the faces the app found but could not put a name
-                // to. The user picks the one they want to identify.
-                Text("STEP 1 — Faces found in this video")
-                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Text("Select the face you want to name.")
+                // Section 1 — the people the app found, each saying who they
+                // are when it knows.
+                HStack {
+                    Text("STEP 1 — Faces found in this video")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Look Again") { lookAgain += 1 }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                        .disabled(working)
+                        .help("Go through the video again instead of using what was found last time")
+                }
+                Text("Select a face. A name under it means it is already that person; "
+                     + "a name with a question mark is the app's guess.")
                     .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 5), spacing: 8) {
                     ForEach(faces, id: \.self) { hash in
@@ -525,45 +587,59 @@ struct AddPersonSheet: View {
 
                 Divider().padding(.vertical, 2)
 
-                // Section 2 — match it to a person already in the library, or
-                // type a brand-new name.
-                Text("STEP 2 — Match it to someone you know")
-                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                if let face = selectedFace, let owner = selectedOwner {
+                    namedSection(face, owner)
+                } else {
+                    // Section 2 — match it to a person already in the library,
+                    // or type a brand-new name.
+                    Text("STEP 2 — Match it to someone you know")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
 
-                knownPeopleSection
+                    knownPeopleSection
 
-                Text(faceStore.people.isEmpty
-                     ? "You have no people yet — type a name below."
-                     : "Pick the person this face belongs to, or type a new name below.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    Text(matchHint)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
 
-                TextField("New name", text: $name)
-                    .textFieldStyle(.roundedBorder)
-                    .onChange(of: name) { _, _ in
-                        // Typing over a picked person means a new name again.
-                        if let picked = pickedExisting, picked != name { pickedExisting = nil }
+                    TextField("New name", text: $name)
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: name) { _, typed in
+                            // Typing a name means a new person, not the picked one.
+                            if !typed.isEmpty { pickedExisting = nil }
+                        }
+                        .onSubmit(add)
+
+                    // A new person (not a match to an existing one) can carry a
+                    // portrait photo, so their row shows a clear face instead of a
+                    // blurry mid-video crop. The engine picks the biggest face in
+                    // the photo and makes it the person's thumbnail.
+                    if pickedExisting == nil && !target.isEmpty {
+                        photoSection
                     }
-                    .onSubmit(add)
+                }
 
-                // A new person (not a match to an existing one) can carry a
-                // portrait photo, so their row shows a clear face instead of a
-                // blurry mid-video crop. The engine picks the biggest face in
-                // the photo and makes it the person's thumbnail.
-                if pickedExisting == nil && !name.trimmingCharacters(in: .whitespaces).isEmpty {
-                    photoSection
+                if let problem {
+                    Text(problem).font(.caption).foregroundStyle(.red)
                 }
 
                 HStack {
-                    Button("Cancel") { dismiss() }
+                    Button("Done") { dismiss() }
                         .keyboardShortcut(.cancelAction)
+                        .help("Close — everything added so far is kept")
+                    Text(namedSummary)
+                        .font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    if selectedFace == nil {
+                    if working {
+                        ProgressView().controlSize(.small)
+                    } else if selectedFace == nil {
                         Text("Select a face first")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    Button(pickedExisting == nil ? "Add Person" : "This is \(pickedExisting ?? "")") { add() }
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || selectedFace == nil)
+                    if selectedOwner == nil {
+                        Button(pickedExisting == nil ? "Add Person" : "This is \(pickedExisting ?? "")") { add() }
+                            .keyboardShortcut(.defaultAction)
+                            .disabled(target.isEmpty || selectedFace == nil || working)
+                    }
                 }
             }
         }
@@ -574,13 +650,59 @@ struct AddPersonSheet: View {
             // opened straight from the classify panel.
             if faceStore.people.isEmpty { await faceStore.reload() }
         }
-        .task(id: sourcePath) {
+        .task(id: Pass(path: sourcePath, again: lookAgain)) {
             guard let path = sourcePath else { return }
             detecting = true
-            defer { detecting = false }
-            faces = await faceStore.detectFaces(path: path)
-            selectedFace = nil
+            let found = await faceStore.detectFaces(path: path, lookAgain: lookAgain > 0)
+            let who = await faceStore.identify(found)
+            guard !Task.isCancelled else { return }
+            faces = found
+            identities = who
+            detecting = false
+            selectNext(after: nil)
         }
+    }
+
+    private var namedSummary: String {
+        let named = faces.filter { identities[$0]?.bound == true }.count
+        return "\(named) of \(faces.count) named"
+    }
+
+    private var matchHint: String {
+        if let guess = selectedGuess, pickedExisting == guess {
+            return "This looks like \(guess). Press Return if it is — or pick someone else, "
+                 + "or type a new name below."
+        }
+        return faceStore.people.isEmpty
+            ? "You have no people yet — type a name below."
+            : "Pick the person this face belongs to, or type a new name below."
+    }
+
+    /// A face that is already someone: say so, and offer the way back. Shown
+    /// in place of step 2, because a face bound to one person and then matched
+    /// to a second would be both of them from then on.
+    private func namedSection(_ face: String, _ owner: String) -> some View {
+        let addedHere = taggedHere[owner.casefolded] != nil
+        return HStack(spacing: 10) {
+            faceThumb(face, size: 44)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("This face is \(owner)")
+                    .font(.callout.weight(.semibold))
+                Text(addedHere
+                     ? "Added just now, and this video is tagged \(owner)."
+                     : "The app recognises \(owner) by it.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Not \(owner)") { remove(face, from: owner) }
+                .disabled(working)
+                .help(addedHere
+                      ? "Takes this face off \(owner), and the tag it put on this video"
+                      : "Takes this face off \(owner). The video's tags are left alone.")
+        }
+        .padding(8)
+        .background(Color(nsColor: .underPageBackgroundColor).opacity(0.5),
+                    in: RoundedRectangle(cornerRadius: 8))
     }
 
     /// The people already in the library — the match targets. Picking one
@@ -588,9 +710,7 @@ struct AddPersonSheet: View {
     /// from this angle next time instead of creating a duplicate.
     @ViewBuilder
     private var knownPeopleSection: some View {
-        let known = faceStore.people.sorted {
-            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-        }
+        let known = knownPeople
         if !known.isEmpty {
             ScrollView(.vertical, showsIndicators: true) {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 5),
@@ -603,6 +723,20 @@ struct AddPersonSheet: View {
             }
             .frame(maxHeight: 150)
         }
+    }
+
+    /// Alphabetical, except that whoever the selected face looks like leads:
+    /// the grid scrolls, and a guess picked for the user must not be a ring
+    /// around somebody out of sight.
+    private var knownPeople: [FacePerson] {
+        var known = faceStore.people.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+        if let guess = selectedGuess,
+           let index = known.firstIndex(where: { $0.name == guess }) {
+            known.insert(known.remove(at: index), at: 0)
+        }
+        return known
     }
 
     /// Optional portrait photo for a brand-new person: preview + pick +
@@ -677,29 +811,14 @@ struct AddPersonSheet: View {
     private func knownPersonChip(_ person: FacePerson) -> some View {
         let chosen = pickedExisting == person.name
         return Button {
-            if chosen {
-                pickedExisting = nil
-                name = ""
-            } else {
-                pickedExisting = person.name
-                name = person.name
-            }
+            // Picking a person and typing a name are two answers to the same
+            // question, so each clears the other.
+            pickedExisting = chosen ? nil : person.name
+            name = ""
         } label: {
             VStack(spacing: 3) {
-                Group {
-                    if let hash = person.representative, let image = FaceStore.thumbnail(hash) {
-                        image
-                            .resizable()
-                            .interpolation(.high)
-                            .aspectRatio(contentMode: .fill)
-                    } else {
-                        Image(systemName: "person.crop.circle")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .frame(width: 56, height: 56)
-                .clipShape(Circle())
-                .overlay(Circle().stroke(chosen ? Color.accentColor : .clear, lineWidth: 3))
+                faceThumb(person.representative, size: 56)
+                    .overlay(Circle().stroke(chosen ? Color.accentColor : .clear, lineWidth: 3))
                 Text(person.name)
                     .font(.caption2)
                     .lineLimit(2)
@@ -712,27 +831,55 @@ struct AddPersonSheet: View {
                      : "This face is \(person.name)")
     }
 
+    /// One found face: its crop, and under it who it is. A tick means the
+    /// registry holds it under that name; a question mark means the app is
+    /// guessing and nothing has been saved.
     private func faceChoice(_ hash: String) -> some View {
-        Button {
-            selectedFace = (selectedFace == hash) ? nil : hash
+        let who = identities[hash]
+        let bound = who?.bound == true
+        return Button {
+            select(selectedFace == hash ? nil : hash)
         } label: {
-            Group {
-                if let image = FaceStore.thumbnail(hash) {
-                    image
-                        .resizable()
-                        .interpolation(.high)
-                        .aspectRatio(contentMode: .fill)
-                } else {
-                    Image(systemName: "person.crop.circle")
-                        .foregroundStyle(.secondary)
-                }
+            VStack(spacing: 3) {
+                faceThumb(hash, size: 64)
+                    .overlay(Circle().stroke(
+                        selectedFace == hash ? Color.accentColor : .clear, lineWidth: 3))
+                    .overlay(alignment: .bottomTrailing) {
+                        if bound {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 16))
+                                .foregroundStyle(.white, .green)
+                        }
+                    }
+                // A line is always there, so naming a face never moves the grid.
+                Text(who.map { bound ? $0.name : "\($0.name)?" } ?? " ")
+                    .font(.caption2)
+                    .foregroundStyle(bound ? .primary : .secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: 76)
             }
-            .frame(width: 64, height: 64)
-            .clipShape(Circle())
-            .overlay(Circle().stroke(
-                selectedFace == hash ? Color.accentColor : .clear, lineWidth: 3))
         }
         .buttonStyle(.plain)
+        .help(who.map { bound ? "This face is \($0.name)" : "Looks like \($0.name) — not confirmed" }
+              ?? "Nobody the app knows yet")
+    }
+
+    /// A face crop — or a person's — as a round thumbnail, with the plain
+    /// person symbol when there is no picture on disk.
+    private func faceThumb(_ hash: String?, size: CGFloat) -> some View {
+        Group {
+            if let hash, let image = FaceStore.thumbnail(hash) {
+                image
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Image(systemName: "person.crop.circle")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
     }
 
     private func pickSource() {
@@ -742,29 +889,99 @@ struct AddPersonSheet: View {
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.movie, .image]
         if panel.runModal() == .OK, let url = panel.url {
-            sourcePath = url.path
+            setSource(url.path)
         }
     }
 
+    /// Move to another file — or to none, which is the file picker again.
+    /// Everything that was about the old one goes with it.
+    private func setSource(_ path: String?) {
+        sourcePath = path
+        lookAgain = 0
+        faces = []
+        identities = [:]
+        taggedHere = [:]
+        select(nil)
+    }
+
+    /// Select a face, or nothing. A face that looks like someone starts with
+    /// them picked, so confirming the app's guess is one press of Return —
+    /// but only picked: nothing is saved until the user says so.
+    private func select(_ hash: String?) {
+        selectedFace = hash
+        name = ""
+        photoPath = nil
+        problem = nil
+        if let hash, let who = identities[hash], !who.bound {
+            pickedExisting = who.name
+        } else {
+            pickedExisting = nil
+        }
+    }
+
+    /// On to the next face nobody has named, going round from the one just
+    /// dealt with — so a stranger skipped on purpose is not offered again
+    /// until the rest are done.
+    private func selectNext(after hash: String?) {
+        let start = hash.flatMap { faces.firstIndex(of: $0) }.map { $0 + 1 } ?? 0
+        let round = faces[start...] + faces[..<start]
+        select(round.first { identities[$0]?.bound != true })
+    }
+
+    /// The source gets the tag whenever it is a VIDEO — whether it is the
+    /// video playing now or one the user picked. The face was taken from
+    /// it, so that video definitely shows this person; a photo is not part
+    /// of the library and gets nothing.
+    private var sourceVideo: String? {
+        guard let p = sourcePath else { return nil }
+        let ext = URL(fileURLWithPath: p).pathExtension.lowercased()
+        return videoExtensions.contains(ext) ? p : nil
+    }
+
     private func add() {
-        guard let face = selectedFace else { return }
+        guard let face = selectedFace, selectedOwner == nil, !working else { return }
         // Picking an existing person wins over the text field, so the face
         // merges into that person instead of creating a near-duplicate name.
-        let n = (pickedExisting ?? name).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !n.isEmpty else { return }
-        // The source gets the tag whenever it is a VIDEO — whether it is the
-        // video playing now or one the user picked. The face was taken from
-        // it, so that video definitely shows this person; a photo is not part
-        // of the library and gets nothing.
-        let sourceVideo: String? = {
-            guard let p = sourcePath else { return nil }
-            let ext = URL(fileURLWithPath: p).pathExtension.lowercased()
-            return videoExtensions.contains(ext) ? p : nil
-        }()
-        dismiss()
+        let who = target
+        guard !who.isEmpty else { return }
+        // A portrait is for a new person only: it would replace the picture
+        // an existing one already has.
+        let photo = pickedExisting == nil ? photoPath : nil
+        working = true
+        problem = nil
         Task {
-            await faceStore.addPerson(n, faceHash: face, sourceVideo: sourceVideo,
-                                      photoPath: photoPath)
+            let done = await faceStore.addPerson(who, faceHash: face,
+                                                 sourceVideo: sourceVideo, photoPath: photo)
+            if let video = done?.tagged { taggedHere[who.casefolded] = video }
+            identities = await faceStore.identify(faces)
+            working = false
+            if identities[face]?.bound == true {
+                selectNext(after: face)
+            } else {
+                problem = "That face could not be added — nothing was changed."
+            }
+        }
+    }
+
+    /// Take a face back off the person it is filed under. The tag goes with it
+    /// only when an add in this sitting put it on the video, and only once no
+    /// other face here still says that person is in it.
+    private func remove(_ face: String, from owner: String) {
+        guard !working else { return }
+        let key = owner.casefolded
+        let stillHere = faces.contains {
+            $0 != face && identities[$0]?.bound == true
+                && identities[$0]?.name.casefolded == key
+        }
+        let untag = stillHere ? nil : taggedHere[key]
+        working = true
+        problem = nil
+        Task {
+            await faceStore.removeFace(face, from: owner, untag: untag)
+            if untag != nil { taggedHere[key] = nil }
+            identities = await faceStore.identify(faces)
+            working = false
+            select(face)
         }
     }
 }

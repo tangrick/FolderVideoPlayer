@@ -114,7 +114,7 @@ struct TagPanel: View {
             //
             // The entire section is skipped when face recognition is off:
             // people ARE the face feature here, so leaving the header and an
-            // "Add Face…" button behind would promise something the app has
+            // "Add Faces…" button behind would promise something the app has
             // been told not to do.
             if library.facesEnabled {
             foldHeader("People", icon: "person.2", open: peopleOpen) {
@@ -147,11 +147,11 @@ struct TagPanel: View {
                     guard app.requireAI(.faces) else { return }
                     showingAddFace = true
                 } label: {
-                    Label("Add Face…", systemImage: "person.badge.plus")
+                    Label("Add Faces…", systemImage: "person.badge.plus")
                         .font(.caption)
                 }
                 .buttonStyle(.borderless)
-                .help("Add a person from the current video — pick the face, name it, and the app finds them everywhere")
+                .help("Name the people in the current video — pick a face, say who it is, and go on to the next. The app finds them everywhere")
             }
             Divider().padding(.vertical, 2)
             }

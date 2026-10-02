@@ -68,6 +68,12 @@ final class FaceStore: ObservableObject {
     /// costs a full detection pass to rebuild.
     private let indexFile = (Paths.support as NSString)
         .appendingPathComponent("face_index.json")
+    /// The people found in each video — what the Add Faces sheet shows — so a
+    /// video is looked at once rather than every time the sheet opens. Not per
+    /// profile either, for the same reason as the index above.
+    private var found = VideoFaceCache()
+    private let foundFile = (Paths.support as NSString)
+        .appendingPathComponent("video_faces.json")
     /// Whose people these are. The registry — which NAME is bound to which face
     /// — is a judgement, so it is kept per profile.
     private var profile: String
@@ -83,6 +89,7 @@ final class FaceStore: ObservableObject {
             for (h, paths) in obj { map[h] = Set(paths) }
             faceVideos = map
         }
+        found = VideoFaceCache.load(foundFile)
         // Named people must survive a relaunch WITHOUT waiting for the engine.
         // The registry is a plain file; reading it here means the People
         // section is populated the moment a window opens, even before the
@@ -147,13 +154,24 @@ final class FaceStore: ObservableObject {
     }
 
     /// A face thumbnail as an Image, loaded lazily from faces/<hash>.jpg.
+    ///
+    /// Kept once read. Every view that shows a face asks from its `body`, and a
+    /// sheet with ten faces and a grid of people re-read and re-decoded every
+    /// one of them on each keystroke in its name field. The hash is the crop's
+    /// own, so a picture kept under it can never be the wrong one.
     static func thumbnail(_ hash: String) -> Image? {
+        if let kept = thumbnails.object(forKey: hash as NSString) {
+            return Image(nsImage: kept)
+        }
         let path = (Paths.support as NSString)
             .appendingPathComponent("faces/\(hash.prefix(2))/\(hash).jpg")
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
               let ns = NSImage(data: data) else { return nil }
+        thumbnails.setObject(ns, forKey: hash as NSString)
         return Image(nsImage: ns)
     }
+
+    private static let thumbnails = NSCache<NSString, NSImage>()
 
     func attach(engine: AnalysisEngine?, library: Library?) {
         self.engine = engine
@@ -256,15 +274,76 @@ final class FaceStore: ObservableObject {
 
     // MARK: - add a person (face-first)
 
-    /// 'Add a person' step 1: the biggest faces (by pixel area) in one video
-    /// or image, for the user to choose from. Capped at 5 by the engine.
-    func detectFaces(path: String) async -> [String] {
+    /// 'Add a person' step 1: the most prominent people in one video or image,
+    /// one face each, for the user to choose from.
+    ///
+    /// Looked for ONCE per file. The answer is kept beside the file's size and
+    /// date, so opening the sheet on the same video again shows the same faces
+    /// straight away; a file that has changed since is looked at afresh.
+    /// `lookAgain` is the user saying the kept answer is wrong.
+    ///
+    /// A pass that FAILED keeps nothing — no models, an unreadable file — so
+    /// the next opening tries again rather than remembering "nobody".
+    func detectFaces(path: String, lookAgain: Bool = false) async -> [String] {
         guard !profile.isEmpty else { return [] }
-        if let registry = coreMLRegistry {
-            return (try? await registry.detectFaces(path: path)) ?? []
+        // A kept face whose thumbnail has since gone would be an empty circle
+        // nobody could recognise, so that counts as not having looked.
+        if !lookAgain, let kept = found.faces(for: path),
+           kept.allSatisfy(Self.hasThumbnail) {
+            return kept
         }
-        guard let engine else { return [] }
-        return (try? await engine.detectFaces(path: path)) ?? []
+        // The file as it is BEFORE the pass: one that changes underneath it is
+        // not filed under the identity it ends up with.
+        let revision = SourceRevision.of(path)
+        let faces: [String]
+        if let registry = coreMLRegistry {
+            guard let got = try? await registry.detectFaces(
+                path: path, limit: FaceRegistry.sheetChoices) else { return [] }
+            faces = got
+        } else {
+            guard let engine, let got = try? await engine.detectFaces(path: path)
+            else { return [] }
+            faces = got
+        }
+        if let revision, revision.matches(path) {
+            found.record(faces, for: path, revision: revision)
+            found.save(foundFile)
+        }
+        return faces
+    }
+
+    private static func hasThumbnail(_ hash: String) -> Bool {
+        FileManager.default.fileExists(
+            atPath: FaceRegistry.thumbnailPath(root: Paths.support, hash: hash))
+    }
+
+    /// Who each of these faces is — bound to a person, or only looking like
+    /// one. Read off disk away from the main thread: it compares every face
+    /// against every vector every named person has.
+    func identify(_ hashes: [String]) async -> [String: FaceIdentity] {
+        guard !profile.isEmpty, !hashes.isEmpty else { return [:] }
+        let reader = fileRegistry
+        return await Task.detached(priority: .userInitiated) {
+            reader.identify(hashes)
+        }.value
+    }
+
+    /// The registry as a FILE, whichever engine is running: the names and the
+    /// cached vectors are read — and a face taken back off a person — with no
+    /// model loaded. The Python engine re-reads `faces.json` on every command,
+    /// so it sees an edit made here.
+    private var fileRegistry: FaceRegistry {
+        coreMLRegistry ?? FaceRegistry(root: Paths.support, profile: profile)
+    }
+
+    /// What `addPerson` did, so the sheet can show it and take it back.
+    struct FaceAdd: Equatable {
+        let name: String
+        let faceHash: String
+        /// The video that GAINED the tag because of this add — nil when there
+        /// was no source video, or it carried the name already. Undoing the
+        /// add takes the tag off only where the add put it on.
+        let tagged: String?
     }
 
     /// 'Add a person': bind the chosen face to the name and tag the source
@@ -276,24 +355,27 @@ final class FaceStore: ObservableObject {
     /// against the named people, suggesting the name wherever it appears. The
     /// tag is created FROM face recognition — never the other way around — and
     /// is usable the moment the person is added.
+    ///
+    /// Returns nil when nothing was bound.
+    @discardableResult
     func addPerson(_ name: String, faceHash: String, sourceVideo: String?,
-                   photoPath: String? = nil) async {
-        guard !profile.isEmpty else { return }
-        guard let library else { return }
+                   photoPath: String? = nil) async -> FaceAdd? {
+        guard !profile.isEmpty else { return nil }
+        guard let library else { return nil }
         let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleaned.isEmpty, !faceHash.isEmpty else { return }
+        guard !cleaned.isEmpty, !faceHash.isEmpty else { return nil }
         // 1. Bind name -> face hash (merge, never replace). Picking an existing
         //    person lands here with their name, so the face joins that person.
         if let registry = coreMLRegistry {
             do { try await registry.bind(name: cleaned, hashes: [faceHash]) }
-            catch { return }
+            catch { return nil }
             if let photoPath, photoPath != sourceVideo {
                 _ = try? await registry.setPhoto(name: cleaned, path: photoPath)
             }
         } else {
-            guard let engine else { return }
+            guard let engine else { return nil }
             do { try await engine.nameCluster(cleaned, hashes: [faceHash]) }
-            catch { return }
+            catch { return nil }
             // A portrait photo only makes sense for a brand-new person — it
             // would override an existing person's established thumbnail.
             if let photoPath, photoPath != sourceVideo {
@@ -305,16 +387,38 @@ final class FaceStore: ObservableObject {
         //    from it, so the video HAS this person in it and the tag is usable
         //    right now. This is what makes "select a known person" mean
         //    "this video contains them".
+        var tagged: String?
         if let sourceVideo {
             recordFaces([faceHash], for: sourceVideo)
             var have = library.tagsFor(sourceVideo)
             if !have.contains(where: { $0.caseInsensitiveCompare(cleaned) == .orderedSame }) {
                 have.append(cleaned)
                 library.setTags(have, for: sourceVideo)
+                tagged = sourceVideo
             }
             library.saveTags()
         }
         // 3. Reload so the person appears in the People section at once.
+        await reload()
+        return FaceAdd(name: cleaned, faceHash: faceHash, tagged: tagged)
+    }
+
+    /// Take a face back off a person: "that is not them", and the undo of an
+    /// add made a moment ago.
+    ///
+    /// `untag` is the video to take the name off as well, and is only ever the
+    /// one an add in the same sitting put it on (`FaceAdd.tagged`) — a tag the
+    /// video already carried was somebody's decision, not this face's doing.
+    func removeFace(_ hash: String, from name: String, untag video: String? = nil) async {
+        guard !profile.isEmpty else { return }
+        let removed = (try? await fileRegistry.unbind(name: name, hashes: [hash])) ?? 0
+        guard removed > 0 else { return }
+        if let video, let library {
+            let kept = library.tagsFor(video)
+                .filter { $0.caseInsensitiveCompare(name) != .orderedSame }
+            library.setTags(kept, for: video)
+            library.saveTags()
+        }
         await reload()
     }
 

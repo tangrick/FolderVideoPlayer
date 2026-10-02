@@ -345,6 +345,55 @@ struct FaceRegistryTest {
         checkEqual("bind refuses an empty face list",
                    (try? await registry.bind(name: "Ann", hashes: [])) == nil, true)
 
+        // --- unbind: taking one face back ---------------------------------------
+        //
+        // The Add Faces sheet names several people in one sitting, so a wrong
+        // one has to come off where it was put on — one face, not the person.
+        try writeTree(registry: baseRegistry)
+        checkEqual("unbind takes one face off, however the name is spelled",
+                   try await registry.unbind(name: "QUINCY", hashes: [quincyHashes[0]]), 1)
+        checkEqual("...and leaves the person's other faces",
+                   registry.registry()["Quincy"], [quincyHashes[1]])
+        checkEqual("...and everybody else alone",
+                   registry.registry()["Bob Meyer"], baseRegistry["Bob Meyer"])
+        checkEqual("a face the person never had comes off as nothing",
+                   try await registry.unbind(name: "Quincy", hashes: ["nosuchface"]), 0)
+        checkEqual("a name nobody has is nothing too, not an error",
+                   try await registry.unbind(name: "Nobody", hashes: [quincyHashes[1]]), 0)
+        _ = try await registry.unbind(name: "Quincy", hashes: [quincyHashes[1]])
+        check("a person left with no faces is gone, not an empty row",
+              registry.registry()["Quincy"] == nil)
+        checkEqual("unbind refuses a blank name",
+                   (try? await registry.unbind(name: "  ", hashes: ["x"])) == nil, true)
+
+        // --- identify: who a face is ------------------------------------------
+        //
+        // Every cached face asked about one at a time. A bound face is its
+        // owner's; any other is the best of what `matches` — checked against
+        // the engine above — says for that one vector, or nobody.
+        try writeTree(registry: baseRegistry)
+        let owners = Dictionary(baseRegistry.flatMap { name, hashes in hashes.map { ($0, name) } },
+                                uniquingKeysWith: { min($0, $1) })
+        let identities = registry.identify(Array(cache.keys) + ["nosuchface"])
+        var sawBound = false, sawGuess = false, sawNobody = false
+        for (hash, encoded) in cache {
+            if let owner = owners[hash] {
+                sawBound = true
+                checkEqual("identify: \(hash.prefix(8)) is bound to its owner",
+                           identities[hash], FaceIdentity(name: owner, bound: true))
+                continue
+            }
+            let best = registry.matches(vectors: [f32(encoded)], in: baseRegistry)
+                .max { $0.value < $1.value }?.key
+            if best == nil { sawNobody = true } else { sawGuess = true }
+            checkEqual("identify: \(hash.prefix(8)) is the best match, as a guess",
+                       identities[hash], best.map { FaceIdentity(name: $0, bound: false) })
+        }
+        check("identify saw a bound face, a guess and a stranger",
+              sawBound && sawGuess && sawNobody)
+        check("a face with no vector on disk is nobody, not a guess",
+              identities["nosuchface"] == nil)
+
         // --- clustering, against engine.face_clusters --------------------------
 
         let clusterVectors = (clusters["vectors"] as? [String: String] ?? [:]).mapValues(f32)
@@ -377,6 +426,39 @@ struct FaceRegistryTest {
             clusterHashes[0]: (area: 1, vector: clusterVectors[clusterHashes[0]] ?? []),
         ]).count, 1)
         checkEqual("no faces is no choices", FaceRegistry.choose(seen: [:]).count, 0)
+        // The sheet asks for more than the engine's five; the limit only says
+        // how many, never which or in what order.
+        checkEqual("a caller's own limit is honoured",
+                   FaceRegistry.choose(seen: seen, limit: 2), Array(chosen.prefix(2)))
+
+        // --- what was found in a video, kept ----------------------------------
+        //
+        // The sheet looks at a video once. The answer is only good for the file
+        // it was found in, and "nobody" is an answer too.
+        let clip = (scratch as NSString).appendingPathComponent("clip.mp4")
+        try Data(repeating: 7, count: 1024).write(to: URL(fileURLWithPath: clip))
+        let keptFile = (scratch as NSString).appendingPathComponent("video_faces.json")
+        var kept = VideoFaceCache()
+        check("a video never looked at has no answer", kept.faces(for: clip) == nil)
+        if let revision = SourceRevision.of(clip) {
+            kept.record(["face-a", "face-b"], for: clip, revision: revision)
+            checkEqual("what was found is read back, in order",
+                       kept.faces(for: clip), ["face-a", "face-b"])
+            kept.save(keptFile)
+            checkEqual("...and again after a relaunch",
+                       VideoFaceCache.load(keptFile).faces(for: clip), ["face-a", "face-b"])
+            var nobody = kept
+            nobody.record([], for: clip, revision: revision)
+            checkEqual("a video with nobody in it is an answer, not a miss",
+                       nobody.faces(for: clip), [])
+        } else {
+            check("the scratch clip can be read", false)
+        }
+        try Data(repeating: 7, count: 2048).write(to: URL(fileURLWithPath: clip))
+        check("a file that has changed is looked at again",
+              VideoFaceCache.load(keptFile).faces(for: clip) == nil)
+        try fm.removeItem(atPath: clip)
+        check("...and so is one that has gone", kept.faces(for: clip) == nil)
 
         // --- the hash is the engine's formula ---------------------------------
         //

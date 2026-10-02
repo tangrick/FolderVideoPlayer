@@ -15,6 +15,15 @@ struct FoundFace {
     let area: Double
 }
 
+/// Who a face is, as far as the registry can say: the person it is bound to,
+/// or failing that the person it looks most like.
+struct FaceIdentity: Equatable {
+    let name: String
+    /// False when nobody has said so — it is only the nearest match, offered
+    /// as a guess and never acted on until the user confirms it.
+    let bound: Bool
+}
+
 /// The app-side half of face recognition that is NOT a model: what a face's
 /// identity is keyed by, which names are bound to which faces, and which faces
 /// look like which person.
@@ -55,6 +64,11 @@ actor FaceRegistry {
     static let maxFaces = 48
     /// `engine.FACE_MAX_CHOICES` — people offered by the add-a-person chooser.
     static let maxChoices = 5
+    /// What the Add Faces sheet asks for instead: two rows of five. It names
+    /// several people in one sitting, and five was a family video's worth of
+    /// faces with the last two cousins left out. Still most prominent first,
+    /// so the first row is the five the engine's cap would have offered.
+    static let sheetChoices = 10
     /// `engine.FACE_CHOICE_LIMIT` — faces offered by the pick-a-picture chooser.
     static let choiceLimit = 48
     /// `engine.FACE_CLUSTER_COSINE` — merge two sightings into one person.
@@ -257,6 +271,67 @@ actor FaceRegistry {
         registry[key] = existing
         save(registry)
         return added.count
+    }
+
+    /// Take faces back off a person — the undo of `bind`, and the answer to
+    /// "that face is not them".
+    ///
+    /// Only the binding goes, as with `forget`: the vectors and thumbnails
+    /// stay, so the face can be bound to the right person afterwards. A person
+    /// left with no faces is dropped, because a name bound to nothing matches
+    /// nothing and would sit in the People list as a row that can never fire.
+    ///
+    /// Returns how many faces came off; a name or a face that was never bound
+    /// is zero, not an error.
+    @discardableResult
+    func unbind(name: String, hashes: [String]) throws -> Int {
+        let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty, !hashes.isEmpty else { throw RegistryError.noName }
+        var registry = self.registry()
+        guard let key = Self.existingKey(cleaned, in: registry),
+              let bound = registry[key] else { return 0 }
+        let doomed = Set(hashes)
+        let kept = bound.filter { !doomed.contains($0) }
+        guard kept.count < bound.count else { return 0 }
+        registry[key] = kept.isEmpty ? nil : kept
+        save(registry)
+        return bound.count - kept.count
+    }
+
+    /// Who each of these faces is: the person it is bound to, or failing that
+    /// the person it looks most like — the one-to-one comparison `matchCosine`
+    /// was measured for. A face that resembles nobody is left out.
+    ///
+    /// Every stored vector is read once, not once per face asked about.
+    nonisolated func identify(_ hashes: [String]) -> [String: FaceIdentity] {
+        let registry = self.registry()
+        guard !registry.isEmpty else { return [:] }
+        // Sorted so a face bound to two people by an old mistake names the
+        // same one every time.
+        let names = registry.keys.sorted()
+        var stored: [String: [[Float]]] = [:]
+        var out: [String: FaceIdentity] = [:]
+        for hash in hashes {
+            if let owner = names.first(where: { registry[$0]?.contains(hash) == true }) {
+                out[hash] = FaceIdentity(name: owner, bound: true)
+                continue
+            }
+            guard let candidate = vector(for: hash) else { continue }
+            var best: (name: String, score: Double)?
+            for name in names {
+                if stored[name] == nil {
+                    stored[name] = (registry[name] ?? []).compactMap { vector(for: $0) }
+                }
+                for reference in stored[name] ?? [] {
+                    let score = SFaceEmbedder.cosine(candidate, reference)
+                    if score >= SFaceEmbedder.matchCosine, score > best?.score ?? -1 {
+                        best = (name, score)
+                    }
+                }
+            }
+            if let best { out[hash] = FaceIdentity(name: best.name, bound: false) }
+        }
+        return out
     }
 
     /// Rename a person: the same face bindings under a new name.
@@ -507,8 +582,8 @@ actor FaceRegistry {
     /// crowd scene would otherwise be dozens of choices for two people. The
     /// sightings are clustered by cosine (the engine's greedy running-centroid
     /// merge), each cluster is represented by its biggest — and therefore
-    /// clearest — crop, and the `maxChoices` biggest clusters are returned.
-    func detectFaces(path: String) async throws -> [String] {
+    /// clearest — crop, and the `limit` biggest clusters are returned.
+    func detectFaces(path: String, limit: Int = maxChoices) async throws -> [String] {
         guard FileManager.default.fileExists(atPath: path) else {
             throw RegistryError.noSuchFile(path)
         }
@@ -538,12 +613,13 @@ actor FaceRegistry {
                 \(seen.count, privacy: .public) distinct faces
                 """)
         }
-        return Self.choose(seen: seen)
+        return Self.choose(seen: seen, limit: limit)
     }
 
     /// The clustering half of `detect_faces`, split out so the merge rule is
     /// testable without a video: one person seen often must be ONE choice.
-    nonisolated static func choose(seen: [String: (area: Double, vector: [Float])]) -> [String] {
+    nonisolated static func choose(seen: [String: (area: Double, vector: [Float])],
+                                   limit: Int = maxChoices) -> [String] {
         // Biggest sighting first, so the representative of a cluster is decided
         // by prominence and not by whichever hash the dictionary happened to
         // hand over first.
@@ -585,7 +661,7 @@ actor FaceRegistry {
             clusters[match.index] = updated
         }
         return clusters.sorted { $0.area > $1.area }
-            .prefix(maxChoices).map(\.representative)
+            .prefix(limit).map(\.representative)
     }
 
     // MARK: - loading an image
