@@ -15,7 +15,9 @@ struct TagPanel: View {
     @State private var showingAddFace = false
     /// Which person chip the cursor is over — reveals its yes/no buttons.
     @State private var hoveredPerson: String?
-    /// Which tag chip the cursor is over — its reject ✕ goes red.
+    /// Which suggestion chip the cursor is over — its reject ✕ goes red. A tag
+    /// chip keeps its own (`TagChip`), so crossing the long list does not
+    /// redraw the panel.
     @State private var hoveredTag: String?
     /// What a rejection took off, by tag name, so ↺ can put it back.
     ///
@@ -81,6 +83,13 @@ struct TagPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            // Worked out once per redraw and used from here down. Asked for
+            // where each is needed, `applied` walked the selection again for
+            // every tag in the library, three times over.
+            let targets = self.targets
+            let applied = self.applied
+            let people = self.people(applied: applied)
+            let pendingSuggestions = self.pendingSuggestions
 
             HStack {
                 Text(title).font(.headline)
@@ -267,13 +276,13 @@ struct TagPanel: View {
                 }
                 Divider().padding(.vertical, 2)
             }
-            let rejectedTags = assignable.filter { name in
-                !applied.contains(name) && targets.contains {
-                    suggestions.entry($0)?.verdicts[name] == .rejected
-                }
+            let appliedNames = Set(applied)
+            let rejectedNames = rejected(on: targets)
+            let rejectedTags = assignable.filter {
+                !appliedNames.contains($0) && rejectedNames.contains($0)
             }
             let unused = assignable.filter {
-                !applied.contains($0) && !rejectedTags.contains($0)
+                !appliedNames.contains($0) && !rejectedNames.contains($0)
             }
             if !assignable.isEmpty {
                 HStack(spacing: 6) {
@@ -290,11 +299,11 @@ struct TagPanel: View {
                 ScrollView(.vertical, showsIndicators: false) {
                     ChipFlow(spacing: 6) {
                         // What the video already is, first: state before offers.
-                        ForEach(assignable.filter { applied.contains($0) }, id: \.self) { name in
-                            chip(name, applied: true)
+                        ForEach(assignable.filter { appliedNames.contains($0) }, id: \.self) { name in
+                            chip(name, .applied)
                         }
                         ForEach(unused, id: \.self) { (name: String) in
-                            chip(name, applied: false)
+                            chip(name, .offered)
                         }
                     }
                 }
@@ -321,7 +330,7 @@ struct TagPanel: View {
                 if rejectsOpen {
                     ChipFlow(spacing: 6) {
                         ForEach(rejectedTags, id: \.self) { (name: String) in
-                            chip(name, applied: false)
+                            chip(name, .rejected)
                         }
                     }
                 }
@@ -343,89 +352,49 @@ struct TagPanel: View {
         return targets.first.map { ($0 as NSString).lastPathComponent } ?? "Nothing to tag"
     }
 
-    /// One tag chip, in one of three states: on this video, ruled out, or on
-    /// offer.
-    ///
-    /// One rule holds across every chip in this panel, and in the People strip
-    /// below: **clicking the chip body is the yes, the trailing ✕ is the no,
-    /// and ⌥click on the body is the same as the ✕.** The ✕ used to mean
-    /// "take this tag off" on an applied chip and "this is NOT the tag" on an
-    /// offered one — the same glyph doing two different jobs depending on a
-    /// state the user cannot see at a glance.
-    ///
-    /// So an applied chip now wears a checkmark to say it is on, and clicking
-    /// it takes the tag off exactly as before. Its ✕ says you were wrong: the
-    /// tag comes off AND a negative example is recorded.
-    ///
-    /// Rejecting from THIS list is the answer to "how do I reject a tag the
-    /// app never offered me?" — a tag no model has learned yet is never
-    /// suggested, so it could never be rejected, so it could never be
-    /// trained.
-    ///
-    /// The style branches are separate Buttons because a ternary between two
-    /// button styles defeats generic inference inside a layout builder.
-    @ViewBuilder
-    private func chip(_ name: String, applied: Bool) -> some View {
-        let rejected = !applied && targets.contains {
-            suggestions.entry($0)?.verdicts[name] == .rejected
-        }
-        HStack(spacing: 3) {
-            if applied {
-                Button {
-                    // Destructive: this records the undo, so an accidental
-                    // click on a ticked chip is recoverable from the Undo
-                    // button in Tag Profiles (or straight away by clicking
-                    // the chip again).
-                    library.removeTag(name, from: targets)
-                    playback.refreshMembership()
-                } label: {
-                    Label(name, systemImage: "checkmark")
-                        .labelStyle(.titleAndIcon)
-                        .font(.caption)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .help("This video is tagged “\(name)” — click to take the tag off")
-                rejectButton(name, help: "Wrong — takes “\(name)” off and records it as NOT this")
-            } else if rejected {
-                Button { undoReject(name) } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "arrow.uturn.backward").font(.system(size: 9))
-                        Text(name).font(.caption).strikethrough()
-                    }
-                    .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("You said this is NOT “\(name)”. Click to take that back.")
-                // A reserved slot even here, so a chip does not change width
-                // when it moves between states and shove its neighbours along.
-                Color.clear.frame(width: 22, height: 22)
-            } else {
-                Button {
-                    if NSEvent.modifierFlags.contains(.option) { reject(name) }
-                    else {
-                        // Adding is not destructive — `addTag` is also
-                        // idempotent, so a selection where half already carry
-                        // it ends with all of them carrying it once.
-                        library.addTag(name, to: targets)
-                        playback.refreshMembership()
-                    }
-                } label: {
-                    Text(name).font(.caption)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("Click to tag this “\(name)”; the ✕ says it is NOT")
-                rejectButton(name, help: "Not “\(name)” — records a negative example for training")
+    /// The tags any of the targets has been told it is NOT, gathered in one
+    /// pass over their verdicts rather than asked once per tag in the library.
+    private func rejected(on targets: [String]) -> Set<String> {
+        var names = Set<String>()
+        for path in targets {
+            for (tag, verdict) in suggestions.entry(path)?.verdicts ?? [:]
+            where verdict == .rejected {
+                names.insert(tag)
             }
         }
-        // Hover on the WHOLE pair, so moving the cursor from the chip onto
-        // the ✕ never dims it.
-        .onHover { inside in
-            hoveredTag = inside ? name : (hoveredTag == name ? nil : hoveredTag)
-        }
-        .animation(.easeOut(duration: 0.12), value: hoveredTag)
+        return names
+    }
+
+    /// One tag chip (`TagChip`) and what its two controls do in the state it
+    /// is in.
+    ///
+    /// The actions read `targets` when clicked, never when built: a chip that
+    /// has not changed keeps the closures it was first given, and they must
+    /// still act on whatever is selected by then.
+    private func chip(_ name: String, _ status: TagChip.Status) -> some View {
+        TagChip(name: name, status: status, primary: {
+            switch status {
+            case .applied:
+                // Destructive: this records the undo, so an accidental
+                // click on a ticked chip is recoverable from the Undo
+                // button in Tag Profiles (or straight away by clicking
+                // the chip again).
+                library.removeTag(name, from: targets)
+                playback.refreshMembership()
+            case .rejected:
+                undoReject(name)
+            case .offered:
+                if NSEvent.modifierFlags.contains(.option) { reject(name) }
+                else {
+                    // Adding is not destructive — `addTag` is also
+                    // idempotent, so a selection where half already carry
+                    // it ends with all of them carrying it once.
+                    library.addTag(name, to: targets)
+                    playback.refreshMembership()
+                }
+            }
+        }, reject: { reject(name) })
+        .equatable()
     }
 
     /// A section heading that folds its section away — the same shape as the
@@ -450,28 +419,6 @@ struct TagPanel: View {
         }
         .buttonStyle(.plain)
         .help(open ? "Hide \(title.lowercased())" : "Show \(title.lowercased())")
-    }
-
-    /// The one "no" control, shared by every state so it is always the same
-    /// size, in the same place, meaning the same thing.
-    ///
-    /// ALWAYS drawn, only faded when the cursor is elsewhere. Revealing it on
-    /// hover changed the chip's width, which reflowed the whole wrapping list
-    /// — the chip slid out from under the cursor and the click missed. A
-    /// reserved slot means nothing ever moves, and the target is a real 22 pt
-    /// button rather than a 10 pt glyph.
-    private func rejectButton(_ name: String, help: String) -> some View {
-        Button { reject(name) } label: {
-            Image(systemName: "xmark.circle.fill")
-                .font(.system(size: 15))
-                .foregroundStyle(hoveredTag == name ? Color.red : Color.secondary)
-                .opacity(hoveredTag == name ? 1 : 0.55)
-                .frame(width: 22, height: 22)
-                .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .help(help)
-        .accessibilityLabel("Not \(name)")
     }
 
     /// Record "these videos are NOT this tag".
@@ -886,7 +833,7 @@ struct TagPanel: View {
     /// signal for people with many tagged videos) — or when the video is
     /// already tagged with them (their chip is then a remove). A named person
     /// who is not in the video is not shown; a rejected suggestion is dropped.
-    private var people: [FacePerson] {
+    private func people(applied: [String]) -> [FacePerson] {
         faceStore.people
             .filter { person in
                 let appliedHere = applied.contains(where: {
@@ -1035,6 +982,116 @@ struct TagPanel: View {
         }
         .frame(width: size, height: size)
         .clipShape(Circle())
+    }
+}
+
+/// One tag chip, in one of three states: on this video, ruled out, or on
+/// offer.
+///
+/// One rule holds across every chip in this panel, and in the People strip
+/// below: **clicking the chip body is the yes, the trailing ✕ is the no,
+/// and ⌥click on the body is the same as the ✕.** The ✕ used to mean
+/// "take this tag off" on an applied chip and "this is NOT the tag" on an
+/// offered one — the same glyph doing two different jobs depending on a
+/// state the user cannot see at a glance.
+///
+/// So an applied chip now wears a checkmark to say it is on, and clicking
+/// it takes the tag off exactly as before. Its ✕ says you were wrong: the
+/// tag comes off AND a negative example is recorded.
+///
+/// Rejecting from THIS list is the answer to "how do I reject a tag the
+/// app never offered me?" — a tag no model has learned yet is never
+/// suggested, so it could never be rejected, so it could never be
+/// trained.
+///
+/// A view of its own, compared by name and state alone, with its own hover.
+/// Drawn by the panel with the hover held there, the cursor crossing ONE chip
+/// rebuilt every chip in the list, twice — 22 ms a time at a hundred tags,
+/// which is the list stuttering under the cursor. Now a hover redraws the one
+/// chip, and a redraw of the panel skips every chip that has not changed.
+///
+/// The style branches are separate Buttons because a ternary between two
+/// button styles defeats generic inference inside a layout builder.
+private struct TagChip: View, Equatable {
+    enum Status { case applied, rejected, offered }
+
+    let name: String
+    let status: Status
+    /// The chip body: take the tag off, take the rejection back, or add it.
+    let primary: () -> Void
+    /// The trailing ✕.
+    let reject: () -> Void
+    @State private var hovered = false
+
+    /// The closures are left out: two are never equal, and comparing them
+    /// would rebuild every chip on every redraw, which is what this is for.
+    static func == (a: TagChip, b: TagChip) -> Bool {
+        a.name == b.name && a.status == b.status
+    }
+
+    var body: some View {
+        HStack(spacing: 3) {
+            switch status {
+            case .applied:
+                Button(action: primary) {
+                    Label(name, systemImage: "checkmark")
+                        .labelStyle(.titleAndIcon)
+                        .font(.caption)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .help("This video is tagged “\(name)” — click to take the tag off")
+                rejectButton(help: "Wrong — takes “\(name)” off and records it as NOT this")
+            case .rejected:
+                Button(action: primary) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.uturn.backward").font(.system(size: 9))
+                        Text(name).font(.caption).strikethrough()
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("You said this is NOT “\(name)”. Click to take that back.")
+                // A reserved slot even here, so a chip does not change width
+                // when it moves between states and shove its neighbours along.
+                Color.clear.frame(width: 22, height: 22)
+            case .offered:
+                Button(action: primary) {
+                    Text(name).font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Click to tag this “\(name)”; the ✕ says it is NOT")
+                rejectButton(help: "Not “\(name)” — records a negative example for training")
+            }
+        }
+        // Hover on the WHOLE pair, so moving the cursor from the chip onto
+        // the ✕ never dims it.
+        .onHover { hovered = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovered)
+    }
+
+    /// The one "no" control, shared by every state so it is always the same
+    /// size, in the same place, meaning the same thing.
+    ///
+    /// ALWAYS drawn, only faded when the cursor is elsewhere. Revealing it on
+    /// hover changed the chip's width, which reflowed the whole wrapping list
+    /// — the chip slid out from under the cursor and the click missed. A
+    /// reserved slot means nothing ever moves, and the target is a real 22 pt
+    /// button rather than a 10 pt glyph.
+    private func rejectButton(help: String) -> some View {
+        Button(action: reject) {
+            Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 15))
+                .foregroundStyle(hovered ? Color.red : Color.secondary)
+                .opacity(hovered ? 1 : 0.55)
+                .frame(width: 22, height: 22)
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel("Not \(name)")
     }
 }
 
