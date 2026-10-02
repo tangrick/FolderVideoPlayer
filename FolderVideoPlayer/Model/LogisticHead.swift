@@ -277,6 +277,68 @@ struct TrainedHeads: Equatable {
         if fm.fileExists(atPath: path) { try? fm.removeItem(atPath: path) }
         try fm.moveItem(atPath: tmp, toPath: path)     // rename(2): atomic on APFS and SMB
     }
+
+    // --- renaming ----------------------------------------------------------
+
+    /// Move the heads fitted under old tag names to the name the tag has now —
+    /// a rename, or several tags folded into one.
+    ///
+    /// A head is filed under its tag's name and `save` only ever adds, so a
+    /// head left under the old name goes on offering the old name for good:
+    /// no video carries it any more, so no training pass will ever fit it
+    /// again or take it away.
+    ///
+    /// The weights are not touched — the same videos taught them, whatever the
+    /// tag is called. A head the new name already has stays, since two heads
+    /// cannot be folded into one; otherwise the one fitted from the most videos
+    /// moves, and the next training pass refits it from the merged tag.
+    ///
+    /// Every encoder's file in the profile is covered, and each is rewritten
+    /// as it stands rather than through `load`, which would refuse — and so
+    /// drop — heads bound to a space that is not the one installed. A file
+    /// from a newer version is left alone rather than guessed at.
+    ///
+    /// Returns the files it rewrote with the bytes they held, for `restore`.
+    @discardableResult
+    static func rename(_ sources: [String], to target: String,
+                       root: String = Paths.support,
+                       profile: String = Paths.activeProfile) -> [String: Data] {
+        let dir = ProfileBundle.file(in: profile, ProfileBundle.headsDir, root: root)
+        let fm = FileManager.default
+        var before: [String: Data] = [:]
+        for name in ((try? fm.contentsOfDirectory(atPath: dir)) ?? []).sorted()
+        where name.hasSuffix("_trained_heads.json") {
+            let path = (dir as NSString).appendingPathComponent(name)
+            guard let data = fm.contents(atPath: path),
+                  var wire = try? JSONDecoder().decode(Wire.self, from: data),
+                  wire.version <= currentVersion, var tags = wire.tags else { continue }
+            // Old names are matched whatever their case, as the library
+            // matches tags; most videos first, then by name so a tie cannot
+            // come out differently on two runs.
+            let moving = tags.keys
+                .filter { key in key != target
+                    && sources.contains { $0.caseInsensitiveCompare(key) == .orderedSame } }
+                .sorted { (tags[$0]!.n, $1) > (tags[$1]!.n, $0) }
+            guard let best = moving.first else { continue }
+            if tags[target] == nil { tags[target] = tags[best] }
+            for key in moving { tags[key] = nil }
+            wire.tags = tags
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            guard let renamed = try? encoder.encode(wire),
+                  (try? renamed.write(to: URL(fileURLWithPath: path), options: .atomic)) != nil
+            else { continue }
+            before[path] = data
+        }
+        return before
+    }
+
+    /// Put back what `rename` handed over — the Undo of a rename or a merge.
+    static func restore(_ files: [String: Data]) {
+        for (path, data) in files {
+            try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+        }
+    }
 }
 
 /// What a fit attempt produced, in the engine's own vocabulary — including the

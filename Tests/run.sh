@@ -138,6 +138,10 @@ sh "$here/run_library_folders.sh"
 # for training, and an undo that puts tags, verdicts and the reviewed mark back.
 sh "$here/run_triage.sh"
 
+# A renamed or merged tag: its suggestions, verdicts and fitted head follow it
+# to the new name, and Undo puts them back with the tags.
+sh "$here/run_tag_rename.sh"
+
 # Subtitle files and track choices: SRT/VTT parsing, discovery, and a saved
 # choice never applied to a file that lacks it.
 sh "$here/run_media_tracks.sh"

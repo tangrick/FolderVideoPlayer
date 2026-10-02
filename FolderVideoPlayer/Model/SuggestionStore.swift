@@ -357,6 +357,66 @@ final class SuggestionStore: ObservableObject {
         scheduleSave()
     }
 
+    /// Carry everything filed under a tag's name to the name it has now — a
+    /// rename, or several tags folded into one.
+    ///
+    /// The verdicts are keyed by the tag's name and they are the training
+    /// labels: left behind, the renamed tag has no rejections to learn from,
+    /// and the chips already offered go on showing the old name beside the new
+    /// tag — where accepting one brings the old tag back as a duplicate.
+    ///
+    /// The old names are matched whatever their case, as the library matches
+    /// tags. Where a video was offered both names one chip is kept, the
+    /// stronger; where both were answered, a yes to either is a yes to the one
+    /// they became, and a no outranks a chip that was only passed over.
+    ///
+    /// Returns the entries it changed, as they were — `restore` puts them back.
+    @discardableResult
+    func renameTag(_ sources: [String], to target: String) -> [String: VideoSuggestions] {
+        guard profileOpen else { return [:] }
+        func folds(_ name: String) -> Bool {
+            name.caseInsensitiveCompare(target) == .orderedSame
+                || sources.contains { $0.caseInsensitiveCompare(name) == .orderedSame }
+        }
+        func rank(_ verdict: SuggestionVerdict) -> Int {
+            switch verdict {
+            case .accepted: return 2
+            case .rejected: return 1
+            case .ignored: return 0
+            }
+        }
+        var before: [String: VideoSuggestions] = [:]
+        // One write to the store, not one per video: `byVideo` is published.
+        var updated = byVideo
+        for (key, entry) in byVideo {
+            var e = entry
+            e.suggestions = []
+            for s in entry.suggestions {
+                guard folds(s.tag) else { e.suggestions.append(s); continue }
+                let moved = TagSuggestion(tag: target, confidence: s.confidence,
+                                          frames: s.frames, source: s.source)
+                if let i = e.suggestions.firstIndex(where: { $0.tag == target }) {
+                    if moved.confidence > e.suggestions[i].confidence { e.suggestions[i] = moved }
+                } else {
+                    e.suggestions.append(moved)
+                }
+            }
+            e.verdicts = [:]
+            for (name, verdict) in entry.verdicts {
+                let name = folds(name) ? target : name
+                if let held = e.verdicts[name], rank(held) >= rank(verdict) { continue }
+                e.verdicts[name] = verdict
+            }
+            guard e.suggestions != entry.suggestions || e.verdicts != entry.verdicts else { continue }
+            before[key] = entry
+            updated[key] = e
+        }
+        guard !before.isEmpty else { return [:] }
+        byVideo = updated
+        scheduleSave()
+        return before
+    }
+
     // MARK: - training data
 
     /// Every decision the user has made, as (tagKey, tag, verdict) triples.

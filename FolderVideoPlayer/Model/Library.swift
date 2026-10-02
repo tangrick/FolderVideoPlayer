@@ -524,6 +524,9 @@ final class Library: ObservableObject {
     /// would be half an undo.
     func rememberForUndo(_ label: String) {
         undoable = (label, tags, facts.byKey)
+        // The slot now holds a different edit, so the last rename's put-back
+        // no longer belongs to it.
+        undoOutside = nil
         JSONStore.save(Paths.tagsBackup, tags)
         JSONStore.save(Paths.factsBackup, facts)
     }
@@ -557,6 +560,11 @@ final class Library: ObservableObject {
             }
         }
         undoable = nil
+        // A rename or a merge moved more than the tags: what the engine holds
+        // under the name goes back with them, or the old name would be on the
+        // videos and the new one in the suggestions.
+        undoOutside?()
+        undoOutside = nil
         tags = MetadataSplit.dropKnownReadings(tags: previousTags, facts: facts)
         if let previousFacts {
             facts = MetadataFacts(previousFacts)
@@ -1956,8 +1964,22 @@ final class Library: ObservableObject {
         return count(of: starTag(stars))
     }
 
+    /// Told (the old names, the name they have now) whenever a tag is renamed
+    /// or several are folded into one, so what is kept under a tag's NAME
+    /// outside the library — its suggestions, the verdicts on them, its fitted
+    /// head — follows it. Hands back the way to put that back, for Undo. Set
+    /// by the app, the same shape as `forgetOutside`, so the library does not
+    /// own those stores.
+    var tagsRenamed: (([String], String) -> (() -> Void))?
+
+    /// What `tagsRenamed` handed back for the edit now in the undo slot.
+    /// Memory only: an Undo taken from the backup on disk after a relaunch
+    /// puts the tags back and leaves the suggestions under the new name.
+    private var undoOutside: (() -> Void)?
+
     func renameTag(_ old: String, to new: String) {
         rememberForUndo("renaming “\(old)”")
+        undoOutside = tagsRenamed?([old], new)
         for (key, names) in tags {
             guard names.contains(where: { $0.caseInsensitiveCompare(old) == .orderedSame })
             else { continue }
@@ -2000,6 +2022,7 @@ final class Library: ObservableObject {
         rememberForUndo(doomed.count == 1
                         ? "merging “\(doomed[0])” into “\(target)”"
                         : "merging \(doomed.count) tags into “\(target)”")
+        undoOutside = tagsRenamed?(doomed, target)
         var touched = 0
         for (key, names) in tags {
             guard names.contains(where: { name in
@@ -2719,6 +2742,7 @@ extension Library {
         // The undo belonged to the profile being left; keeping it would offer
         // to put one profile's tags into another.
         undoable = nil
+        undoOutside = nil
         try? FileManager.default.removeItem(atPath: Paths.tagsBackup)
         try? FileManager.default.removeItem(atPath: Paths.factsBackup)
         // Nothing of a profile never seen on this Mac has been merged here, so
@@ -2821,6 +2845,7 @@ extension Library {
         lastFolderRemoval = nil
         recount()
         undoable = nil
+        undoOutside = nil
         try? FileManager.default.removeItem(atPath: Paths.tagsBackup)
         try? FileManager.default.removeItem(atPath: Paths.factsBackup)
         lastPublishedAt = 0

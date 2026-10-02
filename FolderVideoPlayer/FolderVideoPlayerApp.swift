@@ -138,6 +138,18 @@ struct FolderVideoPlayerApp: App {
                             for folder in kept { app.maintenance.setMaintained(folder, true) }
                         }
                     }
+                    // A renamed or merged tag takes what the engine holds under
+                    // its name with it — the chips, the verdicts on them and
+                    // the fitted head — or the old name goes on being offered
+                    // beside the new tag. Handed back for the undo.
+                    library.tagsRenamed = { sources, target in
+                        let verdicts = suggestions.renameTag(sources, to: target)
+                        let heads = TrainedHeads.rename(sources, to: target)
+                        return {
+                            suggestions.restore(verdicts)
+                            TrainedHeads.restore(heads)
+                        }
+                    }
                     // A whole folder at once: each store writes once.
                     library.pathsMoved = { pairs in
                         journal.moveTranscripts(pairs)
