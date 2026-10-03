@@ -51,7 +51,15 @@ protocol SpeechTranscribing: AnyObject {
     /// reads, so the stop happens at the next window — seconds, not minutes.
     func cancel()
 
+    /// Whether `cancel()` has been asked for. Read while the audio is still
+    /// being decoded, before the model has anything to stop.
+    var isCancelled: Bool { get }
+
     func unload() async
+}
+
+extension SpeechTranscribing {
+    var isCancelled: Bool { false }
 }
 
 /// A flag the model's callback can read from its own thread.

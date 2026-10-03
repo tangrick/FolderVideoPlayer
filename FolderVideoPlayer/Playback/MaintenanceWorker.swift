@@ -211,16 +211,13 @@ final class MaintenanceWorker: ObservableObject {
         guard let library else { return }
         let name = (folder as NSString).lastPathComponent
         status = .scanning(name)
-        let walked: [(path: String, size: Int64)]? = await withTaskGroup(of: [(path: String, size: Int64)]?.self) { group in
-            group.addTask { await Task.detached(priority: .utility) { Self.walk(folder) }.value }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(60))
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
-        }
+        // A walk still out from an earlier timeout is not joined by another:
+        // a share that never answers would otherwise collect one stuck walk
+        // per interval.
+        let walked: [(path: String, size: Int64)]? = stuckWalks.contains(folder)
+            ? nil : await walkWithin(seconds: 60, folder)
+        // Stopped, or pointed at another profile, while the share was asked.
+        if Task.isCancelled { return }
         let now = Date().timeIntervalSince1970
         guard let walked else {
             // Not answering, or not there: try again at the next interval.
@@ -254,6 +251,54 @@ final class MaintenanceWorker: ObservableObject {
 
     /// Every video under a folder with its size. Nil when the folder is not
     /// there — which is different from a folder with nothing in it.
+    /// Folders whose walk outlived its minute and has not come back yet.
+    private var stuckWalks: Set<String> = []
+
+    /// One answer, given once, from whichever of two tasks gets there first.
+    private final class FirstAnswer: @unchecked Sendable {
+        private let lock = NSLock()
+        private var given = false
+        func claim() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            if given { return false }
+            given = true
+            return true
+        }
+    }
+
+    /// The walk, or nil once `seconds` have gone by without it.
+    ///
+    /// The deadline is real: this returns at the minute whether or not the
+    /// walk has. A task group could not promise that — it waits for all its
+    /// children, and the walk was not one it could cancel — so the minute used
+    /// to end whenever the share finally answered. The walk is told to stop
+    /// and gives up at its next file; one stuck inside a single call to a
+    /// share cannot be interrupted, and is left to finish and be discarded.
+    private func walkWithin(seconds: Double, _ folder: String) async -> [(path: String, size: Int64)]? {
+        let first = FirstAnswer()
+        return await withCheckedContinuation { answer in
+            let walk = Task.detached(priority: .utility) { [weak self] in
+                let found = Self.walk(folder)
+                if first.claim() {
+                    answer.resume(returning: found)
+                } else {
+                    await self?.walkReturned(folder)
+                }
+            }
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(seconds))
+                guard first.claim() else { return }
+                walk.cancel()
+                self?.stuckWalks.insert(folder)
+                answer.resume(returning: nil)
+            }
+        }
+    }
+
+    private func walkReturned(_ folder: String) {
+        stuckWalks.remove(folder)
+    }
+
     nonisolated private static func walk(_ folder: String) -> [(path: String, size: Int64)]? {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: folder, isDirectory: &isDir), isDir.boolValue,
@@ -263,6 +308,7 @@ final class MaintenanceWorker: ObservableObject {
         var found: [(String, Int64)] = []
         let discarded = Scanner.expanded(Scanner.discarded)
         for case let url as URL in walk {
+            if Task.isCancelled { return nil }
             if Scanner.isInside(url.path, discarded) { walk.skipDescendants(); continue }
             guard videoExtensions.contains(url.pathExtension.lowercased()) else { continue }
             let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])

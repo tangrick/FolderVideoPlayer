@@ -201,7 +201,10 @@ final class HiddenLock: ObservableObject {
     func setPassword(_ password: String, iterations: Int = HiddenLock.defaultIterations) async throws {
         guard !password.isEmpty else { throw Trouble.emptyPassword }
         let salt = Self.makeSalt()
-        let hash = Self.derive(password: password, salt: salt, iterations: iterations)
+        // Off the main thread, as `unlock` does it and for the same reason.
+        let hash = await Task.detached(priority: .userInitiated) {
+            Self.derive(password: password, salt: salt, iterations: iterations)
+        }.value
         let next = Record(version: Record.currentVersion, iterations: iterations,
                           salt: salt.base64EncodedString(), hash: hash.base64EncodedString())
         try write(next)

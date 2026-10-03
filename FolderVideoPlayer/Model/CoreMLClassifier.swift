@@ -149,6 +149,12 @@ actor CoreMLClassifier {
     /// memoizes nothing. See `SamplingPlan.FrameMemo`.
     private var frameMemo = SamplingPlan.FrameMemo<FrameSampler.SampledFrame>()
     private var memoHashes: [String] = []
+    /// The library baseline as a running sum, for the cache namespace it was
+    /// summed over. Built by reading the whole cache ONCE, then kept in step by
+    /// adding each vector as it is written — re-reading every cached vector for
+    /// every video suggested was the largest single cost of a suggestion pass.
+    /// Every write to the cache from this app goes through this actor.
+    private var libraryBaseline: (namespace: String, sum: TagPrototypes.RunningBaseline)?
 
     init(root: String) {
         self.root = root
@@ -291,6 +297,11 @@ actor CoreMLClassifier {
                 guard let vector = byFrameIndex[frames[i].index] else { continue }
                 vectors[i] = vector
                 cache.write(hashes[i], vector)   // best-effort: a full disk is not a failed verdict
+                // A write only ever follows a miss, so this vector is not in
+                // the sum yet.
+                if libraryBaseline?.namespace == cache.namespace {
+                    libraryBaseline?.sum.add(vector)
+                }
             }
         }
         guard source.matches(path) else {
@@ -380,9 +391,9 @@ actor CoreMLClassifier {
         let heads = TrainedHeads.load(root: root, slug: store.slug)
         let prototypes = TagPrototypes.prototypes(
             tagged, excluding: Set(table.pairedTags.map(\.name)), read: read)
-        let cached = store.hashes()
-        let baseline = TagPrototypes.baseline(
-            hashes: cached, dim: table.dim, read: read)
+        // The walk is only for the priors now, and they are off by default.
+        let cached = TagPriors.enabled ? store.hashes() : []
+        let baseline = libraryMean(in: store, dim: table.dim)
 
         // --- faces, over the frames that are already decoded ----------------
         //
@@ -443,6 +454,23 @@ actor CoreMLClassifier {
         let made = FaceRegistry(root: root, profile: profile)
         faceRegistry = made
         return made
+    }
+
+    /// "The typical video in this library", from the running sum — summed from
+    /// the cache the first time it is asked for in a namespace (or a width),
+    /// and from memory after that.
+    private func libraryMean(in store: EmbeddingCache, dim: Int) -> [Double]? {
+        let namespace = store.namespace
+        if let held = libraryBaseline, held.namespace == namespace, held.sum.dim == dim {
+            return held.sum.baseline
+        }
+        var sum = TagPrototypes.RunningBaseline(dim: dim)
+        for hash in store.hashes() {
+            guard let vector = store.read(hash, remember: false) else { continue }
+            sum.add(vector)
+        }
+        libraryBaseline = (namespace, sum)
+        return sum.baseline
     }
 
     /// The per-tag priors, measured once per library and then reused.

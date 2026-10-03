@@ -142,20 +142,42 @@ struct EmbeddingCache {
         return String(hasher.finalize().map { String(format: "%02x", $0) }.joined().prefix(32))
     }
 
-    func read(_ hash: String) -> [Float]? {
+    /// Vectors read lately, by the file they came from. A suggestion pass
+    /// rebuilds every tag's prototype from the same few thousand vectors for
+    /// each video it looks at, and each was a file opened and read again.
+    /// Keyed by the full path, so a namespace, a root and a hash never share
+    /// an entry; bounded by count, and dropped by the system under pressure.
+    private final class Held {
+        let vector: [Float]
+        init(_ vector: [Float]) { self.vector = vector }
+    }
+    private static let recent: NSCache<NSString, Held> = {
+        let cache = NSCache<NSString, Held>()
+        cache.countLimit = 8192            // ~25 MB of 768-wide vectors
+        return cache
+    }()
+
+    /// `remember: false` is for a sweep of the whole cache, which would only
+    /// push out the vectors worth holding.
+    func read(_ hash: String, remember: Bool = true) -> [Float]? {
         let p = path(for: hash)
+        if let held = Self.recent.object(forKey: p as NSString), held.vector.count == dim {
+            return held.vector
+        }
         guard let raw = FileManager.default.contents(atPath: p),
               !raw.isEmpty, raw.count % 4 == 0 else { return nil }
         let n = raw.count / 4
         if n != dim { return nil }          // a different model wrote this; ignore
         var v = [Float](repeating: 0, count: n)
         _ = v.withUnsafeMutableBytes { raw.copyBytes(to: $0) }
+        if remember { Self.recent.setObject(Held(v), forKey: p as NSString) }
         return v
     }
 
     func write(_ hash: String, _ vec: [Float]) {
         guard vec.count == dim else { return }
         let p = path(for: hash)
+        Self.recent.removeObject(forKey: p as NSString)
         let dir = (p as NSString).deletingLastPathComponent
         let fm = FileManager.default
         try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)

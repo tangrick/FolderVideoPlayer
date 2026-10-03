@@ -95,18 +95,40 @@ enum TagPrototypes {
     /// to (the suggester runs it once per video, so it should).
     static func baseline(hashes: [String], dim: Int,
                          read: (String) -> [Float]?) -> [Double]? {
-        var acc: [Double]?
-        var n = 0
+        var running = RunningBaseline(dim: dim)
         for h in hashes {
-            guard let vec = read(h), vec.count == dim else { continue }
-            if acc == nil { acc = [Double](repeating: 0, count: dim) }
-            guard var a = acc else { continue }
-            for i in 0..<dim { a[i] += Double(vec[i]) }
-            acc = a
-            n += 1
+            guard let vec = read(h) else { continue }
+            running.add(vec)
         }
-        guard let a = acc, n > 0 else { return nil }
-        return LookAlikes.unit(a.map { $0 / Double(n) })
+        return running.baseline
+    }
+
+    /// `baseline` as a sum that can be added to — what the caching the note
+    /// above asks for is made of. Reading every cached vector is the whole
+    /// cost of the baseline, and a vector the app has just embedded is one it
+    /// already holds: the caller adds it here instead of walking the cache
+    /// again for the next video.
+    struct RunningBaseline {
+        let dim: Int
+        private var sum: [Double]
+        private(set) var count = 0
+
+        init(dim: Int) {
+            self.dim = dim
+            sum = [Double](repeating: 0, count: dim)
+        }
+
+        /// A vector of another width is skipped, as `baseline` skips it.
+        mutating func add(_ vec: [Float]) {
+            guard vec.count == dim else { return }
+            for i in 0..<dim { sum[i] += Double(vec[i]) }
+            count += 1
+        }
+
+        var baseline: [Double]? {
+            guard count > 0 else { return nil }
+            return LookAlikes.unit(sum.map { $0 / Double(count) })
+        }
     }
 
     // MARK: - the prototypes

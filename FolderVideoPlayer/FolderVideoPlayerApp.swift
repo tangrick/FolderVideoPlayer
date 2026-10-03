@@ -155,10 +155,8 @@ struct FolderVideoPlayerApp: App {
                         journal.moveTranscripts(pairs)
                         moments.move(pairs)
                         analysis.move(pairs)
-                        for (old, new) in pairs {
-                            suggestions.move(from: old, to: new)
-                            media.move(from: old, to: new)
-                        }
+                        suggestions.move(pairs)
+                        for (old, new) in pairs { media.move(from: old, to: new) }
                         rotation.move(pairs)
                         PlaybackController.moveTrackChoices(pairs)
                     }

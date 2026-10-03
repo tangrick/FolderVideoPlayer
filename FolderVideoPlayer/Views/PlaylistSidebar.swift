@@ -1237,9 +1237,13 @@ struct PlaylistSidebar: View {
             // reason: a cached row whose file has gone cannot be played or
             // accepted, and carries the name of one that can.
             let ranked = result.candidates.map { LookAlikes.Candidate(key: $0.key, score: $0.score) }
-            let checked = LookAlikes.live(ranked) { key in
-                FileManager.default.fileExists(atPath: Paths.tagPath(key))
-            }
+            let checked = await Task.detached(priority: .userInitiated) {
+                LookAlikes.live(ranked) { key in
+                    FileManager.default.fileExists(atPath: Paths.tagPath(key))
+                }
+            }.value
+            guard !Task.isCancelled, aiSuggest,
+                  playback.tagName?.caseInsensitiveCompare(person) == .orderedSame else { return }
             aiCandidates = checked.live.map { (key: $0.key, score: $0.score) }
 
             var notes: [String] = []
@@ -1512,9 +1516,12 @@ struct PlaylistSidebar: View {
                 // truth is that the search is offering a path that no longer
                 // exists. A stat per offered row; the pool is not touched.
                 let ranked = res.candidates.map { LookAlikes.Candidate(key: $0.key, score: $0.score) }
-                let checked = LookAlikes.live(ranked) { key in
-                    FileManager.default.fileExists(atPath: Paths.tagPath(key))
-                }
+                let checked = await Task.detached(priority: .userInitiated) {
+                    LookAlikes.live(ranked) { key in
+                        FileManager.default.fileExists(atPath: Paths.tagPath(key))
+                    }
+                }.value
+                guard aiSuggest, playback.tagName == tag else { return }
                 aiCandidates = checked.live.map { (key: $0.key, score: $0.score) }
                 // The engine's own words for why a search came back empty.
                 // Dropped, an empty list reads as "nothing looks like this
@@ -2426,11 +2433,12 @@ struct VideoFacts: View {
             WatchMark(state: library.watchState(path))
             // Stars, not the favorite mark: the rating IS the headline
             // judgement now. A favorite still shows as a chip, with its tags.
-            if library.rating(path) > 0 {
-                Text(String(repeating: "★", count: library.rating(path)))
+            let stars = library.rating(path)
+            if stars > 0 {
+                Text(String(repeating: "★", count: stars))
                     .foregroundStyle(.yellow)
                     .fixedSize()
-                    .help("Rated \(library.rating(path)) of 5 stars")
+                    .help("Rated \(stars) of 5 stars")
             }
             Text(facts.joined(separator: " · "))
                 .lineLimit(1)
@@ -2696,9 +2704,10 @@ struct RowMenu: View {
         // is part of one, otherwise just this row.
         // Hand-taggable only: a metadata tag is read off the file, so putting
         // one on by hand would be a false statement about the file itself.
-        if !library.handTaggableTags().isEmpty {
+        let taggable = library.handTaggableTags()
+        if !taggable.isEmpty {
             Menu("Tags") {
-                ForEach(library.handTaggableTags(), id: \.self) { name in
+                ForEach(taggable, id: \.self) { name in
                     Button {
                         // The same toggle the label shows, but each direction
                         // goes through the function that owns it: taking the

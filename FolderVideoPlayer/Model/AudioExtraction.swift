@@ -64,7 +64,12 @@ enum AudioExtraction {
     /// in pieces instead of all at once.
     ///
     /// Half a range is a caller's mistake and is refused rather than guessed at.
-    static func samples(path: String, from: Double? = nil, to: Double? = nil) async throws -> [Float] {
+    ///
+    /// `shouldStop` is asked between buffers: a long track takes long enough to
+    /// decode that a cancel has to be able to land here, not only once the
+    /// model has the samples. Stopping throws `CancellationError`.
+    static func samples(path: String, from: Double? = nil, to: Double? = nil,
+                        shouldStop: () -> Bool = { Task.isCancelled }) async throws -> [Float] {
         let url = URL(fileURLWithPath: path)
         // A missing file must fail as THIS module's error, not as whatever the
         // framework says first: a caller that handles AudioExtractionError would
@@ -106,6 +111,10 @@ enum AudioExtraction {
 
         var out: [Float] = []
         while let buffer = output.copyNextSampleBuffer() {
+            if shouldStop() {
+                reader.cancelReading()
+                throw CancellationError()
+            }
             guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
             let length = CMBlockBufferGetDataLength(block)
             let frames = length / MemoryLayout<Int16>.size
@@ -114,7 +123,6 @@ enum AudioExtraction {
                 _ = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length,
                                                destination: raw.baseAddress!)
             }
-            out.reserveCapacity(out.count + frames)
             for value in chunk { out.append(Float(value) / 32768.0) }
         }
         if reader.status == .failed {

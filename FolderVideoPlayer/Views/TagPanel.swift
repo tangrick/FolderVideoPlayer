@@ -219,9 +219,12 @@ struct TagPanel: View {
 
                 }
 
+                // Asked once for the panel, not once per chip: the answer is
+                // checked against the file as it is now, which is a stat.
+                let seen = journal.spans(for: path)
                 ChipFlow(spacing: 6) {
                     ForEach(pendingSuggestions, id: \.tag) { (s: TagSuggestion) in
-                        suggestionChip(s, path: path)
+                        suggestionChip(s, path: path, seen: seen)
                     }
                 }
                 Divider().padding(.vertical, 2)
@@ -481,7 +484,8 @@ struct TagPanel: View {
     ///
     /// Dashed border and the sparkle keep it unmistakable from a real tag: a
     /// guess must never look like something the user vouched for.
-    private func suggestionChip(_ s: TagSuggestion, path: String) -> some View {
+    private func suggestionChip(_ s: TagSuggestion, path: String,
+                                seen: [EvidenceJournal.Span]) -> some View {
         HStack(spacing: 3) {
             Button {
                 if NSEvent.modifierFlags.contains(.option) {
@@ -515,7 +519,7 @@ struct TagPanel: View {
             // actually went to. Each is its own control, not part of the chip's
             // button — a time inside that button would add the tag when the user
             // only meant to look.
-            sightingControls(s, path: path)
+            sightingControls(s, path: path, seen: seen)
 
             Button {
                 suggestions.decide(path, tag: s.tag, verdict: .rejected)
@@ -743,8 +747,9 @@ struct TagPanel: View {
     /// therefore shows none: an invented time would be worse than a missing one,
     /// because the user would go there and not find what the chip implied.
     @ViewBuilder
-    private func sightingControls(_ s: TagSuggestion, path: String) -> some View {
-        let spans = journal.spans(for: path, label: s.tag)
+    private func sightingControls(_ s: TagSuggestion, path: String,
+                                  seen: [EvidenceJournal.Span]) -> some View {
+        let spans = seen.filter { $0.label == s.tag }
         if spans.isEmpty {
             EmptyView()
         } else if spans.contains(where: { $0.isStale }) {

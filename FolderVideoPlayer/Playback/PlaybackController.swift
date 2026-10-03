@@ -37,7 +37,9 @@ final class PlaybackController: ObservableObject {
     private let library: Library
     let media: MediaCache
 
-    @Published private(set) var playlist: [String] = []
+    @Published private(set) var playlist: [String] = [] {
+        didSet { tagsInPlaylistMemo = nil }
+    }
     @Published private(set) var index = 0
     @Published private(set) var mode: PlayMode = .folder
     @Published private(set) var root: String?
@@ -196,13 +198,18 @@ final class PlaybackController: ObservableObject {
         library.remember(folder: root)
         scanning = true
         trouble = nil
+        openGeneration += 1
+        let asked = openGeneration
         Task { [weak self] in
             let items = await Task.detached(priority: .userInitiated) {
                 Scanner.scan(root)
             }.value
             guard let self else { return }
-            self.scanning = false
             self.videosFound?(items)
+            // Something else has been opened since — another folder, a tag —
+            // and a slow walk finishing late must not take the list back.
+            guard asked == self.openGeneration else { return }
+            self.scanning = false
             guard !items.isEmpty else {
                 self.trouble = "No videos in “\((root as NSString).lastPathComponent)”."
                 self.playlist = []
@@ -507,18 +514,25 @@ final class PlaybackController: ObservableObject {
     /// hands them over, since the transcripts live in the profile's store.
     /// Videos no longer on disk are left out; a search that finds none says so.
     func playSaid(_ query: String, mentions: [String: [Double]]) {
-        let present = mentions.filter { FileManager.default.fileExists(atPath: $0.key) }
-        guard !present.isEmpty else {
-            trouble = mentions.isEmpty
-                ? "\u{201C}\(query)\u{201D} is not said in any transcribed video."
-                : "\u{201C}\(query)\u{201D} is said only in videos that are no longer on disk."
-            return
-        }
-        saidQuery = query
-        saidMentions = present
-        start(Array(present.keys), mode: .said, root: nil, resume: nil)
-        if present.count < mentions.count {
-            trouble = "\(mentions.count - present.count) of the videos it is said in are no longer on disk."
+        Task { [weak self] in
+            // A stat per video, and they may be on a share: asked off the main
+            // thread, the list starting when the answers are in.
+            let present = await Task.detached(priority: .userInitiated) {
+                mentions.filter { FileManager.default.fileExists(atPath: $0.key) }
+            }.value
+            guard let self else { return }
+            guard !present.isEmpty else {
+                self.trouble = mentions.isEmpty
+                    ? "\u{201C}\(query)\u{201D} is not said in any transcribed video."
+                    : "\u{201C}\(query)\u{201D} is said only in videos that are no longer on disk."
+                return
+            }
+            self.saidQuery = query
+            self.saidMentions = present
+            self.start(Array(present.keys), mode: .said, root: nil, resume: nil)
+            if present.count < mentions.count {
+                self.trouble = "\(mentions.count - present.count) of the videos it is said in are no longer on disk."
+            }
         }
     }
 
@@ -572,7 +586,13 @@ final class PlaybackController: ObservableObject {
         return true
     }
 
+    /// Moves each time a playlist is opened, so a folder walk still out when
+    /// the user opened something else can tell its answer is no longer wanted.
+    private var openGeneration = 0
+
     private func start(_ items: [String], mode: PlayMode, root: String?, resume: String?) {
+        openGeneration += 1
+        scanning = false
         // The one place the hidden filter is applied on the way into a
         // playlist, so every caller — folder, tag, favorites, a drop, a
         // resume — is covered by construction rather than by remembering.
@@ -1276,7 +1296,19 @@ final class PlaybackController: ObservableObject {
     /// then alphabetical — the chips the filter offers. Only tags that are
     /// actually on these files: a chip that can only ever empty the list is
     /// not worth offering.
+    ///
+    /// Kept until the playlist or the tags change: the filter strip reads this
+    /// on every redraw, and it is a walk of the whole playlist.
     var tagsInPlaylist: [(name: String, count: Int)] {
+        if let memo = tagsInPlaylistMemo, memo.revision == library.tagsRevision { return memo.tags }
+        let tags = countTagsInPlaylist()
+        tagsInPlaylistMemo = (library.tagsRevision, tags)
+        return tags
+    }
+
+    private var tagsInPlaylistMemo: (revision: Int, tags: [(name: String, count: Int)])?
+
+    private func countTagsInPlaylist() -> [(name: String, count: Int)] {
         var counts: [String: Int] = [:]
         var display: [String: String] = [:]
         for path in playlist {
@@ -1370,6 +1402,8 @@ final class PlaybackController: ObservableObject {
                 }.value
                 guard let self else { return }
                 self.videosFound?(items)
+                // The list may be of something else by the time the walk ends.
+                guard self.mode == .folder, self.root == root else { return }
                 self.playlist = self.library.sorted(items)
                 self.settle(on: playingNow)
             }
@@ -1384,8 +1418,15 @@ final class PlaybackController: ObservableObject {
             settle(on: playingNow)
         case .said:
             // What was said is fixed; what is still on disk is not.
-            playlist = playlist.filter { FileManager.default.fileExists(atPath: $0) }
-            settle(on: playingNow)
+            let listed = playlist
+            Task { [weak self] in
+                let present = await Task.detached(priority: .userInitiated) {
+                    Set(listed.filter { FileManager.default.fileExists(atPath: $0) })
+                }.value
+                guard let self, self.mode == .said else { return }
+                self.playlist = self.playlist.filter { present.contains($0) }
+                self.settle(on: playingNow)
+            }
         }
     }
 

@@ -38,7 +38,24 @@ final class SmartCollectionStore: ObservableObject {
         watchers = []
         // Any change a rule could read: tags, ratings, readings, hiding,
         // watching (library); verdicts and analysis state; transcripts.
-        library.objectWillChange.sink { [weak self] _ in self?.scheduleRefresh() }.store(in: &watchers)
+        //
+        // Named one by one rather than "anything in the library": the resume
+        // position is written every few seconds while a video is open, and
+        // every collection was being answered again each time for a change no
+        // rule reads. What a rule does read of it is whether a video HAS a
+        // resume point (in progress, and known at all), so that is watched as
+        // the set of videos, not their positions.
+        let changed: [AnyPublisher<Void, Never>] = [
+            library.$tags.map { _ in () }.eraseToAnyPublisher(),
+            library.$facts.map { _ in () }.eraseToAnyPublisher(),
+            library.$hidden.map { _ in () }.eraseToAnyPublisher(),
+            library.$watchRevision.map { _ in () }.eraseToAnyPublisher(),
+            library.$removedFolders.map { _ in () }.eraseToAnyPublisher(),
+            library.$profileOpen.map { _ in () }.eraseToAnyPublisher(),
+            library.$progress.map { Set($0.keys) }.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+        ]
+        Publishers.MergeMany(changed)
+            .sink { [weak self] _ in self?.scheduleRefresh() }.store(in: &watchers)
         analysis.objectWillChange.sink { [weak self] _ in self?.scheduleRefresh() }.store(in: &watchers)
         journal.$transcriptEdits.sink { [weak self] _ in self?.scheduleRefresh() }.store(in: &watchers)
         reload(profile: Paths.activeProfile)
@@ -123,7 +140,7 @@ final class SmartCollectionStore: ObservableObject {
         guard let library else { return [:] }
         var out: [UUID: String] = [:]
         for rule in collection.rules {
-            if let why = SmartEvaluator.problem(with: rule, knownNames: { !library.pathsCarrying($0).isEmpty }) {
+            if let why = SmartEvaluator.problem(with: rule, knownNames: { library.isNameInUse($0) }) {
                 out[rule.id] = why
             }
         }

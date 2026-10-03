@@ -85,7 +85,12 @@ final class SpeechPass {
 
         let samples: [Float]
         do {
-            samples = try await AudioExtraction.samples(path: path)
+            let transcriber = self.transcriber
+            samples = try await AudioExtraction.samples(path: path) {
+                Task.isCancelled || transcriber.isCancelled
+            }
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw SpeechPassRefusal.failed("its audio could not be decoded")
         }

@@ -26,6 +26,9 @@ final class MediaCache: ObservableObject {
     /// Paths whose size check is in flight, so a row drawn sixty times a second
     /// asks the disk once.
     private var checking: Set<String> = []
+    /// Paths whose size is being asked so a length can be remembered, and the
+    /// ones that could not be sized.
+    private var sizing: Set<String> = []
     private var pendingSave: Task<Void, Never>?
     /// Poster frames, held in a cache that evicts rather than a dictionary
     /// that does not: a session spent browsing icon grids over a few
@@ -72,12 +75,24 @@ final class MediaCache: ObservableObject {
         return Double(info.st_size)
     }
 
+    /// The size is asked off the main thread — this is called from the
+    /// player's time callback, four times a second, and a `stat` on a share
+    /// that has gone to sleep would stop the window. A path is asked once: one
+    /// that cannot be sized is not asked again every tick.
     func remember(length seconds: Double, for path: String) {
-        guard let size = Self.fileSize(path) else { return }
-        lengths[Paths.tagKey(path)] = [size, seconds]
-        resolved[path] = seconds
-        lengthsDirty = true
-        scheduleSave()
+        guard !sizing.contains(path) else { return }
+        sizing.insert(path)
+        Task { [weak self] in
+            let size = await Task.detached(priority: .utility) {
+                MediaCache.fileSize(path)
+            }.value
+            guard let self, let size else { return }
+            self.sizing.remove(path)
+            self.lengths[Paths.tagKey(path)] = [size, seconds]
+            self.resolved[path] = seconds
+            self.lengthsDirty = true
+            self.scheduleSave()
+        }
     }
 
     /// Check the remembered length still describes THIS file, off the main
@@ -117,11 +132,18 @@ final class MediaCache: ObservableObject {
 
     /// Written once a scan finishes rather than per video: a thousand videos
     /// would otherwise be a thousand rewrites of the same file.
+    ///
+    /// Encoded and written off the main thread, one write at a time so they
+    /// land in order.
     func saveLengths() {
         guard lengthsDirty else { return }
         lengthsDirty = false
-        JSONStore.saveCompact(Paths.durationFile, lengths)
+        let snapshot = lengths
+        let file = Paths.durationFile
+        Self.saveQueue.async { JSONStore.saveCompact(file, snapshot) }
     }
+
+    private static let saveQueue = DispatchQueue(label: "MediaCache.save", qos: .utility)
 
     /// How long this video is, if that is already known — a dictionary lookup,
     /// safe to call from a row being drawn.
@@ -234,8 +256,9 @@ final class MediaCache: ObservableObject {
     }
 
     private nonisolated static func fetchPoster(_ path: String, big: Bool) async -> NSImage? {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-              let size = (attrs[.size] as? NSNumber)?.int64Value else { return nil }
+        // One `lstat`, not the attribute dictionary — see `fileSize`.
+        guard let bytes = fileSize(path) else { return nil }
+        let size = Int64(bytes)
         let cache = thumbLocation(path, size: size, big: big)
         if let data = FileManager.default.contents(atPath: cache),
            let image = NSImage(data: data) {

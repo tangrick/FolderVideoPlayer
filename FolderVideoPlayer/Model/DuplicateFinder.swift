@@ -20,6 +20,8 @@ final class DuplicateFinder: ObservableObject {
     private let library: Library
 
     @Published private(set) var scanning = false
+    /// A Discard is moving files, so a second one must not start beside it.
+    @Published private(set) var discarding = false
     @Published private(set) var status = ""
     @Published private(set) var sweptCount = 0
     @Published var filter = ""
@@ -370,13 +372,28 @@ final class DuplicateFinder: ObservableObject {
     /// Discard every doomed copy in the visible sets. Tags on a copy about to
     /// go are carried over to the one being kept first: they are the part of a
     /// video that was your work.
-    func discardDoomed(_ chosen: [DupeGroup]) -> TrashReport {
+    ///
+    /// Each file is moved off the main thread: on a share that is a round trip
+    /// (or several) per copy, and a few hundred of them froze the window until
+    /// the last one was done.
+    func discardDoomed(_ chosen: [DupeGroup]) async -> TrashReport {
         var report = TrashReport()
+        guard !discarding else { return report }
+        discarding = true
+        defer { discarding = false }
+        let total = chosen.reduce(0) { $0 + $1.doomed.count }
+        var done = 0
         for group in chosen {
             for key in group.doomed {
+                done += 1
+                status = "Discarding \(done) of \(total)…"
                 mergeTags(into: group.keeper, from: key)
+                // The run now spans many turns of the main thread, so the
+                // merged tags are put in line to be written as it goes: a quit
+                // half way must not lose the tags of a copy already discarded.
+                library.saveTagsSoon()
                 let path = Paths.tagPath(key)
-                let (ok, why) = discard(path)
+                let (ok, why) = await discard(path)
                 if ok {
                     report.moved += 1
                     report.reclaimed += group.size
@@ -389,6 +406,7 @@ final class DuplicateFinder: ObservableObject {
         library.saveTags()
         library.savePrints()
         library.dupesChanged()
+        status = ""
         derive()
         return report
     }
@@ -410,25 +428,32 @@ final class DuplicateFinder: ObservableObject {
     /// useless on a NAS; deleting instead would be worse. So the third option:
     /// move them somewhere you nominate, once per volume, and you delete them
     /// yourself when you are satisfied.
-    private func discard(_ path: String) -> (Bool, String) {
-        do {
-            try FileManager.default.trashItem(at: URL(fileURLWithPath: path),
-                                              resultingItemURL: nil)
-            return (true, "")
-        } catch {
-            let why = error.localizedDescription
-            let volume = Paths.volumeOf(path)
-            var folder = library.discardFolders[volume]
-            if let known = folder,
-               !FileManager.default.fileExists(atPath: known) { folder = nil }
-            if folder == nil {
-                folder = askDiscardFolder(volume, why)
-                library.discardFolders[volume] = folder ?? ""
-                library.save()
+    private func discard(_ path: String) async -> (Bool, String) {
+        let known = library.discardFolders[Paths.volumeOf(path)]
+        // Nil when it went to the Trash; otherwise why not, and whether the
+        // folder nominated for this volume is still there.
+        let refused: (why: String, folderThere: Bool)? = await Task.detached(priority: .userInitiated) {
+            do {
+                try FileManager.default.trashItem(at: URL(fileURLWithPath: path),
+                                                  resultingItemURL: nil)
+                return nil
+            } catch {
+                return (error.localizedDescription,
+                        known.map { FileManager.default.fileExists(atPath: $0) } ?? false)
             }
-            guard let folder, !folder.isEmpty else { return (false, why) }
-            return moveInto(folder, path)
+        }.value
+        guard let refused else { return (true, "") }
+        let volume = Paths.volumeOf(path)
+        var folder = refused.folderThere ? known : nil
+        if folder == nil {
+            folder = askDiscardFolder(volume, refused.why)
+            library.discardFolders[volume] = folder ?? ""
+            library.save()
         }
+        guard let folder, !folder.isEmpty else { return (false, refused.why) }
+        return await Task.detached(priority: .userInitiated) {
+            Self.moveInto(folder, path)
+        }.value
     }
 
     private func askDiscardFolder(_ volume: String, _ why: String) -> String? {
@@ -460,7 +485,7 @@ final class DuplicateFinder: ObservableObject {
     /// Move a file into a folder without ever overwriting what is there: two
     /// folders can hold different videos with the same name, and one quietly
     /// replacing the other is exactly the data loss this is meant to prevent.
-    private func moveInto(_ folder: String, _ path: String) -> (Bool, String) {
+    nonisolated private static func moveInto(_ folder: String, _ path: String) -> (Bool, String) {
         let base = (path as NSString).lastPathComponent
         let stem = (base as NSString).deletingPathExtension
         let ext = (base as NSString).pathExtension

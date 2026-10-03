@@ -171,19 +171,30 @@ final class MovedScan: ObservableObject {
             }
 
             // Where to hunt: the folder the user picked, else every share.
-            let roots: [String]
-            if let root = searchRoot, !root.isEmpty {
-                roots = [root]
-            } else {
-                roots = Paths.networkShares().map { Paths.volumes + $0 }
-            }
             // Try the cached name index first: stat each remembered spot.
             // Only names it cannot confirm need a walk at all.
+            //
+            // All of it off the main thread: listing the shares, reading each
+            // one's index and checking every hit are round trips to the NAS,
+            // and a share asleep would hold the window — Stop included.
+            let picked = searchRoot
             let wanted = Set(orphans.map { $0.name.lowercased() })
-            let cached = NameIndex.freshAcrossShares(Paths.networkShares())
-            let (confirmed, toHunt) = NameIndex.resolve(names: wanted, index: cached) { key in
-                FileManager.default.fileExists(atPath: Paths.tagPath(key))
-            }
+            let (roots, confirmed, toHunt) = await Task.detached(priority: .userInitiated) {
+                () -> ([String], [String: [String]], Set<String>) in
+                let shares = Paths.networkShares()
+                let roots: [String]
+                if let root = picked, !root.isEmpty {
+                    roots = [root]
+                } else {
+                    roots = shares.map { Paths.volumes + $0 }
+                }
+                let cached = NameIndex.freshAcrossShares(shares)
+                let (confirmed, toHunt) = NameIndex.resolve(names: wanted, index: cached) { key in
+                    FileManager.default.fileExists(atPath: Paths.tagPath(key))
+                }
+                return (roots, confirmed, toHunt)
+            }.value
+            if Task.isCancelled { return }
             var places: [String: [String]] = confirmed.mapValues { $0.map { Paths.tagPath($0) } }
             if !toHunt.isEmpty {
                 self.phase = .indexing(files: 0)
@@ -195,8 +206,8 @@ final class MovedScan: ObservableObject {
                 for (name, paths) in hits { places[name] = paths }
                 // A full, untruncated walk is worth remembering — next time
                 // these names answer from the index instead of a walk.
-                if completed, searchRoot == nil {
-                    NameIndex.absorb(seen)
+                if completed, picked == nil {
+                    await Task.detached(priority: .utility) { NameIndex.absorb(seen) }.value
                 }
             }
 

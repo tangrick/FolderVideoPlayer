@@ -1223,18 +1223,29 @@ struct LibrarySidebar: View {
         let pendingCounts = roots.filter { counts[$0] == nil }
         let pendingIcons = roots.filter { folderIcons[$0] == nil }
         guard !pendingCounts.isEmpty || !pendingIcons.isEmpty else { return }
-        let loaded = await Task.detached(priority: .utility) {
-            () -> (counts: [String: Int], icons: [String: NSImage]) in
-            var counted: [String: Int] = [:]
-            for root in pendingCounts { counted[root] = Scanner.count(root) }
+        let icons = await Task.detached(priority: .utility) { () -> [String: NSImage] in
             var icons: [String: NSImage] = [:]
             for root in pendingIcons {
                 icons[root] = NSWorkspace.shared.icon(forFile: root)
             }
-            return (counted, icons)
+            return icons
         }.value
-        for (path, count) in loaded.counts { counts[path] = count }
-        for (path, icon) in loaded.icons { folderIcons[path] = icon }
+        for (path, icon) in icons { folderIcons[path] = icon }
+        // Each folder's count lands as its own walk ends, two walks at a time:
+        // one share asleep must not hold back the count of every other folder.
+        await withTaskGroup(of: (String, Int).self) { group in
+            var next = pendingCounts.makeIterator()
+            func add() {
+                guard let root = next.next() else { return }
+                group.addTask(priority: .utility) { (root, Scanner.count(root)) }
+            }
+            add()
+            add()
+            for await (root, count) in group {
+                counts[root] = count
+                add()
+            }
+        }
     }
 
     /// Stars, best first. A star rating IS a tag now — "Favorite" is 5

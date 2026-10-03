@@ -141,6 +141,9 @@ final class SuggestionStore: ObservableObject {
         let hadPendingWrite = saveTask != nil
         saveTask?.cancel()
         saveTask = nil
+        // A write already handed to `writer` finishes before anything below
+        // reads or writes the same files.
+        Self.writer.sync {}
         let inHand = byVideo
         // A debounced write still on its timer is aimed at the file being left.
         // Where it should land depends on why we are leaving. An ordinary
@@ -357,6 +360,19 @@ final class SuggestionStore: ObservableObject {
         scheduleSave()
     }
 
+    /// Many at once — a folder moved — with one save queued for the lot.
+    func move(_ pairs: [(String, String)]) {
+        var changed = false
+        for (oldPath, newPath) in pairs {
+            let from = Paths.tagKey(oldPath)
+            let to = Paths.tagKey(newPath)
+            guard from != to, let entry = byVideo.removeValue(forKey: from) else { continue }
+            byVideo[to] = entry
+            changed = true
+        }
+        if changed { scheduleSave() }
+    }
+
     /// Carry everything filed under a tag's name to the name it has now — a
     /// rename, or several tags folded into one.
     ///
@@ -461,25 +477,33 @@ final class SuggestionStore: ObservableObject {
     // MARK: - persistence
 
     /// Coalesce rapid changes: accepting four chips in a row should be one write.
+    ///
+    /// The snapshot is taken when the timer fires, not when it is set: held
+    /// from here, every change inside the 400 ms copied the whole dictionary
+    /// (a folder of a thousand videos moving was a thousand copies). And the
+    /// encoding and the write happen on `writer`, off the main thread — one
+    /// queue, so two writes land in the order they were asked for.
     private func scheduleSave() {
         guard profileOpen else { return }
         saveTask?.cancel()
-        let snapshot = byVideo
-        let target = file
         saveTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 400_000_000)
-            guard !Task.isCancelled else { return }
-            _ = JSONStore.saveCompact(target, snapshot)
-            _ = self
+            guard !Task.isCancelled, let self, self.profileOpen else { return }
+            let snapshot = self.byVideo
+            let target = self.file
+            Self.writer.async { _ = JSONStore.saveCompact(target, snapshot) }
         }
     }
+
+    private static let writer = DispatchQueue(label: "SuggestionStore.write", qos: .utility)
 
     /// Write immediately, for app termination.
     func flush() {
         guard profileOpen else { return }
         saveTask?.cancel()
         saveTask = nil
-        _ = JSONStore.saveCompact(file, byVideo)
+        // Behind any write already on its way, so this one is the last word.
+        Self.writer.sync { _ = JSONStore.saveCompact(file, byVideo) }
     }
 }
 

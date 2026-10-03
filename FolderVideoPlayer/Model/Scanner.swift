@@ -60,7 +60,7 @@ enum Scanner {
         // splitting the path into its digit runs inside each of them showed.
         let prefix = root.hasSuffix("/") ? root : root + "/"
         return found
-            .map { (String($0.dropFirst($0.hasPrefix(prefix) ? prefix.count : 0)), $0) }
+            .map { (naturalParts(String($0.dropFirst($0.hasPrefix(prefix) ? prefix.count : 0))), $0) }
             .sorted { naturalLess($0.0, $1.0) }
             .map(\.1)
     }

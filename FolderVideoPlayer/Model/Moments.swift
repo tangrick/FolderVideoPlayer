@@ -118,6 +118,18 @@ struct MomentBook: Codable, Equatable {
         return moved
     }
 
+    /// Many files moved — a folder — in one pass over the book rather than
+    /// one pass per file. `renames` is old key → new key.
+    mutating func move(_ renames: [String: String]) -> Int {
+        var moved = 0
+        for i in moments.indices {
+            guard let new = renames[moments[i].key], new != moments[i].key else { continue }
+            moments[i].key = new
+            moved += 1
+        }
+        return moved
+    }
+
     mutating func forget(_ key: String) { moments.removeAll { $0.key == key } }
 
     /// Take out the moments on every video `belongs` says yes to, and return
@@ -147,7 +159,14 @@ struct MomentBook: Codable, Equatable {
 /// the last deletion kept for Undo.
 @MainActor
 final class MomentStore: ObservableObject {
-    @Published private(set) var book = MomentBook()
+    @Published private(set) var book = MomentBook() {
+        didSet { byVideo = nil }
+    }
+    /// The book by video, each video's moments in order. Built when first
+    /// asked after a change: the scrubber asks for the playing video's moments
+    /// on every tick of the playhead, and filtering and sorting every moment
+    /// in the profile each time grows with the whole book.
+    private var byVideo: [String: [Moment]]?
     @Published private(set) var problem: String?
     /// The most recent deletion, for Undo. Cleared by any other change.
     @Published private(set) var lastDeleted: Moment?
@@ -167,7 +186,14 @@ final class MomentStore: ObservableObject {
         problem = nil
     }
 
-    func moments(for path: String) -> [Moment] { book.moments(for: Paths.tagKey(path)) }
+    func moments(for path: String) -> [Moment] {
+        if byVideo == nil {
+            byVideo = Dictionary(grouping: book.moments, by: \.key).mapValues {
+                $0.sorted { ($0.start, $0.createdAt) < ($1.start, $1.createdAt) }
+            }
+        }
+        return byVideo?[Paths.tagKey(path)] ?? []
+    }
 
     /// The videos this profile has marked moments on.
     var videoKeys: Set<String> { Set(book.moments.map(\.key)) }
@@ -229,7 +255,9 @@ final class MomentStore: ObservableObject {
     /// Many at once — a folder moved — saved once.
     func move(_ pairs: [(String, String)]) {
         var copy = book
-        let moved = pairs.reduce(0) { $0 + copy.move(from: Paths.tagKey($1.0), to: Paths.tagKey($1.1)) }
+        let renames = Dictionary(pairs.map { (Paths.tagKey($0.0), Paths.tagKey($0.1)) },
+                                 uniquingKeysWith: { first, _ in first })
+        let moved = copy.move(renames)
         guard moved > 0 else { return }
         book = copy
         persist()

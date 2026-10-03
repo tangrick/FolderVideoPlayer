@@ -14,7 +14,12 @@ final class Library: ObservableObject {
     // resume position that ages out costs you nothing, a tag you typed is
     // work. The cost of keying on path is that renaming a video orphans its
     // tags, which is what Tag Profiles is there to clean up.
-    @Published private(set) var tags: [String: [String]] = [:]
+    @Published private(set) var tags: [String: [String]] = [:] {
+        didSet { tagsRevision &+= 1 }
+    }
+    /// Moves whenever `tags` does, so something derived from the tags can be
+    /// kept until they change instead of being worked out again per redraw.
+    private(set) var tagsRevision = 0
 
     /// Which of those tags were read off the FILE rather than guessed from the
     /// picture. Empty on an existing library and on every device that has never
@@ -38,7 +43,9 @@ final class Library: ObservableObject {
     /// conversation, and re-reading the same files on the other device yields
     /// the same facts anyway. See `docs/plans/2026-09-16-metadata-separation.md`
     /// for what that costs the TV.
-    @Published private(set) var facts = MetadataFacts()
+    @Published private(set) var facts = MetadataFacts() {
+        didSet { factCountsStale = true }
+    }
     /// What the one-time separation did, if it has happened. Read at launch so
     /// the app can say so: 31 names leaving the tag list deserves a sentence
     /// rather than silence. See `MetadataSplit.Summary`.
@@ -65,7 +72,13 @@ final class Library: ObservableObject {
     /// sidebar's "From the file" section reads these; nothing trains, suggests
     /// or files on them.
     @Published private(set) var factCounts: [String: Int] = [:]
+    private var factDisplay: [String: String] = [:]
     private var sortedFacts: [String] = []
+    /// Set when something the fact counts are derived from — the readings, or
+    /// which videos are hidden — has changed since they were last counted. A
+    /// tag edit changes neither, and `recount` runs on every one of those:
+    /// sorting every fact key per tag answer was most of what it cost.
+    private var factCountsStale = true
 
     // -- remembered state -------------------------------------------------
     @Published var recent: [String] = []
@@ -245,7 +258,9 @@ final class Library: ObservableObject {
     // (`Paths.tagKey`), the same space tags use. See HiddenVideos.swift.
 
     /// The hidden set, keyed like tags. Empty on a fresh install.
-    @Published private(set) var hidden: Set<String> = []
+    @Published private(set) var hidden: Set<String> = [] {
+        didSet { factCountsStale = true }
+    }
 
     /// The password that guards the Hidden view, and this session's answer to
     /// whether it has been given. Owned here so every view that already holds
@@ -295,7 +310,7 @@ final class Library: ObservableObject {
 
     /// Every hidden video as an openable path. May name files that have since
     /// gone; the playlist reports a missing one the same as any other.
-    func hiddenPaths() -> [String] { hidden.map(Paths.tagPath).sorted { naturalLess($0, $1) } }
+    func hiddenPaths() -> [String] { Self.naturallySorted(hidden.map(Paths.tagPath)) }
 
     /// How many hidden videos sit under a folder — what the sidebar count
     /// subtracts so the number beside a folder matches what opening it shows.
@@ -1055,8 +1070,9 @@ final class Library: ObservableObject {
         sortedTags = display.keys.sorted().compactMap { display[$0] }
         // Facts are counted here as well, so every path that already recounts
         // tags — a save, a profile switch, a video hidden — keeps the fact
-        // counts in step without a second call at each site.
-        recountFacts()
+        // counts in step without a second call at each site. Only when they
+        // could have moved, though: see `factCountsStale`.
+        if factCountsStale { recountFacts() }
     }
 
     /// Derive what the views ask about facts, one pass per change.
@@ -1065,6 +1081,7 @@ final class Library: ObservableObject {
     /// fact into `tagCounts` is the confusion this whole split removes, and a
     /// view that wants both asks for both.
     private func recountFacts() {
+        factCountsStale = false
         var counts: [String: Int] = [:]
         var display: [String: String] = [:]
         // A hidden video is invisible to the app, so it must not prop up a
@@ -1085,6 +1102,7 @@ final class Library: ObservableObject {
             display[key].map { ($0, count) }
         })
         sortedFacts = display.keys.sorted().compactMap { display[$0] }
+        factDisplay = display
     }
 
     // MARK: - tags
@@ -1551,10 +1569,16 @@ final class Library: ObservableObject {
     }
 
     func taggedWith(_ tag: String) -> [String] {
+        Self.naturallySorted(Array(unsortedTaggedWith(tag)))
+    }
+
+    /// `taggedWith` before the sort, for a caller that will sort the union of
+    /// several names itself.
+    private func unsortedTaggedWith(_ tag: String) -> [String] {
         tags.filter { key, names in
             !hidden.contains(key)
                 && names.contains { $0.caseInsensitiveCompare(tag) == .orderedSame }
-        }.keys.map(Paths.tagPath).sorted { naturalLess($0, $1) }
+        }.keys.map(Paths.tagPath)
     }
 
     /// Every tag in use, case-insensitively unique, alphabetical.
@@ -1711,11 +1735,26 @@ final class Library: ObservableObject {
     /// too — `taggedWith` already drops them, and a reading must not be the
     /// thing that smuggles a hidden video into a playlist.
     func pathsCarrying(_ name: String) -> [String] {
-        var paths = Set(taggedWith(name))
+        Self.naturallySorted(Array(unsortedPathsCarrying(name)))
+    }
+
+    /// `pathsCarrying` as a set, unsorted: the sort is most of the cost, and a
+    /// query over several names sorts once, at the end.
+    private func unsortedPathsCarrying(_ name: String) -> Set<String> {
+        var paths = Set(unsortedTaggedWith(name))
         for key in facts.carrying(name) where !hidden.contains(key) {
             paths.insert(Paths.tagPath(key))
         }
-        return paths.sorted { naturalLess($0, $1) }
+        return paths
+    }
+
+    /// Whether any video the app shows carries this name, as a tag or as a
+    /// reading — `!pathsCarrying(name).isEmpty` without the walk and the sort.
+    /// Case-insensitive like every other name match, and hidden videos do not
+    /// count, because the held vocabularies leave them out.
+    func isNameInUse(_ name: String) -> Bool {
+        let folded = name.lowercased()
+        return tagDisplay[folded] != nil || factDisplay[folded] != nil
     }
 
     /// Every video a library query picks out: carrying any, or all, of its
@@ -1723,7 +1762,7 @@ final class Library: ObservableObject {
     /// and readings combine the same way their rows play, and hidden videos are
     /// left out by the same rule. Memory only — no stat, no file read.
     func paths(matching query: TagQuery) -> [String] {
-        Self.naturallySorted(Array(TagQuery.combine(query.names.map { Set(pathsCarrying($0)) }, query.match)))
+        Self.naturallySorted(Array(TagQuery.combine(query.names.map { unsortedPathsCarrying($0) }, query.match)))
     }
 
     // MARK: - smart collections
@@ -2536,10 +2575,14 @@ final class Library: ObservableObject {
         return dupeGroupCount
     }
 
-    /// Every group of two or more, as key → the other copies. Cached, because
-    /// the playlist asks per row: recomputing over an index of tens of
-    /// thousands on every row would make scrolling crawl.
-    func dupeSets() -> [String: [String]] {
+    /// Every group of two or more, as key → the group it is in (itself
+    /// included). Cached, because the playlist asks per row: recomputing over
+    /// an index of tens of thousands on every row would make scrolling crawl.
+    ///
+    /// The whole group rather than "the others": every member then shares one
+    /// array, where a list of the others per member is a copy apiece — the
+    /// square of the group's size for one large group.
+    private func dupeSets() -> [String: [String]] {
         if let cache = dupeCache { return cache }
         var out: [String: [String]] = [:]
         for group in dupeGroups() {
@@ -2547,13 +2590,16 @@ final class Library: ObservableObject {
             // nowhere should keep asking about it.
             let live = group.filter { !sparedDupes.contains($0) }
             guard live.count > 1 else { continue }
-            for key in live { out[key] = live.filter { $0 != key } }
+            for key in live { out[key] = live }
         }
         dupeCache = out
         return out
     }
 
-    func dupes(for path: String) -> [String] { dupeSets()[Paths.tagKey(path)] ?? [] }
+    func dupes(for path: String) -> [String] {
+        let key = Paths.tagKey(path)
+        return (dupeSets()[key] ?? []).filter { $0 != key }
+    }
 
 
 

@@ -148,6 +148,19 @@ struct TagPrototypesTest {
                                           read: { _ in [Float](repeating: 1, count: 8) }) == nil,
                    true)
 
+        // The running sum the classifier keeps: fed the same vectors in another
+        // order, one at a time, it has to be the same baseline.
+        var running = TagPrototypes.RunningBaseline(dim: dim)
+        for h in cached.reversed() { if let v = read(h) { running.add(v) } }
+        running.add([Float](repeating: 1, count: 8))
+        let runningWorst = zip(running.baseline ?? [], base ?? []).map { abs($0 - $1) }.max() ?? 1
+        check("a baseline summed vector by vector is the same baseline (max |Δ| \(runningWorst))",
+              runningWorst < 1e-12)
+        checkEqual("...and counts only the vectors it could use", running.count,
+                   cached.filter { read($0)?.count == dim }.count)
+        checkEqual("a running sum of nothing refuses",
+                   TagPrototypes.RunningBaseline(dim: dim).baseline == nil, true)
+
         // MARK: the walk over the cache directory
 
         let tmp = NSTemporaryDirectory() + "fvp-tag-proto-\(getpid())/"

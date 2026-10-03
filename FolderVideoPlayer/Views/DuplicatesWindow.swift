@@ -299,7 +299,7 @@ struct DuplicatesScreen: View {
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
             Button("Discard \(finder.doomedCount) Copies…") { confirming = true }
-                .disabled(finder.doomedCount == 0 || finder.scanning)
+                .disabled(finder.doomedCount == 0 || finder.scanning || finder.discarding)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -312,14 +312,17 @@ struct DuplicatesScreen: View {
     }
 
     private func discard() {
-        let report = finder.discardDoomed(finder.filteredGroups)
-        var detail = "\(report.moved) copies discarded, \(humanBytes(report.reclaimed)) reclaimed."
-        if !report.failed.isEmpty {
-            detail += "\n\n\(report.failed.count) could not be moved:\n"
-                + report.failed.prefix(5).map { "\(($0.0 as NSString).lastPathComponent): \($0.1)" }
-                    .joined(separator: "\n")
+        let chosen = finder.filteredGroups
+        Task {
+            let report = await finder.discardDoomed(chosen)
+            var detail = "\(report.moved) copies discarded, \(humanBytes(report.reclaimed)) reclaimed."
+            if !report.failed.isEmpty {
+                detail += "\n\n\(report.failed.count) could not be moved:\n"
+                    + report.failed.prefix(5).map { "\(($0.0 as NSString).lastPathComponent): \($0.1)" }
+                        .joined(separator: "\n")
+            }
+            app.say("Done", detail)
         }
-        app.say("Done", detail)
     }
 
     // MARK: - editing scans

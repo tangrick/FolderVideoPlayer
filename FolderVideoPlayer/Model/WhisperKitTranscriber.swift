@@ -8,7 +8,7 @@ import WhisperKit
 /// token to read a file on their own disk.
 final class WhisperKitTranscriber: SpeechTranscribing {
     /// Raised by `cancel()`, read by the model's own callback thread.
-    private var cancelFlag = CancelFlag()
+    private let cancelFlag = CancelFlag()
     let source: String
     private let modelsRoot: URL
     private var kit: WhisperKit?
@@ -53,8 +53,10 @@ final class WhisperKitTranscriber: SpeechTranscribing {
         guard !samples.isEmpty else { throw SpeechError.emptyAudio }
         try Task.checkCancellation()
 
-        // Fresh per run: a cancel from the last run must not abort this one.
-        cancelFlag = CancelFlag()
+        // A cancel that arrived while the audio was being read stops here. The
+        // flag is never lowered: a transcriber serves one request — a video, or
+        // a playlist that the same Cancel stops outright.
+        if cancelFlag.isRaised { throw CancellationError() }
         let kit = try await loaded()
 
         // Set the knobs after construction rather than in the initialiser:
@@ -114,6 +116,8 @@ final class WhisperKitTranscriber: SpeechTranscribing {
     func cancel() {
         cancelFlag.raise()
     }
+
+    var isCancelled: Bool { cancelFlag.isRaised }
 
     func unload() async {
         await kit?.unloadModels()
