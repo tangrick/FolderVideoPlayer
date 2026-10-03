@@ -108,26 +108,31 @@ actor CoreMLClassifier {
     /// spaced across the whole video — it is a thinner comb, not a prefix — so
     /// a loud moment late in a clip is still seen.
     ///
-    /// 40 was measured, not guessed. Across 28 videos from the maintainer's
-    /// library — 14 of the highest-frame-count files and all 14 reachable
-    /// cases where a cap could plausibly change the answer (more than 40
-    /// frames, and either a verdict carried by under 10% of them or a score
-    /// between 0.2 and 0.8) — capping at 60, 40 and 20 produced **zero
+    /// The cap was measured, not guessed. Across 28 videos from the
+    /// maintainer's library — 14 of the highest-frame-count files and all 14
+    /// reachable cases where a cap could plausibly change the answer (more
+    /// than 40 frames, and either a verdict carried by under 10% of them or a
+    /// score between 0.2 and 0.8) — capping at 60, 40 and 20 produced **zero
     /// verdict flips**, while cutting decode+score time by 42-77% on the
-    /// videos long enough to be affected. 40 was chosen over 20 because the
-    /// stored scores drift less (largest movement at 40 was 0.056 to 0.042;
-    /// at 20 one safe video went 0.313 to 0.255), and the scores are kept and
-    /// shown, not just compared against the threshold.
+    /// videos long enough to be affected.
     ///
-    /// Only videos longer than about 3.5 minutes are affected at all: a
-    /// shorter clip yields fewer than 40 frames and is sampled exactly as
-    /// before. In this library that was 81 of 1,974 analysed videos.
+    /// It was 40 until 2026-10-03, chosen over 20 because the stored scores
+    /// drift less (largest movement at 40 was 0.056 to 0.042; at 20 one safe
+    /// video went 0.313 to 0.255), and the scores are kept and shown, not just
+    /// compared against the threshold. It is 20 now at the maintainer's
+    /// asking: big files on a share were slow to classify, each frame being a
+    /// seek into the file, and no verdict in that measurement turned on the
+    /// difference. The drift is the price, and none of it was near 0.5.
+    ///
+    /// Only videos longer than about 1 minute 40 are affected at all: a
+    /// shorter clip yields fewer than 20 frames and is sampled exactly as
+    /// before.
     ///
     /// NOTE: these frames are also what the memo hands the suggestion pass, so
-    /// a long video now offers tags from 40 frames rather than up to 250. The
+    /// a long video now offers tags from 20 frames rather than up to 250. The
     /// verdict effect is measured above; the TAG effect is not, and cannot be
     /// until T01's annotated corpus exists.
-    static let maxAnalysisFrames = 40
+    static let maxAnalysisFrames = 20
 
     private let root: String           // the support dir: models and cache live under it
     private let cache: EmbeddingCache
