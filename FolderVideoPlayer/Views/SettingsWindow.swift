@@ -437,6 +437,15 @@ private struct AISettings: View {
                         .labelsHidden()
                         .toggleStyle(.switch)
                 }
+                SettingRow(title: "Analysis strength",
+                           detail: "How many frames of a video the models look at: up to \(library.analysisStrength.frames). Fewer is faster — most of all on big files on a share — and sees less of the video. Videos already analysed keep their results.") {
+                    Picker("", selection: $library.analysisStrength) {
+                        ForEach(AnalysisStrength.allCases) { Text($0.title).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 240)
+                }
             } header: {
                 Text("Automatic")
             }

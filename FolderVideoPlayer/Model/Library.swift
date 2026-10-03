@@ -226,6 +226,11 @@ final class Library: ObservableObject {
     /// work. Already-named people stay named — a switch is not a delete —
     /// and their tags keep working as ordinary tags.
     @Published var facesEnabled = true { didSet { save() } }
+    /// How many frames a classify or suggestion pass decodes — see
+    /// `AnalysisStrength`. Handed to the classifier through `inForce`.
+    @Published var analysisStrength = AnalysisStrength.balanced {
+        didSet { AnalysisStrength.inForce = analysisStrength; save() }
+    }
     /// Working on the video being watched, in the background: classify it, then
     /// offer tag ideas for it.
     ///
@@ -667,6 +672,7 @@ final class Library: ObservableObject {
         // the day the control comes back.
         watchDupes = false
         facesEnabled = state.facesEnabled ?? true
+        analysisStrength = state.analysisStrength.flatMap(AnalysisStrength.init(rawValue:)) ?? .balanced
         autoWorkWhilePlaying = state.autoWorkWhilePlaying ?? true
         verifyDupes = state.verifyDupes ?? true
         legacyRatings = state.ratings ?? [:]
@@ -731,6 +737,7 @@ final class Library: ObservableObject {
         state.discardFolders = discardFolders.filter { !$0.value.isEmpty }
         state.watchDupes = watchDupes
         state.facesEnabled = facesEnabled
+        state.analysisStrength = analysisStrength.rawValue
         state.autoWorkWhilePlaying = autoWorkWhilePlaying
         state.verifyDupes = verifyDupes
         state.sparedDupes = sparedDupes.sorted()

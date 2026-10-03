@@ -162,6 +162,10 @@ struct PersistedState: Codable {
     /// Whether face recognition runs at all. Absent means on, so an existing
     /// settings file keeps the behaviour it had before the switch existed.
     var facesEnabled: Bool?
+    /// How many frames a pass decodes (`AnalysisStrength`). Absent means
+    /// balanced. Kept as its name, not the enum: a name this build does not
+    /// know must read as balanced, not fail the whole settings file.
+    var analysisStrength: String?
     /// Whether the app works on the video being played: the classification
     /// pass AND the tag-idea pass, which are one feature to the person
     /// watching. Absent means on, for the same reason as `facesEnabled`.
@@ -207,7 +211,7 @@ struct PersistedState: Codable {
         case playlistSort, sortDescending
         case volume, discardFolders, watchDupes, verifyDupes, sparedDupes
         case hidden
-        case facesEnabled
+        case facesEnabled, analysisStrength
         /// The stored key is the old name; see `autoWorkWhilePlaying`.
         case autoWorkWhilePlaying = "classifyWhilePlaying"
         case scans, scan

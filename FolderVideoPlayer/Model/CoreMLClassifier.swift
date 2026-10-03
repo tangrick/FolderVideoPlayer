@@ -7,6 +7,49 @@ struct CoreMLVerdict {
     let frames: [FrameScore]
 }
 
+/// How hard a pass looks at a video: how many frames it may decode.
+///
+/// Decoding is what a pass costs, and on a share every frame is a seek into
+/// the file, so this is the one number that moves how long a library takes to
+/// classify. Fewer frames is faster and sees less: a moment that falls
+/// between two samples is not seen, and tags are offered from fewer frames.
+/// A video shorter than five seconds a frame allows is sampled in full at
+/// every setting.
+///
+/// `balanced` is the measured one (see `CoreMLClassifier.maxAnalysisFrames`).
+/// `quick` has not been measured against verdicts; it is offered as what it
+/// is — less looking, for whoever would rather have the time.
+enum AnalysisStrength: String, Codable, CaseIterable, Identifiable {
+    case quick, balanced, thorough
+
+    var id: String { rawValue }
+
+    var frames: Int {
+        switch self {
+        case .quick: return 10
+        case .balanced: return 20
+        case .thorough: return 40
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .quick: return "Quick"
+        case .balanced: return "Balanced"
+        case .thorough: return "Thorough"
+        }
+    }
+
+    /// The setting in force, where the classifier — which is not on the main
+    /// thread and holds no library — can read it. Set by `Library`.
+    static var inForce: AnalysisStrength {
+        get { lock.lock(); defer { lock.unlock() }; return held }
+        set { lock.lock(); held = newValue; lock.unlock() }
+    }
+    private static let lock = NSLock()
+    private static var held = AnalysisStrength.balanced
+}
+
 /// Classify, the Core ML way — the Swift half of `analyse_video`.
 ///
 /// Same pipeline, same record: sample frames (`FrameSampler`, engine parity),
@@ -108,6 +151,10 @@ actor CoreMLClassifier {
     /// spaced across the whole video — it is a thinner comb, not a prefix — so
     /// a loud moment late in a clip is still seen.
     ///
+    /// How many that is is the user's to choose — Settings ▸ AI, "Analysis
+    /// strength" (`AnalysisStrength`). What follows is where the middle
+    /// setting's number came from.
+    ///
     /// The cap was measured, not guessed. Across 28 videos from the
     /// maintainer's library — 14 of the highest-frame-count files and all 14
     /// reachable cases where a cap could plausibly change the answer (more
@@ -132,7 +179,7 @@ actor CoreMLClassifier {
     /// a long video now offers tags from 20 frames rather than up to 250. The
     /// verdict effect is measured above; the TAG effect is not, and cannot be
     /// until T01's annotated corpus exists.
-    static let maxAnalysisFrames = 20
+    static var maxAnalysisFrames: Int { AnalysisStrength.inForce.frames }
 
     private let root: String           // the support dir: models and cache live under it
     private let cache: EmbeddingCache
