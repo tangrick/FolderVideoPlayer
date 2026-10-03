@@ -367,18 +367,18 @@ in and the app builds; see the branch's test run for what was exercised.
 | 1 | Baseline re-read per suggestion | **Done.** Running sum in the classifier, updated on each cache write. The first suggestion after launch still reads the cache once. |
 | 2 | Smart-collection tooltip | **Done.** `Library.isNameInUse`, a folded lookup. |
 | 3 | Main-actor file calls | **Mostly done.** Player callback, missing-file index, duplicate discard, password creation, transcript-search and look-alike existence checks are off the main thread. Evidence spans are asked once per panel instead of once per chip, but that one `stat` is still synchronous. `FolderOps` preflight not touched. |
-| 4 | Transcription | **Half done.** Cancel now stops the audio decode (and a cancel during decode is no longer lost). The whole track is still read into memory. |
+| 4 | Transcription | **Half done.** Cancel now stops the audio decode (and a cancel during decode is no longer lost), and the sample buffer is sized once instead of doubling as it fills. The whole track is still held in memory: decoding in windows means stitching the model's output across boundaries, which cannot be checked without real transcription runs. |
 | 5 | Scan timeout | **Done.** Real 60 s deadline; the walk checks for cancellation; a folder whose walk is still out is not walked again. |
-| 6 | Recount per tag write | **Half done.** Facts are recounted only when the readings or the hidden set changed. The tag recount is still a full pass. |
-| 7 | Main-actor JSON writes | **Partly done.** Suggestions and durations are written off the main thread on serial queues. Tags, state, facts, fingerprints and the upkeep file are unchanged. |
+| 6 | Recount per tag write | **Half done, rest declined.** Facts are recounted only when the readings or the hidden set changed. The tag recount stays a full pass: the source's own figure (`Library.swift`, at `saveTagsSoon`) puts everything but the file write at about 4 ms of a 42 ms save at 10,000 videos, which does not justify an incremental scheme. |
+| 7 | Main-actor JSON writes | **Mostly done.** `JSONStore.saveBehind` encodes and writes on one serial queue; every `load`/`save` drains it first, so order holds. Used for the deferred tag write, the fingerprint index, the upkeep file; suggestions and durations have their own queues. A tag edit saved with `saveTags()` (not `saveTagsSoon`) and the state and facts files are still written on the main thread, by design: other code reads those files straight after. |
 | 8 | 5-second resume sample | **Half done.** Smart collections re-evaluate only on changes a rule reads. `progress` is still published, because the row's progress bar is drawn from it. |
 | 9 | Natural sort in the comparator | **Done** at `Scanner.scan`, `taggedWith`, `pathsCarrying`, `paths(matching:)`, `hiddenPaths`. |
 | 10 | Row and menu derivation | **Done** for the rating, the tag menu and the tag strip. `buildRows` precomputation not done. |
-| 11 | Embedding reads | **Partly done.** 8,192-vector memory tier in `EmbeddingCache`. Prototypes are not cached by revision; look-alike and face searches are unchanged. |
+| 11 | Embedding reads | **Partly done.** 8,192-vector memory tier in `EmbeddingCache`, which covers the prototype rebuild (at most 80 vectors a tag). Look-alike and face searches still read their corpus per search. |
 | 12 | Moments and subtitles | **Half done.** Moments are indexed by video. Subtitle lookup unchanged. |
-| 13 | Background work ownership | **Partly done.** Folder scans drop stale results; sidebar counts land per folder; posters use `lstat`. No in-flight deduplication or shared limit yet. |
+| 13 | Background work ownership | **Mostly done.** Folder scans drop stale results; sidebar counts land per folder; posters use `lstat`; row stats are asked once per file however many rows ask. Posters are not deduplicated, and there is no shared limit across callers. |
 | 14 | Folder moves, duplicate map | **Done.** |
-| P3 | All | Not started. |
+| P3 | All | Poster cache cost is now in bytes. The rest not started — each wants a measurement first. |
 
 ## Suggested order
 

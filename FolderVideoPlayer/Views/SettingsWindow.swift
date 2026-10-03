@@ -389,6 +389,9 @@ private struct LibrarySettings: View {
         panel.allowedContentTypes = [.json]
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
+            // The copy is of the file, so the file has to be current first.
+            library.flushTags()
+            JSONStore.finishWrites()
             let data = try Data(contentsOf: URL(fileURLWithPath: Paths.tagsFile))
             try data.write(to: url)
             status = "Saved \(library.knownTags().count) tags to \(url.lastPathComponent)."

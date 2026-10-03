@@ -245,8 +245,8 @@ final class MediaCache: ObservableObject {
            Date().timeIntervalSince1970 - failed < retryFailedAfter { return nil }
         let image = await Self.fetchPoster(path, big: big)
         if let image {
-            // Costed at its pixel count so eviction weighs big gallery frames
-            // above small row thumbnails.
+            // Costed at its size in memory so eviction weighs big gallery
+            // frames above small row thumbnails.
             memory.setObject(image, forKey: slot as NSString, cost: Self.pixelCost(image))
             failures.removeValue(forKey: path)
         } else {
@@ -297,13 +297,13 @@ final class MediaCache: ObservableObject {
         return NSImage(cgImage: cg, size: wanted)
     }
 
-    /// What a frame weighs, in pixels — a faithful-enough stand-in for its
-    /// memory so the cache evicts the big ones before the little ones.
+    /// What a frame weighs, in bytes — four to a pixel — so the cache's limit,
+    /// which is written in bytes, means what it says.
     private nonisolated static func pixelCost(_ image: NSImage) -> Int {
         if let rep = image.representations.first, rep.pixelsWide > 0 {
-            return rep.pixelsWide * rep.pixelsHigh
+            return rep.pixelsWide * rep.pixelsHigh * 4
         }
-        return Int(image.size.width * image.size.height)
+        return Int(image.size.width * image.size.height) * 4
     }
 
     private nonisolated static func thumbLocation(_ path: String, size: Int64, big: Bool) -> String {

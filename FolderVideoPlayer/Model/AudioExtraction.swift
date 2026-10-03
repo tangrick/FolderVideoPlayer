@@ -110,6 +110,14 @@ enum AudioExtraction {
         }
 
         var out: [Float] = []
+        // Room for the whole answer, asked for once. Left to grow, the array
+        // doubles as it fills: an hour of audio is 230 MB, and each doubling
+        // briefly holds the old buffer and the new one together.
+        let wholeTrack = (try? await asset.load(.duration).seconds) ?? 0
+        let span = (from != nil && to != nil) ? to! - from! : wholeTrack
+        if span.isFinite, span > 0 {
+            out.reserveCapacity(Int((span + 1) * sampleRate))
+        }
         while let buffer = output.copyNextSampleBuffer() {
             if shouldStop() {
                 reader.cancelReading()

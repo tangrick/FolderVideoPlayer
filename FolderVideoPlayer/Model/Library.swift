@@ -403,6 +403,7 @@ final class Library: ObservableObject {
     // Stat results are asked once per file per launch and kept: a NAS should
     // not be round-tripped again every time the sort changes.
     private var addedDates: [String: Double] = [:]
+    private var statsInFlight: [String: Task<(Double, Int64), Never>] = [:]
     private var fileSizes: [String: Int64] = [:]
 
     /// Keeps `lock`'s changes visible to anything observing the library.
@@ -781,18 +782,27 @@ final class Library: ObservableObject {
         tagsWriteTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
-            self?.flushTags()
+            self?.flushTags(behind: true)
         }
     }
 
     /// Write the tags now if `saveTagsSoon` is holding a write back.
-    func flushTags() {
+    ///
+    /// `behind` is for the timer: nobody is waiting on that write, so the
+    /// whole file is encoded and written off the main thread. A caller that
+    /// asks by name — the end of a session, the way out — gets it on disk
+    /// before this returns.
+    func flushTags(behind: Bool = false) {
         tagsWriteTask?.cancel()
         tagsWriteTask = nil
         guard tagsWritePending else { return }
         tagsWritePending = false
         guard profileOpen else { return }
-        JSONStore.save(Paths.tagsFile, tags)
+        if behind {
+            JSONStore.saveBehind(Paths.tagsFile, tags)
+        } else {
+            JSONStore.save(Paths.tagsFile, tags)
+        }
     }
 
     private var tagsWriteTask: Task<Void, Never>?
@@ -972,6 +982,7 @@ final class Library: ObservableObject {
     /// A full copy of a store before the separation rewrites it, named with the
     /// minute it happened. Never overwrites an earlier copy.
     private func backUp(_ path: String) {
+        JSONStore.finishWrites()
         let fm = FileManager.default
         guard fm.fileExists(atPath: path) else { return }
         let stamp = Library.backupStamp.string(from: Date())
@@ -2370,13 +2381,18 @@ final class Library: ObservableObject {
         if let when = addedDates[path], let size = fileSizes[path] {
             return (dateText(when), humanSize(size))
         }
-        let values = await Task.detached(priority: .utility) { () -> (Double, Int64) in
+        // One stat per file however many rows ask at once: the same video can
+        // be on screen in the list and on an overview card.
+        let asking = statsInFlight[path] ?? Task.detached(priority: .utility) { () -> (Double, Int64) in
             let attrs = try? FileManager.default.attributesOfItem(atPath: path)
             let created = (attrs?[.creationDate] as? Date)?.timeIntervalSince1970 ?? 0
             let changed = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
             return (created > 0 ? created : changed,
                     (attrs?[.size] as? NSNumber)?.int64Value ?? 0)
-        }.value
+        }
+        statsInFlight[path] = asking
+        let values = await asking.value
+        statsInFlight[path] = nil
         addedDates[path] = values.0
         fileSizes[path] = values.1
         return (dateText(values.0), humanSize(values.1))
@@ -2480,13 +2496,14 @@ final class Library: ObservableObject {
         printsSaveTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(4))
             guard !Task.isCancelled else { return }
-            self?.flushPrints()
+            self?.flushPrints(behind: true)
         }
     }
 
     /// Write the index now, if it has changed. Called on quit; safe to call
-    /// any time.
-    func flushPrints() {
+    /// any time. `behind` is for the timer above: tens of thousands of entries
+    /// are encoded and written off the main thread.
+    func flushPrints(behind: Bool = false) {
         printsSaveTask?.cancel()
         printsSaveTask = nil
         guard printsDirty else { return }
@@ -2499,7 +2516,11 @@ final class Library: ObservableObject {
                 prints.removeValue(forKey: key)
             }
         }
-        JSONStore.saveCompact(Paths.fingerprintFile, prints)
+        if behind {
+            JSONStore.saveBehind(Paths.fingerprintFile, prints, pretty: false)
+        } else {
+            JSONStore.saveCompact(Paths.fingerprintFile, prints)
+        }
     }
 
     /// The duplicate groups of the live index, kept against the revision that

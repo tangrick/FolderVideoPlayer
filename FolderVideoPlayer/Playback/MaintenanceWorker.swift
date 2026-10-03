@@ -139,7 +139,7 @@ final class MaintenanceWorker: ObservableObject {
 
     private func persist() {
         guard !profile.isEmpty else { return }
-        _ = file.save(to: path)
+        file.saveBehind(to: path)
     }
 
     private func restart() {

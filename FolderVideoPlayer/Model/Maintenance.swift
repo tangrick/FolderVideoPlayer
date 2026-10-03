@@ -124,9 +124,18 @@ struct MaintenanceFile: Codable, Equatable {
     }
 
     static func load(at path: String) -> MaintenanceFile {
+        JSONStore.finishWrites()
         guard let data = FileManager.default.contents(atPath: path),
               let file = try? JSONDecoder().decode(MaintenanceFile.self, from: data) else { return MaintenanceFile() }
         return file
+    }
+
+    /// `save`, off the calling thread — the worker writes this after every
+    /// step it takes, and it holds every file of every folder it keeps.
+    func saveBehind(to path: String) {
+        var copy = self
+        copy.version = max(version, Self.currentVersion)
+        JSONStore.saveBehind(path, copy)
     }
 
     func save(to path: String) -> Bool {

@@ -9,14 +9,44 @@ import Foundation
 /// renaming a file the other had already moved.
 enum JSONStore {
     static func load<T: Decodable>(_ path: String, fallback: T) -> T {
+        finishWrites()
         guard let data = FileManager.default.contents(atPath: path) else { return fallback }
         return (try? JSONDecoder().decode(T.self, from: data)) ?? fallback
     }
 
     @discardableResult
     static func save<T: Encodable>(_ path: String, _ value: T) -> Bool {
-        write(path, value) == nil
+        finishWrites()
+        return write(path, value) == nil
     }
+
+    // MARK: - writing behind
+
+    /// Encode and write off the calling thread, for the big files written on a
+    /// timer: encoding megabytes of tags or fingerprints is not work for the
+    /// thread drawing the window.
+    ///
+    /// One queue for every file, so writes land in the order they were asked
+    /// for — and `load`, `save` and `saveCompact` wait for it to empty before
+    /// they touch the disk, so a write made here is never overtaken by an
+    /// older one and never missed by a read. Code that reads one of these
+    /// files some other way calls `finishWrites()` first.
+    static func saveBehind<T: Encodable>(_ path: String, _ value: T, pretty: Bool = true) {
+        behind.async { _ = write(path, value, pretty: pretty) }
+    }
+
+    /// Wait for every write handed to `saveBehind` to reach the disk.
+    static func finishWrites() {
+        guard DispatchQueue.getSpecific(key: onBehind) != true else { return }
+        behind.sync {}
+    }
+
+    private static let onBehind = DispatchSpecificKey<Bool>()
+    private static let behind: DispatchQueue = {
+        let queue = DispatchQueue(label: "JSONStore.behind", qos: .utility)
+        queue.setSpecific(key: onBehind, value: true)
+        return queue
+    }()
 
     @discardableResult
     /// The compact form, for the big machine files — the fingerprint index
@@ -24,7 +54,8 @@ enum JSONStore {
     /// visibly larger file and a visibly slower write, on every flush, for
     /// formatting nobody reads.
     static func saveCompact<T: Encodable>(_ path: String, _ value: T) -> Bool {
-        write(path, value, pretty: false) == nil
+        finishWrites()
+        return write(path, value, pretty: false) == nil
     }
 
     /// Write it, or say why not.

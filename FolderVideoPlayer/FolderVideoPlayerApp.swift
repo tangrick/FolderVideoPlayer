@@ -844,6 +844,9 @@ final class AppModel: ObservableObject {
                 MainActor.assumeIsolated {
                     self?.library?.publishOnQuit()
                     self?.library?.flushPrints()
+                    // Whatever was handed to the write-behind queue is on
+                    // disk before the process goes.
+                    JSONStore.finishWrites()
                 }
             })
     }
