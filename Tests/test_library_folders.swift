@@ -205,6 +205,11 @@ struct LibraryFoldersTest {
               !listed.contains(Paths.tagKey(analysed)))
         check("...and another folder's are not",
               listed.contains(Paths.tagKey(analysedElsewhere)))
+        let analysedForeign = Paths.tagKey(media + "/Someone Else/x.mp4")
+        check("a shared store's video in a folder this profile holds nothing in is not the profile's",
+              !alex.knownVideoKeys(adding: [analysedForeign]).contains(analysedForeign))
+        check("...though a store of the profile's own still counts it",
+              alex.knownVideoKeys(adding: [analysedForeign], shared: false).contains(analysedForeign))
         check("the removal is written into the profile's bundle, to survive a relaunch",
               JSONStore.load(Paths.removedFoldersFile(alex.person), fallback: [String]()) == [home])
         alex.setTags(["Fresh"], for: analysed)

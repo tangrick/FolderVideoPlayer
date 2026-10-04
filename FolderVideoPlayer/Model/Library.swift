@@ -1335,7 +1335,7 @@ final class Library: ObservableObject {
     /// facts, played, resumed, or with a suggestion or a moment — hidden ones
     /// left out. Memory only.
     func knownProfileVideoKeys() -> [String] {
-        knownVideoKeys(adding: outsideKeys?() ?? [])
+        knownVideoKeys(adding: outsideKeys?() ?? [], shared: false)
     }
 
     /// What taking a folder out of this profile's library would remove,
@@ -1790,11 +1790,27 @@ final class Library: ObservableObject {
     /// out. `extra` adds keys other stores know (analysed, transcribed). Memory
     /// only: the library has no list of every file on every share, and walking
     /// the shares to make one is not something a sidebar count may do.
-    func knownVideoKeys(adding extra: Set<String> = []) -> [String] {
+    ///
+    /// `shared` says `extra` comes from a store every profile reads. Those hold
+    /// every video any profile ever had analysed, so only the ones in this
+    /// profile's folders are taken: under a pinned or recent folder, or beside
+    /// a video the profile itself holds something for. Without that, a profile
+    /// of four thousand videos listed twelve thousand, most of them another
+    /// profile's.
+    func knownVideoKeys(adding extra: Set<String> = [], shared: Bool = true) -> [String] {
         var keys = Set(tags.keys)
         keys.formUnion(facts.byKey.keys)
         keys.formUnion(watch.keys)
         keys.formUnion(progress.keys.map { Paths.tagKey($0) })
+        var extra = extra
+        if shared, !extra.isEmpty {
+            let folders = Set(keys.map { ($0 as NSString).deletingLastPathComponent })
+            let roots = (pinned + recent).map { Paths.tagKey($0.hasSuffix("/") ? $0 : $0 + "/") }
+            extra = extra.filter { key in
+                folders.contains((key as NSString).deletingLastPathComponent)
+                    || roots.contains { key.hasPrefix($0) }
+            }
+        }
         // What the stores shared between profiles add (the AI's readings, the
         // transcripts) is held back for a folder this profile removed — they
         // are not cleared by a removal, and would list its videos again. What
