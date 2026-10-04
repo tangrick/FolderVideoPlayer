@@ -205,7 +205,9 @@ struct TriageQueue: Equatable {
 /// would land on the wrong word.
 struct TriageStrip: Equatable {
     struct Entry: Equatable {
-        enum Kind: Equatable { case suggestion, quick }
+        /// `nearby` is a tag on a video shot around the same time; like a
+        /// quick tag it is a shortcut, not a claim, and cannot be refused.
+        enum Kind: Equatable { case suggestion, nearby, quick }
         let tag: String
         let kind: Kind
         /// For a suggestion, how sure the engine was; nil for a quick tag.
@@ -219,18 +221,27 @@ struct TriageStrip: Equatable {
 
     /// Build the strip for a video that has just opened.
     ///
-    /// Every pending suggestion first, strongest first, then the session's
-    /// quick tags. All of them are shown, because finishing a video dismisses
+    /// Every pending suggestion first, strongest first, then the tags of the
+    /// videos shot around this one, then the session's quick tags. All of them are shown, because finishing a video dismisses
     /// the suggestions it leaves and none should go unseen; the first nine
     /// chips have keys and the rest are for the mouse. A tag the video already
     /// carries is left out — the engine is right, and saying so wastes a key —
     /// and a tag is never listed twice, case aside.
-    static func open(suggestions: [TagSuggestion], carried: Set<String>, quick: [String]) -> TriageStrip {
+    ///
+    /// `refused` is the suggestions answered no on a video shot around this
+    /// one, lowercased. They are not offered again here: the same guess about
+    /// the same afternoon has had its answer.
+    static func open(suggestions: [TagSuggestion], carried: Set<String>, nearby: [String] = [],
+                     refused: Set<String> = [], quick: [String]) -> TriageStrip {
         var strip = TriageStrip()
         var seen = carried
-        for s in strongestFirst(suggestions) {
+        for s in strongestFirst(suggestions) where !refused.contains(s.tag.lowercased()) {
             guard seen.insert(s.tag.lowercased()).inserted else { continue }
             strip.entries.append(Entry(tag: s.tag, kind: .suggestion, confidence: s.confidence))
+        }
+        for tag in nearby {
+            guard seen.insert(tag.lowercased()).inserted else { continue }
+            strip.entries.append(Entry(tag: tag, kind: .nearby, confidence: nil))
         }
         for tag in quick {
             guard seen.insert(tag.lowercased()).inserted else { continue }
@@ -241,9 +252,9 @@ struct TriageStrip: Equatable {
 
     /// Suggestions that arrived after the strip was built go on the end, with
     /// the next numbers. Past the ninth there is no key, only the mouse.
-    mutating func appendLate(_ suggestions: [TagSuggestion], carried: Set<String>) {
+    mutating func appendLate(_ suggestions: [TagSuggestion], carried: Set<String>, refused: Set<String> = []) {
         var seen = carried.union(entries.map { $0.tag.lowercased() })
-        for s in Self.strongestFirst(suggestions) {
+        for s in Self.strongestFirst(suggestions) where !refused.contains(s.tag.lowercased()) {
             guard seen.insert(s.tag.lowercased()).inserted else { continue }
             entries.append(Entry(tag: s.tag, kind: .suggestion, confidence: s.confidence))
         }
@@ -267,6 +278,53 @@ struct TriageStrip: Equatable {
     /// The key an entry answers to, or nil when it sits past the ninth.
     func key(at index: Int) -> Int? {
         entries.indices.contains(index) && index < Self.keyed ? index + 1 : nil
+    }
+
+    /// The videos shot around a date: within `NeighbourPrior.windowSeconds` of
+    /// it, or on the same day. None for a video whose date is not known.
+    static func neighbours(of date: Double, dated: [(key: String, when: Double)], excluding: String,
+                           calendar: Calendar = .current) -> [String] {
+        guard date > 0 else { return [] }
+        let day = calendar.startOfDay(for: Date(timeIntervalSince1970: date)).timeIntervalSince1970
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: Date(timeIntervalSince1970: day))?
+            .timeIntervalSince1970 ?? day + 86_400
+        return dated.compactMap { entry in
+            guard entry.key != excluding, entry.when > 0,
+                  abs(entry.when - date) <= NeighbourPrior.windowSeconds
+                    || (entry.when >= day && entry.when < nextDay) else { return nil }
+            return entry.key
+        }
+    }
+
+    /// At most this many nearby tags, so the most-used ones keep some keys.
+    static let nearbyLimit = 5
+
+    /// The tags on the videos shot around this one: within
+    /// `NeighbourPrior.windowSeconds` of it or on the same day, the tag most of
+    /// them carry first. A personal library is shot in bursts, and the clip
+    /// after the one just tagged usually wants the same tag.
+    ///
+    /// Read when the video opens, so a tag given a moment ago is offered on
+    /// the next one. Offered as a shortcut and never as a suggestion: a guess
+    /// about content made from a timestamp is not something the engine saw.
+    /// `dated` is the dates already known — nothing here asks a share — and a
+    /// video with no date has no neighbours. Star ratings are left out.
+    static func nearbyTags(date: Double, dated: [(key: String, when: Double)],
+                           tagsFor: (String) -> [String], excluding: String,
+                           calendar: Calendar = .current, limit: Int = nearbyLimit) -> [String] {
+        var counts: [String: Int] = [:]
+        var display: [String: String] = [:]
+        for key in neighbours(of: date, dated: dated, excluding: excluding, calendar: calendar) {
+            for name in tagsFor(key) where !isStarTag(name) {
+                let key = name.lowercased()
+                counts[key, default: 0] += 1
+                if display[key] == nil { display[key] = name }
+            }
+        }
+        return counts
+            .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+            .prefix(limit)
+            .compactMap { display[$0.key] }
     }
 
     /// The tags a session offers on every video: the most used in the scope it

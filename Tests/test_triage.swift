@@ -181,6 +181,42 @@ struct TriageTest {
               crowded.entries.count == 10 && crowded.key(at: 9) == nil && crowded.key(at: 8) == 9
                 && crowded.entry(forKey: 9)?.tag == "Q9")
 
+        // Nearby: the tags of the videos shot around this one.
+        let noon = 1_700_000_000.0, hour = 3_600.0
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        let shot: [(key: String, when: Double)] = [
+            ("/v/me.mp4", noon), ("/v/a.mp4", noon + hour), ("/v/b.mp4", noon - 2 * hour),
+            ("/v/c.mp4", noon + 5 * hour), ("/v/far.mp4", noon + 40 * hour), ("/v/undated.mp4", 0)]
+        let shotTags = ["/v/me.mp4": ["Mine"], "/v/a.mp4": ["Iceland", starTag(3)], "/v/b.mp4": ["iceland", "Geyser"],
+                        "/v/c.mp4": ["Geyser", "Iceland", "Bus"], "/v/far.mp4": ["Paris"], "/v/undated.mp4": ["Lost"]]
+        let around = TriageStrip.nearbyTags(date: noon, dated: shot, tagsFor: { shotTags[$0] ?? [] },
+                                            excluding: "/v/me.mp4", calendar: utc)
+        check("nearby tags are those of videos shot around this one, the commonest first",
+              around == ["Iceland", "Geyser", "Bus"], "\(around)")
+        check("...never its own, a star, a far-off video's or an undated one's",
+              !around.contains("Mine") && !around.contains(starTag(3)) && !around.contains("Paris")
+                && !around.contains("Lost"))
+        check("a video with no date has no neighbours",
+              TriageStrip.nearbyTags(date: 0, dated: shot, tagsFor: { shotTags[$0] ?? [] },
+                                     excluding: "/v/me.mp4", calendar: utc).isEmpty)
+        check("...and only so many are offered",
+              TriageStrip.nearbyTags(date: noon, dated: shot, tagsFor: { shotTags[$0] ?? [] },
+                                     excluding: "/v/me.mp4", calendar: utc, limit: 2) == ["Iceland", "Geyser"])
+        let mixed = TriageStrip.open(suggestions: [sugg("Sea", 0.05)], carried: ["bus"],
+                                     nearby: ["Iceland", "Sea", "Bus"], quick: ["Iceland", "Kite"])
+        check("nearby tags sit between the suggestions and the quick tags, none listed twice",
+              mixed.entries.map(\.tag) == ["Sea", "Iceland", "Kite"]
+                && mixed.entries.map(\.kind) == [.suggestion, .nearby, .quick], "\(mixed.entries)")
+
+        let afterNo = TriageStrip.open(suggestions: [sugg("Sea", 0.05), sugg("Party", 0.04)], carried: [],
+                                       refused: ["party"], quick: ["Kite"])
+        check("a suggestion refused on a video shot around this one is not offered again",
+              afterNo.entries.map(\.tag) == ["Sea", "Kite"], "\(afterNo.entries)")
+        var lateNo = afterNo
+        lateNo.appendLate([sugg("Party", 0.04), sugg("Wave", 0.03)], carried: [], refused: ["party"])
+        check("...nor when it lands late", lateNo.entries.map(\.tag) == ["Sea", "Kite", "Wave"])
+
         let slots = TriageStrip.quickTags(
             scope: [["Beach", four], ["beach", "Kite"], ["Kite"], ["Tent", "Anna"], []],
             popular: ["Sea", "Beach", "Boat"], limit: 6)
@@ -237,12 +273,13 @@ struct TriageTest {
         session.toggle(key: 5)
         check("a quick tag goes on with no verdict, because the engine said nothing",
               library.hasTag(a, "Kite") && verdicts(a).isEmpty)
-        session.reject(key: 2)
+        let refused = session.reject(key: 2)
         check("reject records a real no, and the tag is not on",
-              verdicts(a)["Sand"] == .rejected && !library.hasTag(a, "Sand"))
+              refused && verdicts(a)["Sand"] == .rejected && !library.hasTag(a, "Sand"))
         let stepsBefore = session.steps.count
-        session.reject(key: 5)
-        check("rejecting a quick tag does nothing", session.steps.count == stepsBefore
+        let refusedQuick = session.reject(key: 5)
+        check("rejecting a quick tag does nothing, and says it did nothing",
+              !refusedQuick && session.steps.count == stepsBefore
                 && library.hasTag(a, "Kite") && verdicts(a)["Kite"] == nil)
         check("none of that renumbered the strip", session.strip.entries == opening)
         check("the chips say what happened to them",

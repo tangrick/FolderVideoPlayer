@@ -146,7 +146,17 @@ extension AppModel {
             return true
         }
         if mods.isEmpty || mods == .option, let number = Int(characters), (1...9).contains(number) {
-            if mods == .option { session.reject(key: number) } else { session.toggle(key: number) }
+            // A chip folded away with the Most used row is not answered blind.
+            if UserDefaults.standard.object(forKey: TriageBar.mostUsedOpenKey) as? Bool == false,
+               session.strip.entry(forKey: number)?.kind == .quick {
+                NSSound.beep()
+            } else if mods != .option {
+                session.toggle(key: number)
+            } else if !session.reject(key: number) {
+                // One of your own tags, or no chip with that number: there is
+                // no suggestion to refuse, and silence reads as a dead key.
+                NSSound.beep()
+            }
             return true
         }
         guard mods.isEmpty else { return false }

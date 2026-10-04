@@ -60,6 +60,15 @@ final class TriageSession: ObservableObject {
         queue = TriageQueue(playlist: playlist, filter: filter,
                             reader: Self.reader(library, suggestions, unavailable))
         openCurrent()
+        // Nearby reads dates the library already holds, and a list sorted by
+        // name has asked for none. The tagged videos are the only neighbours
+        // with anything to offer, so theirs are fetched — gently, the share is
+        // also serving the video on screen.
+        let tagged = playlist.filter { path in library.tagsFor(path).contains { !isStarTag($0) } }
+        Task { [weak self] in
+            await library.warmStats(tagged, parallel: SmartCollectionStore.trickle, priority: .background)
+            self?.datesArrived()
+        }
     }
 
     /// The library as triage's queue asks about it. Also what the Library
@@ -104,7 +113,7 @@ final class TriageSession: ObservableObject {
     /// end, with the next numbers; none already there moves.
     func refreshSuggestions() {
         guard let path = queue.current else { return }
-        strip.appendLate(suggestions.pending(path), carried: carried(path))
+        strip.appendLate(suggestions.pending(path), carried: carried(path), refused: refusedNearby(path))
         strips[path] = strip
     }
 
@@ -137,21 +146,25 @@ final class TriageSession: ObservableObject {
 
     /// `⌥1` to `⌥9`: the suggestion is wrong. Takes the tag off if it is on,
     /// and records a real negative. Does nothing to a quick tag, which is not
-    /// a claim the engine made.
-    func reject(key number: Int) {
-        guard let entry = strip.entry(forKey: number) else { return }
-        reject(entry)
+    /// a claim the engine made. False when there was nothing to refuse, so the
+    /// key can say so rather than look broken.
+    @discardableResult
+    func reject(key number: Int) -> Bool {
+        guard let entry = strip.entry(forKey: number) else { return false }
+        return reject(entry)
     }
 
-    func reject(_ entry: TriageStrip.Entry) {
-        guard library.profileOpen, entry.kind == .suggestion, let path = queue.current else { return }
-        guard library.hasTag(path, entry.tag) || verdict(path, entry.tag) != .rejected else { return }
+    @discardableResult
+    func reject(_ entry: TriageStrip.Entry) -> Bool {
+        guard library.profileOpen, entry.kind == .suggestion, let path = queue.current else { return false }
+        guard library.hasTag(path, entry.tag) || verdict(path, entry.tag) != .rejected else { return false }
         record(path)
         if library.hasTag(path, entry.tag) {
             remove(entry.tag, from: path)
             library.saveTagsSoon()
         }
         suggestions.decide(path, tag: entry.tag, verdict: .rejected)
+        return true
     }
 
     /// The suggestions shown that `rejectAll` would answer no: not on the video,
@@ -280,13 +293,59 @@ final class TriageSession: ObservableObject {
         left = queue.left(reader)
         guard let path = queue.current else { strip = TriageStrip(); return }
         if var seen = strips[path] {
-            seen.appendLate(suggestions.pending(path), carried: carried(path))
+            seen.appendLate(suggestions.pending(path), carried: carried(path), refused: refusedNearby(path))
             strip = seen
+            fresh = nil
         } else {
-            strip = TriageStrip.open(suggestions: suggestions.pending(path),
-                                     carried: carried(path), quick: quick)
+            strip = newStrip(path)
+            fresh = path
+            // Its own date may not be known yet either. One stat, of the file
+            // the player is opening anyway.
+            if library.addedOn(path) <= 0 {
+                Task { [weak self] in
+                    _ = await self?.library.stats(for: path)
+                    self?.datesArrived()
+                }
+            }
         }
         strips[path] = strip
+    }
+
+    /// The video whose strip was built new and has not been answered: the only
+    /// one whose chips may still be rebuilt when dates arrive.
+    private var fresh: String?
+
+    private func newStrip(_ path: String) -> TriageStrip {
+        let nearby = TriageStrip.nearbyTags(date: library.addedOn(path), dated: library.datedPool(),
+                                            tagsFor: { library.tagsFor($0) }, excluding: path)
+        return TriageStrip.open(suggestions: suggestions.pending(path), carried: carried(path),
+                                nearby: nearby, refused: refusedNearby(path), quick: quick)
+    }
+
+    /// Dates the strip was built without have come in. The strip is built
+    /// again only while nothing on it has been answered, so no chip changes
+    /// its number under a hand that has started using them.
+    private func datesArrived() {
+        guard let path = queue.current, fresh == path, steps.last?.path != path else { return }
+        let rebuilt = newStrip(path)
+        guard rebuilt != strip else { return }
+        strip = rebuilt
+        strips[path] = rebuilt
+    }
+
+    /// Suggestions refused on the videos shot around this one, lowercased. A
+    /// tag such a video carries is not among them: taking it off again is not
+    /// the same as it never having fitted.
+    private func refusedNearby(_ path: String) -> Set<String> {
+        var out = Set<String>()
+        for near in TriageStrip.neighbours(of: library.addedOn(path), dated: library.datedPool(),
+                                           excluding: path) {
+            for (tag, verdict) in suggestions.entry(near)?.verdicts ?? [:]
+            where verdict == .rejected && !library.hasTag(near, tag) {
+                out.insert(tag.lowercased())
+            }
+        }
+        return out
     }
 
     private func record(_ path: String) {

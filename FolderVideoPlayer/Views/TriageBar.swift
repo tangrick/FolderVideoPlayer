@@ -18,6 +18,10 @@ struct TriageBar: View {
     /// video in the list for each filter.
     @State private var otherFilters: [(filter: TriageFilter, count: Int)] = []
     @FocusState private var typing: Bool
+    /// Whether the Most used row shows its chips. The key handler reads the
+    /// same default, so a number never acts on a chip that is folded away.
+    @AppStorage(TriageBar.mostUsedOpenKey) private var mostUsedOpen = true
+    static let mostUsedOpenKey = "triageMostUsedOpen"
 
     /// When the engine last produced suggestions for the video in view. A change
     /// means some have just landed, and join the end of the strip.
@@ -30,8 +34,15 @@ struct TriageBar: View {
             header
             if let path = session.current {
                 videoLine(path)
-                strip
-                entryRow(path)
+                // What is about this video — the engine's guesses and whatever
+                // is typed — then, past the line, the shortcuts offered on
+                // every video.
+                suggestedRow
+                entryRow
+                Divider()
+                if session.strip.entries.contains(where: { $0.kind == .nearby }) { nearbyRow }
+                mostUsedRow
+                buttonRow(path)
                 legend
             } else {
                 finished
@@ -129,9 +140,13 @@ struct TriageBar: View {
     /// Two labelled rows, so a guess from the picture (which can be refused)
     /// is never mistaken for one of the user's own tags (which cannot: nobody
     /// claimed it). A chip keeps its number whichever row it is in.
-    private var strip: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            stripRow("Suggested", .suggestion, empty: noSuggestions) {
+    private var suggestedRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("Suggested")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: Self.titleWidth, alignment: .leading)
+            chips(.suggestion, empty: noSuggestions) {
                 Button("Accept All") { session.acceptAll() }
                     .disabled(!session.canAcceptAll)
                     .help("Add every suggestion shown, then move on (A)")
@@ -139,9 +154,65 @@ struct TriageBar: View {
                     .disabled(!session.canRejectAll)
                     .help("None of these fit: records each as a negative example for training (X)")
             }
-            stripRow("Your tags", .quick, empty: "None to offer. Type a tag below (T).") { EmptyView() }
         }
     }
+
+    /// Tags on the videos shot around this one. There only when there are
+    /// some, so a video with no tagged neighbours costs no height.
+    private var nearbyRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("Nearby")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: Self.titleWidth, alignment: .leading)
+                .help("Tags on videos shot within six hours of this one, or on the same day")
+            chips(.nearby, empty: "") {
+                Text("On videos shot around the same time.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .frame(minHeight: 22)
+            }
+        }
+    }
+
+    /// Named for what they are: an untitled row of nine chips read as nine
+    /// questions about this video, each wanting an answer. It folds away for
+    /// anyone who only works from the suggestions.
+    private var mostUsedRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Button {
+                mostUsedOpen.toggle()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: mostUsedOpen ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 8, weight: .bold))
+                        .frame(width: 8)
+                    Text("Most used").font(.caption.weight(.semibold))
+                }
+                .foregroundStyle(.secondary)
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .frame(width: Self.titleWidth, alignment: .leading)
+            .help(mostUsedOpen ? "Hide your most-used tags" : "Show your most-used tags")
+            if mostUsedOpen {
+                chips(.quick, empty: "None to offer. Type a tag above (T).") {
+                    if session.strip.entries.contains(where: { $0.kind == .quick }) {
+                        Text("Your most-used tags, as shortcuts. Optional: press Return if none fit.")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .frame(minHeight: 22)
+                    }
+                }
+            } else {
+                Text("Hidden. The number keys leave these alone until they are shown.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private static let titleWidth: CGFloat = 78
 
     /// Why the Suggested row is empty: the engine is looking now, it looked
     /// and has nothing left to offer, or it has not looked.
@@ -152,27 +223,21 @@ struct TriageBar: View {
         return "Not analysed yet."
     }
 
-    private func stripRow<Trailing: View>(_ title: String, _ kind: TriageStrip.Entry.Kind, empty: String,
-                                          @ViewBuilder trailing: () -> Trailing) -> some View {
+    private func chips<Trailing: View>(_ kind: TriageStrip.Entry.Kind, empty: String,
+                                       @ViewBuilder trailing: () -> Trailing) -> some View {
         let entries = Array(session.strip.entries.enumerated()).filter { $0.element.kind == kind }
-        return HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 70, alignment: .leading)
-            ChipFlow(spacing: 6) {
-                ForEach(entries, id: \.offset) { index, entry in
-                    chip(entry, key: session.strip.key(at: index))
-                }
-                if entries.isEmpty {
-                    Text(empty)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(minHeight: 22)
-                }
-                trailing()
-                    .controlSize(.small)
+        return ChipFlow(spacing: 6) {
+            ForEach(entries, id: \.offset) { index, entry in
+                chip(entry, key: session.strip.key(at: index))
             }
+            if entries.isEmpty {
+                Text(empty)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(minHeight: 22)
+            }
+            trailing()
+                .controlSize(.small)
         }
     }
 
@@ -245,23 +310,29 @@ struct TriageBar: View {
     private func chipHelp(_ entry: TriageStrip.Entry, key: Int?, applied: Bool) -> String {
         let press = key.map { " (\($0))" } ?? ""
         if applied { return "Take “\(entry.tag)” off\(press)" }
-        return entry.kind == .suggestion
-            ? "Suggested from the picture. Add “\(entry.tag)”\(press)"
-            : "Add “\(entry.tag)”\(press)"
+        switch entry.kind {
+        case .suggestion: return "Suggested from the picture. Add “\(entry.tag)”\(press)"
+        case .nearby: return "On a video shot around the same time. Add “\(entry.tag)”\(press)"
+        case .quick: return "Add “\(entry.tag)”\(press)"
+        }
     }
 
     private func chipLabel(_ entry: TriageStrip.Entry, key: Int?, applied: Bool, refused: Bool) -> String {
         let number = key.map { "\($0), " } ?? ""
-        let kind = entry.kind == .suggestion ? "suggested" : "your tag"
+        let kind = entry.kind == .suggestion ? "suggested" : (entry.kind == .nearby ? "from a nearby video" : "your tag")
         let state = applied ? "added" : (refused ? "refused" : "not added")
         return "\(number)\(entry.tag), \(kind), \(state)"
     }
 
     // MARK: - typing, and the buttons
 
-    private func entryRow(_ path: String) -> some View {
+    private var entryRow: some View {
         HStack(spacing: 8) {
-            TextField("Another tag (T)", text: $typed)
+            Text("Another tag")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: Self.titleWidth, alignment: .leading)
+            TextField("Type a tag (T)", text: $typed)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 220)
                 .focused($typing)
@@ -279,13 +350,19 @@ struct TriageBar: View {
                 .buttonStyle(.link)
                 .font(.caption)
             }
+        }
+        .controlSize(.small)
+    }
+
+    private func buttonRow(_ path: String) -> some View {
+        HStack(spacing: 8) {
             Spacer()
             Button("Back") { session.back() }
                 .disabled(!session.queue.canGoBack)
                 .help("The video before this one (↑)")
             Button("Skip") { session.skip() }
                 .help("Leave this one for later (↓)")
-            Button("Done") { session.done() }
+            Button(library.tagsFor(path).contains { !isStarTag($0) } ? "Done" : "Nothing to Tag") { session.done() }
                 .buttonStyle(.borderedProminent)
                 .help("Finished with this video (Return). With no tag on it, it is set aside as having nothing to tag.")
             Button {
@@ -330,7 +407,7 @@ struct TriageBar: View {
     }
 
     private var legend: some View {
-        Text("1–9 add or remove a tag · ✕ or ⌥1–9 suggestion is wrong · A accept all · X reject all · "
+        Text("1–9 add or remove a tag · ✕ or ⌥1–9 a Suggested tag is wrong · A accept all · X reject all · "
              + "Return next video · ↓ skip · ↑ back · T type a tag · M mute · ⌘Z undo · esc leave")
             .font(.caption2)
             .foregroundStyle(.tertiary)
