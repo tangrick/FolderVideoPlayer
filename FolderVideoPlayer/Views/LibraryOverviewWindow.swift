@@ -54,6 +54,13 @@ struct LibraryOverviewWindow: View {
                     Text("Housekeeping").font(.headline)
                     HStack(spacing: 12) {
                         Button {
+                            if let root = app.playback?.root { app.organize(root) }
+                            openWindow(id: "organize")
+                        } label: {
+                            Label("Organize Folders…", systemImage: "folder.badge.gearshape")
+                        }
+                        .help("Make, rename and move folders, and see every folder the library draws from")
+                        Button {
                             app.findMovedEverywhere()
                             openWindow(id: "moved")
                         } label: {

@@ -25,7 +25,7 @@ no account, no cloud service, and no video, frame or tag leaves the machine.
   facts in the library panel to play every video carrying **any** of them, or
   only those carrying **all** of them.
 - **Watch state and Library Overview** — each video is unwatched, in progress
-  or watched (Mark Watched / Unwatched by hand, for a selection too); View ▸
+  or watched (Mark Watched / Unwatched by hand, for a selection too); Library ▸
   Library Overview (⌘0) lists Continue Watching, Recently Added, Recently
   Watched, Unwatched, tag suggestions to review, videos that still need tags
   and unfinished analysis, each one click from a playlist — and the last two
@@ -49,7 +49,7 @@ no account, no cloud service, and no video, frame or tag leaves the machine.
   `.srt`/`.vtt` beside it or everything in one ZIP. The original is never
   changed. MKV, AVI, WebM and FLV sources need FFmpeg installed.
 - **Hidden videos** — keep some videos out of the playlist behind a password.
-- **Organize folders** — *File ▸ Organize Folders…* (⌥⌘O): make, rename and
+- **Organize folders** — *Library ▸ Organize Folders…* (⌥⌘O): make, rename and
   move folders, drag videos between them, and delete a folder once it holds
   nothing. Tags, stars, resume points and subtitle files go with every move —
   for everyone who tagged the videos, on this Mac, other Macs and the Apple TV.

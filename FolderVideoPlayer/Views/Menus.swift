@@ -318,21 +318,6 @@ struct MainMenu: Commands {
             }
             .keyboardShortcut("o", modifiers: [.command, .shift])
 
-            // ⌥⌘O: ⇧⌘O is Open Folder… just above.
-            Button("Organize Folders…") {
-                if let root = playback?.root { app.organize(root) }
-                openWindow(id: "organize")
-            }
-            .keyboardShortcut("o", modifiers: [.command, .option])
-
-            // The last "Remove from Library…", while it can still be taken back.
-            Button(library.lastFolderRemoval.map {
-                "Undo Remove “\(($0.folder as NSString).lastPathComponent)” from Library"
-            } ?? "Undo Remove from Library") {
-                app.undoFolderRemoval()
-            }
-            .disabled(library.lastFolderRemoval == nil)
-
             // Named for what it lists. There are two recent lists in this menu
             // now, and "Open Recent" alone would not say which.
             Menu("Open Recent Folder") {
@@ -347,20 +332,6 @@ struct MainMenu: Commands {
                 }
             }
             .disabled(library.recent.isEmpty)
-
-            // Duplicates act on the folders above; two items did not earn a
-            // top-level menu of their own. The count goes before the ellipsis.
-            Button(library.groupCount == 0
-                   ? "Find Duplicates…"
-                   : "Find Duplicates (\(library.groupCount))…") {
-                openWindow(id: "duplicates")
-            }
-            Button(library.sparedDupes.isEmpty
-                   ? "Put Removed Copies Back"
-                   : "Put Removed Copies Back (\(library.sparedDupes.count))") {
-                app.duplicates?.restoreRemoved()
-            }
-            .disabled(library.sparedDupes.isEmpty)
 
             Divider()
 
@@ -406,6 +377,59 @@ struct MainMenu: Commands {
                 // for years. Overloading it would change what it means to
                 // someone mid-video. See the plan, §5.
                 .help("Empty the tagging surfaces; the profile stays in its own folder")
+        }
+
+        // The windows that are about the library as a whole, in one place.
+        // They were spread over File and View (and Find Missing Files had no
+        // menu item at all), which worked for two of them and not for five.
+        // What acts on one video stays where it was: Get Info and Prepare for
+        // Sharing in Edit, People with the other tags.
+        CommandMenu("Library") {
+            Button("Library Overview") { openWindow(id: "overview") }
+                .keyboardShortcut("0")
+                .disabled(!library.profileOpen)
+                .help("What to continue, what is new, what is done, and what is waiting on you")
+
+            Divider()
+
+            // ⌥⌘O: ⇧⌘O is Open Folder… in File.
+            Button("Organize Folders…") {
+                if let root = playback?.root { app.organize(root) }
+                openWindow(id: "organize")
+            }
+            .keyboardShortcut("o", modifiers: [.command, .option])
+
+            // The last "Remove from Library…", while it can still be taken back.
+            Button(library.lastFolderRemoval.map {
+                "Undo Remove “\(($0.folder as NSString).lastPathComponent)” from Library"
+            } ?? "Undo Remove from Library") {
+                app.undoFolderRemoval()
+            }
+            .disabled(library.lastFolderRemoval == nil)
+
+            Divider()
+
+            // The count goes before the ellipsis.
+            Button(library.groupCount == 0
+                   ? "Find Duplicates…"
+                   : "Find Duplicates (\(library.groupCount))…") {
+                openWindow(id: "duplicates")
+            }
+            Button(library.sparedDupes.isEmpty
+                   ? "Put Removed Copies Back"
+                   : "Put Removed Copies Back (\(library.sparedDupes.count))") {
+                app.duplicates?.restoreRemoved()
+            }
+            .disabled(library.sparedDupes.isEmpty)
+
+            // Every tagged video, as the Overview's button asks; the playlist's
+            // own Files menu still checks just the playlist.
+            Button("Find Missing Files…") {
+                app.findMovedEverywhere()
+                openWindow(id: "moved")
+            }
+            .disabled(!library.profileOpen)
+            .help("Check tagged videos for files that have moved or gone")
         }
 
         CommandMenu("Playback") {
@@ -481,10 +505,6 @@ struct MainMenu: Commands {
                 app.showPlaylist.toggle()
             }
             .keyboardShortcut("l")
-            Button("Library Overview") { openWindow(id: "overview") }
-                .keyboardShortcut("0")
-                .disabled(!library.profileOpen)
-                .help("What to continue, what is new, what is done, and what is waiting on you")
             Button("Edit Transcript") {
                 app.showTagPanel = false
                 app.showMomentsPanel = false
