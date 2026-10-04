@@ -30,6 +30,7 @@ struct LibraryOverviewWindow: View {
                     Text("No profile is open.").foregroundStyle(.secondary)
                 } else {
                     HStack {
+                        if loading { ProgressView().controlSize(.small) }
                         Text(loading ? "Looking…" : builtAt.map {
                             "Updated " + $0.formatted(date: .omitted, time: .standard)
                         } ?? "")
@@ -42,6 +43,7 @@ struct LibraryOverviewWindow: View {
                         }
                         .help("Throw this away and build it again from what the open profile holds now")
                         .accessibilityLabel("Reset the overview")
+                        .disabled(loading)
                     }
                     LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
                         ForEach(LibraryOverview.Kind.allCases) { kind in
@@ -144,6 +146,13 @@ struct LibraryOverviewWindow: View {
         guard library.profileOpen else { overview = LibraryOverview(); loading = false; return }
         let extra = Set(analysis.records.keys).union(journal.transcribedPaths.map { Paths.tagKey($0) })
         let known = library.knownVideoKeys(adding: extra)
+        // After Reset the lists come back from memory within a frame, usually
+        // unchanged, and the click looks like it did nothing. Hold the emptied
+        // window long enough to be seen. Not on first open: nothing was built.
+        if loading, builtAt != nil {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+        }
         build(known)
         await library.warmStats(known.map { Paths.tagPath($0) },
                                 parallel: SmartCollectionStore.trickle, priority: .background)
