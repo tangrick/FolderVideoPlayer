@@ -77,7 +77,11 @@ codesign --verify --deep --strict "$app"
 details=$(codesign -dv --verbose=4 "$app" 2>&1)
 grep -q "Authority=Developer ID Application" <<<"$details" || die "not signed with a Developer ID"
 grep -q "runtime" <<<"$details" || die "hardened runtime missing — notarization would refuse it"
-if codesign -d --entitlements - "$app" 2>/dev/null | grep -q "get-task-allow"; then
+# Into a variable, then searched: with pipefail, `grep -q` leaving at its first
+# match can kill the command still writing to it, and the pipeline then fails
+# although the text was found.
+entitlements=$(codesign -d --entitlements - "$app" 2>/dev/null || true)
+if grep -q "get-task-allow" <<<"$entitlements"; then
     die "get-task-allow is set (a debug entitlement) — notarization would refuse it"
 fi
 sh Tests/check_clean_start.sh "$app"
@@ -103,8 +107,9 @@ grep -q "status: Accepted" <<<"$result" || {
 say "staple and check Gatekeeper"
 xcrun stapler staple -q "$work/FolderVideoPlayer.dmg"
 xcrun stapler validate -q "$work/FolderVideoPlayer.dmg"
-spctl -a -t open --context context:primary-signature -vv "$work/FolderVideoPlayer.dmg" 2>&1 | grep -q "accepted" \
-    || die "Gatekeeper does not accept the image"
+# Read the same way: 1.2.7 was refused here with an image Gatekeeper accepted.
+verdict=$(spctl -a -t open --context context:primary-signature -vv "$work/FolderVideoPlayer.dmg" 2>&1 || true)
+grep -q "accepted" <<<"$verdict" || { echo "$verdict"; die "Gatekeeper does not accept the image"; }
 
 cp "$work/FolderVideoPlayer.dmg" "$dmg"
 say "done"
