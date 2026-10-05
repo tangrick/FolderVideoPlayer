@@ -284,8 +284,12 @@ final class FaceStore: ObservableObject {
     ///
     /// A pass that FAILED keeps nothing — no models, an unreadable file — so
     /// the next opening tries again rather than remembering "nobody".
-    func detectFaces(path: String, lookAgain: Bool = false) async -> [String] {
-        guard !profile.isEmpty else { return [] }
+    func detectFaces(path: String, lookAgain: Bool = false,
+                     onProgress: ((String, Int, Int) async -> Void)? = nil) async throws -> [String] {
+        try Task.checkCancellation()
+        guard !profile.isEmpty else {
+            throw EngineError.engineRejected("Choose a tag profile before adding faces.")
+        }
         // A kept face whose thumbnail has since gone would be an empty circle
         // nobody could recognise, so that counts as not having looked.
         if !lookAgain, let kept = found.faces(for: path),
@@ -297,14 +301,14 @@ final class FaceStore: ObservableObject {
         let revision = SourceRevision.of(path)
         let faces: [String]
         if let registry = coreMLRegistry {
-            guard let got = try? await registry.detectFaces(
-                path: path, limit: FaceRegistry.sheetChoices) else { return [] }
-            faces = got
+            faces = try await registry.detectFaces(
+                path: path, limit: FaceRegistry.sheetChoices, onProgress: onProgress)
         } else {
-            guard let engine, let got = try? await engine.detectFaces(path: path)
-            else { return [] }
-            faces = got
+            guard let engine else { throw EngineError.engineDied }
+            await onProgress?("Waiting for face analysis", 0, 0)
+            faces = try await engine.detectFaces(path: path)
         }
+        try Task.checkCancellation()
         if let revision, revision.matches(path) {
             found.record(faces, for: path, revision: revision)
             found.save(foundFile)

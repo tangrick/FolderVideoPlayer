@@ -42,6 +42,9 @@ mkdir -p "$work/playable_copy"
 fvp_test "$here/test_playable_copy.swift" "$work/playable_copy/run"
 "$work/playable_copy/run"
 
+# Face search: real frame progress and cancellation during decoding.
+bash "$here/run_face_scan_progress.sh"
+
 # The prompt table, against numpy's own arithmetic on the same file.
 sh "$here/run_prompt_table.sh"
 

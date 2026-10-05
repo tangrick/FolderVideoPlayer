@@ -583,7 +583,10 @@ actor FaceRegistry {
     /// sightings are clustered by cosine (the engine's greedy running-centroid
     /// merge), each cluster is represented by its biggest — and therefore
     /// clearest — crop, and the `limit` biggest clusters are returned.
-    func detectFaces(path: String, limit: Int = maxChoices) async throws -> [String] {
+    func detectFaces(path: String, limit: Int = maxChoices,
+                     onProgress: ((String, Int, Int) async -> Void)? = nil) async throws -> [String] {
+        try Task.checkCancellation()
+        await onProgress?("Opening file", 0, 0)
         guard FileManager.default.fileExists(atPath: path) else {
             throw RegistryError.noSuchFile(path)
         }
@@ -599,13 +602,23 @@ actor FaceRegistry {
             guard let image = Self.loadImage(path) else {
                 throw RegistryError.unreadableImage(path)
             }
+            await onProgress?("Checking photo for faces", 0, 1)
             ingest(try await faces(in: image))
+            await onProgress?("Checking photo for faces", 1, 1)
         } else {
-            let frames = try await FrameSampler.sample(url: URL(fileURLWithPath: path))
+            // Only the face pass needs these frames: avoid decoding up to 250
+            // frames just to check at most 40 of them.
+            let frames = try await FrameSampler.sample(url: URL(fileURLWithPath: path),
+                                                      maxFrames: Self.maxFrames) { done, total in
+                await onProgress?("Reading video frames", done, total)
+            }
             let step = max(1, Int(ceil(Double(frames.count) / Double(Self.maxFrames))))
-            for index in stride(from: 0, to: frames.count, by: step) {
+            let indices = Array(stride(from: 0, to: frames.count, by: step))
+            await onProgress?("Checking frames for faces", 0, indices.count)
+            for (completed, index) in indices.enumerated() {
                 try Task.checkCancellation()
                 ingest(try await faces(in: frames[index].image))
+                await onProgress?("Checking frames for faces", completed + 1, indices.count)
                 if seen.count >= Self.maxFaces { break }
             }
             FaceDetector.log.notice("""
@@ -613,6 +626,8 @@ actor FaceRegistry {
                 \(seen.count, privacy: .public) distinct faces
                 """)
         }
+        try Task.checkCancellation()
+        await onProgress?("Grouping similar faces", 0, 0)
         return Self.choose(seen: seen, limit: limit)
     }
 

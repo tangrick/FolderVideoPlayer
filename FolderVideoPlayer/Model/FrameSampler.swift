@@ -62,12 +62,15 @@ enum FrameSampler {
     /// unsupported file) — callers surface that, they do not swallow it.
     static func sample(url: URL,
                        duration: Double? = nil,
-                       maxFrames: Int = FrameSampler.maxFrames) async throws -> [SampledFrame] {
+                       maxFrames: Int = FrameSampler.maxFrames,
+                       onProgress: ((Int, Int) async -> Void)? = nil) async throws -> [SampledFrame] {
+        try Task.checkCancellation()
         let asset = AVURLAsset(url: url)
         var resolved = duration
         if resolved == nil || resolved! <= 0 {
             resolved = try await asset.load(.duration).seconds
         }
+        try Task.checkCancellation()
         guard let duration = resolved, duration.isFinite, duration > 0 else {
             throw SamplerError.unreadable(url)
         }
@@ -89,10 +92,19 @@ enum FrameSampler {
         // so one unreadable stretch drops one frame, not the video.
         var images: [CGImage?] = Array(repeating: nil, count: times.count)
         let cmTimes = times.map { CMTime(seconds: $0, preferredTimescale: 600) }
-        for await result in generator.images(for: cmTimes) {
-            let idx = cmTimes.firstIndex(of: result.requestedTime) ?? -1
-            guard idx >= 0 else { continue }
-            images[idx] = try? result.image
+        await onProgress?(0, times.count)
+        try await withTaskCancellationHandler {
+            var completed = 0
+            for await result in generator.images(for: cmTimes) {
+                try Task.checkCancellation()
+                let idx = cmTimes.firstIndex(of: result.requestedTime) ?? -1
+                if idx >= 0 { images[idx] = try? result.image }
+                completed += 1
+                await onProgress?(completed, times.count)
+            }
+            try Task.checkCancellation()
+        } onCancel: {
+            generator.cancelAllCGImageGeneration()
         }
 
         var out: [SampledFrame] = []

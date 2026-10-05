@@ -463,6 +463,14 @@ struct AddPersonSheet: View {
     @State private var selectedFace: String?
     @State private var name = ""
     @State private var detecting = false
+    @State private var scanStopped = false
+    @State private var scanProblem: String?
+    @State private var scanStage = "Opening file"
+    @State private var scanCompleted = 0
+    @State private var scanTotal = 0
+    @State private var scanStarted = Date()
+    @State private var stageStarted = Date()
+    @State private var lastScanProgress = Date()
     /// An add or a removal is on its way to the registry. The buttons wait for
     /// it, so Return held down cannot add one face twice.
     @State private var working = false
@@ -486,6 +494,7 @@ struct AddPersonSheet: View {
     private struct Pass: Equatable {
         var path: String?
         var again: Int
+        var stopped: Bool
     }
 
     init(initialVideo: String? = nil) {
@@ -541,16 +550,21 @@ struct AddPersonSheet: View {
             }
 
             if detecting {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Looking for faces — only needed once for each video.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
+                scanProgressView
             } else if sourcePath == nil {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Pick a video or photo that shows the person.")
                         .font(.caption).foregroundStyle(.secondary)
                     Button("Choose video or photo…") { pickSource() }
+                }
+            } else if scanStopped || scanProblem != nil {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(scanProblem.map { "Couldn’t look for faces: \($0)" } ?? "Face search stopped.")
+                        .font(.caption).foregroundStyle(scanProblem == nil ? Color.secondary : Color.red)
+                    HStack {
+                        Button("Try Again") { scanStopped = false; lookAgain += 1 }
+                        Button("Choose a different file…") { setSource(nil) }
+                    }
                 }
             } else if faces.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
@@ -650,16 +664,83 @@ struct AddPersonSheet: View {
             // opened straight from the classify panel.
             if faceStore.people.isEmpty { await faceStore.reload() }
         }
-        .task(id: Pass(path: sourcePath, again: lookAgain)) {
-            guard let path = sourcePath else { return }
+        .task(id: Pass(path: sourcePath, again: lookAgain, stopped: scanStopped)) {
+            guard let path = sourcePath, !scanStopped else { return }
             detecting = true
-            let found = await faceStore.detectFaces(path: path, lookAgain: lookAgain > 0)
-            let who = await faceStore.identify(found)
-            guard !Task.isCancelled else { return }
-            faces = found
-            identities = who
-            detecting = false
-            selectNext(after: nil)
+            scanProblem = nil
+            scanStage = "Opening file"
+            scanCompleted = 0
+            scanTotal = 0
+            scanStarted = Date()
+            stageStarted = scanStarted
+            lastScanProgress = scanStarted
+            do {
+                let found = try await faceStore.detectFaces(path: path, lookAgain: lookAgain > 0) { stage, completed, total in
+                    guard !Task.isCancelled else { return }
+                    if stage != scanStage { stageStarted = Date() }
+                    scanStage = stage
+                    scanCompleted = completed
+                    scanTotal = total
+                    lastScanProgress = Date()
+                }
+                try Task.checkCancellation()
+                scanStage = "Matching faces to known people"
+                scanCompleted = 0
+                scanTotal = 0
+                lastScanProgress = Date()
+                let who = await faceStore.identify(found)
+                try Task.checkCancellation()
+                faces = found
+                identities = who
+                detecting = false
+                selectNext(after: nil)
+            } catch {
+                guard !Task.isCancelled else { return }
+                detecting = false
+                scanProblem = error.localizedDescription
+            }
+        }
+    }
+
+    private var scanProgressView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(scanStage).font(.callout)
+                Spacer()
+                Button("Stop") {
+                    scanStopped = true
+                    detecting = false
+                }
+            }
+            if scanTotal > 0 {
+                ProgressView(value: Double(scanCompleted), total: Double(scanTotal))
+                Text("\(scanCompleted) of \(scanTotal) frames")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                ProgressView().controlSize(.small)
+            }
+            TimelineView(.periodic(from: scanStarted, by: 1)) { context in
+                let elapsed = max(0, Int(context.date.timeIntervalSince(scanStarted)))
+                let quiet = context.date.timeIntervalSince(lastScanProgress)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Elapsed: \(elapsed / 60)m \(elapsed % 60)s")
+                    if quiet >= 30 {
+                        Text("No new progress for \(Int(quiet)) seconds. You can stop and try another file.")
+                    } else if scanCompleted >= 3 && scanCompleted < scanTotal {
+                        let remaining = max(1, Int(ceil(context.date.timeIntervalSince(stageStarted)
+                            / Double(scanCompleted) * Double(scanTotal - scanCompleted))))
+                        Text("About \(remaining) seconds left in this step")
+                    } else if scanTotal > 0 && scanCompleted < scanTotal {
+                        Text("Estimating time remaining for this step…")
+                    } else {
+                        Text("Time remaining isn’t available for this step.")
+                    }
+                }
+                .font(.caption).foregroundStyle(.secondary)
+            }
+            Text("Reads frames across the video, then checks for faces. Results are saved for next time.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -897,6 +978,9 @@ struct AddPersonSheet: View {
     /// Everything that was about the old one goes with it.
     private func setSource(_ path: String?) {
         sourcePath = path
+        scanStopped = false
+        scanProblem = nil
+        detecting = false
         lookAgain = 0
         faces = []
         identities = [:]
