@@ -160,6 +160,15 @@ final class PlaybackController: ObservableObject {
     @Published private(set) var saidQuery: String?
     @Published private(set) var saidMentions: [String: [Double]] = [:]
 
+    /// The video a `.nearby` playlist was gathered around, and how many
+    /// calendar days from it each of the others was taken. The list is drawn
+    /// in that order whatever the sort bar says: nearest day first is what the
+    /// list is.
+    @Published private(set) var nearbyAnchor: String?
+    @Published private(set) var nearbyDays: [String: Int] = [:]
+    /// Set while the library's dates are being read for it.
+    @Published private(set) var findingNearby = false
+
     init(library: Library, media: MediaCache) {
         self.library = library
         self.media = media
@@ -543,6 +552,53 @@ final class PlaybackController: ObservableObject {
         if !resumeLastSession() { closePlaylist() }
     }
 
+    /// Play the videos taken within a few days of `path`, the same day first —
+    /// `path` itself leading the list, and playing.
+    ///
+    /// Looked for among the list on screen and every video the profile knows
+    /// (tagged, rated, read by a scan, played): the library has no list of
+    /// every file on every share. Their dates are a stat apiece, asked off the
+    /// main thread; a file that has gone has no date and so is not offered.
+    /// Hidden videos are left out, like everywhere else.
+    func playNearby(_ path: String) {
+        guard !findingNearby else { return }
+        let name = (path as NSString).lastPathComponent
+        let candidates = Array(Set(playlist).union(library.knownVideoKeys().map(Paths.tagPath)))
+            .filter { !library.isHidden($0) }
+        let generation = openGeneration
+        findingNearby = true
+        Task { [weak self] in
+            guard let self else { return }
+            await self.library.warmStats(candidates + [path], priority: .userInitiated)
+            self.findingNearby = false
+            // Something else was opened while the dates were being read.
+            guard self.openGeneration == generation else { return }
+            let date = self.library.addedOn(path)
+            guard date > 0 else {
+                self.trouble = "The date of \u{201C}\(name)\u{201D} could not be read."
+                return
+            }
+            let hits = ShotNearby.around(date: date,
+                                         dated: candidates.map { ($0, self.library.addedOn($0)) },
+                                         excluding: path)
+            guard !hits.isEmpty else {
+                self.trouble = "No other video was taken within \(ShotNearby.days) days of \u{201C}\(name)\u{201D}."
+                return
+            }
+            var days = [path: 0]
+            for hit in hits { days[hit.key] = hit.days }
+            self.nearbyAnchor = path
+            self.nearbyDays = days
+            self.start([path] + hits.map(\.key), mode: .nearby, root: nil, resume: path)
+        }
+    }
+
+    /// Back to the folder or tag it was opened from, like `leaveSaid`.
+    func leaveNearby() {
+        guard mode == .nearby else { return }
+        if !resumeLastSession() { closePlaylist() }
+    }
+
     /// Play the hidden videos. Callers must have asked for the password first;
     /// this function does not check the lock, because the point of the lock is
     /// to stop the list being REACHED, and every caller goes through the
@@ -578,7 +634,7 @@ final class PlaybackController: ObservableObject {
             // A relaunch is locked, so there is nothing to resume into. The
             // session is left alone rather than cleared.
             return false
-        case .said:
+        case .said, .nearby:
             // Never written as the session (see `saveSession`); an old one
             // that somehow says so resumes into nothing.
             return false
@@ -597,13 +653,18 @@ final class PlaybackController: ObservableObject {
         // playlist, so every caller — folder, tag, favorites, a drop, a
         // resume — is covered by construction rather than by remembering.
         let filter: HiddenFilter = mode == .hidden ? .only(library.hidden) : .omit(library.hidden)
-        playlist = library.sorted(filter.apply(to: items))
+        // A nearby list arrives in its own order — nearest day first.
+        playlist = mode == .nearby ? filter.apply(to: items) : library.sorted(filter.apply(to: items))
         self.mode = mode
         self.root = root
         if mode != .tag { tagName = nil; tagQuery = nil; smartCollection = nil; namedList = nil }
         if mode != .said {
             saidQuery = nil
             saidMentions = [:]
+        }
+        if mode != .nearby {
+            nearbyAnchor = nil
+            nearbyDays = [:]
         }
         failures = 0
         nameFilter = ""
@@ -655,6 +716,8 @@ final class PlaybackController: ObservableObject {
         namedList = nil
         saidQuery = nil
         saidMentions = [:]
+        nearbyAnchor = nil
+        nearbyDays = [:]
         nameFilter = ""
         tagFilter = []
         tagExcluded = []
@@ -691,6 +754,8 @@ final class PlaybackController: ObservableObject {
     /// What Next plays follows the order on screen, so this moves the playlist
     /// itself rather than only the list drawn from it.
     private func reorder() {
+        // A nearby list keeps its own order: the sort bar does not apply.
+        guard mode != .nearby else { return rebuildRows() }
         let current = currentPath
         playlist = library.sorted(playlist)
         if let current, let found = playlist.firstIndex(of: current) { index = found }
@@ -1206,7 +1271,7 @@ final class PlaybackController: ObservableObject {
         // A search is a look through the library, not a place to come back
         // to: the session keeps naming the folder or tag it was opened from,
         // which is also what `leaveSaid` returns to.
-        guard mode != .said, tagQuery == nil, smartCollection == nil, namedList == nil,
+        guard mode != .said, mode != .nearby, tagQuery == nil, smartCollection == nil, namedList == nil,
               let path = currentPath else { return }
         library.session = Session(mode: mode.rawValue, root: root, path: path,
                                   tag: tagName)
@@ -1239,7 +1304,7 @@ final class PlaybackController: ObservableObject {
             break
         case .hidden:
             playlist = library.sorted(library.hiddenPaths())
-        case .folder, .said:
+        case .folder, .said, .nearby:
             // Same files on disk — only their drawn tags were stale. A search's
             // membership is what was said, which a tag repair does not change.
             rebuildRows()
@@ -1274,7 +1339,7 @@ final class PlaybackController: ObservableObject {
             break
         case .hidden:
             playlist = library.sorted(library.hiddenPaths())
-        case .folder, .said:
+        case .folder, .said, .nearby:
             // A folder's membership is the disk's business, not a tag's —
             // but hiding is the app's, so what was just hidden leaves the
             // list in hand rather than waiting for the folder to be reopened.
@@ -1388,6 +1453,10 @@ final class PlaybackController: ObservableObject {
         if !saidMentions.isEmpty {
             saidMentions = Dictionary(saidMentions.map { (moved($0.key), $0.value) }, uniquingKeysWith: { a, _ in a })
         }
+        if let anchor = nearbyAnchor {
+            nearbyAnchor = moved(anchor)
+            nearbyDays = Dictionary(nearbyDays.map { (moved($0.key), $0.value) }, uniquingKeysWith: { a, _ in a })
+        }
         refreshAfterFileChanges()
     }
 
@@ -1416,14 +1485,16 @@ final class PlaybackController: ObservableObject {
         case .hidden:
             playlist = library.sorted(library.hiddenPaths())
             settle(on: playingNow)
-        case .said:
-            // What was said is fixed; what is still on disk is not.
+        case .said, .nearby:
+            // What was said, or when it was taken, is fixed; what is still on
+            // disk is not.
             let listed = playlist
+            let was = mode
             Task { [weak self] in
                 let present = await Task.detached(priority: .userInitiated) {
                     Set(listed.filter { FileManager.default.fileExists(atPath: $0) })
                 }.value
-                guard let self, self.mode == .said else { return }
+                guard let self, self.mode == was else { return }
                 self.playlist = self.playlist.filter { present.contains($0) }
                 self.settle(on: playingNow)
             }
@@ -1480,6 +1551,20 @@ final class PlaybackController: ObservableObject {
             guard !ticked.isEmpty else { return true }
             return combine == .all ? ticked.allSatisfy(carries) : ticked.contains(where: carries)
         }
+        // A nearby list is headed by how many days away each run was taken.
+        if mode == .nearby {
+            var rows: [PlaylistRow] = []
+            var heading: Int?
+            for path in visible {
+                let days = nearbyDays[path] ?? 0
+                if days != heading {
+                    heading = days
+                    rows.append(.heading(ShotNearby.heading(days: days)))
+                }
+                rows.append(.video(path))
+            }
+            return rows
+        }
         guard library.playlistSort == .folder, let root, mode == .folder else {
             return visible.map { .video($0) }
         }
@@ -1513,6 +1598,8 @@ final class PlaybackController: ObservableObject {
         case .favorites: name = "Favorites"
         case .hidden: name = "Hidden"
         case .said: name = "Said: \u{201C}\(saidQuery ?? "")\u{201D}"
+        case .nearby:
+            name = "Around " + (nearbyAnchor.map { ($0 as NSString).lastPathComponent } ?? "the same time")
         }
         return playlist.isEmpty ? name : "\(name) (\(playlist.count))"
     }

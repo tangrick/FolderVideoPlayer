@@ -57,6 +57,8 @@ MODEL_SOURCES=(
     # The neighbour prior: the same kind of optional re-ranking as TagPriors,
     # asking what the videos shot AROUND this one say about a tag.
     "$model/NeighbourPrior.swift"
+    # The videos taken within a few days of one video (added Oct'26).
+    "$model/ShotNearby.swift"
     "$model/LibraryTagPayload.swift" "$model/SuggestionWhy.swift"
     # T01's evaluation corpus: the frozen manifest, rubric, deterministic
     # splits, video-level metrics and the real benchmark runner. Pure model

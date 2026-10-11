@@ -24,6 +24,10 @@ no account, no cloud service, and no video, frame or tag leaves the machine.
 - **Combined playlists** — ⌘-click several tags, star ratings, people or file
   facts in the library panel to play every video carrying **any** of them, or
   only those carrying **all** of them.
+- **Taken around the same time** — right-click a video ▸ *Find Taken Around
+  the Same Time* lists the videos this profile knows that were taken within
+  three days of it, by file date: the same day first, then a day away, and so
+  on. **Done** goes back to the folder or tag you were in.
 - **Watch state and Library Overview** — each video is unwatched, in progress
   or watched (Mark Watched / Unwatched by hand, for a selection too); Library ▸
   Library Overview (⌘0) lists Continue Watching, Recently Added, Recently

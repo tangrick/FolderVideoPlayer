@@ -35,6 +35,10 @@ enum PlayMode: String {
     /// look through the library, so leaving it (or relaunching) returns to
     /// the folder or tag it was opened from.
     case said
+    /// The videos taken within a few days of one video (`ShotNearby`), nearest
+    /// day first — a row's "Find Taken Around the Same Time". A look through
+    /// the library like `.said`, and never written as the session either.
+    case nearby
     /// `.favorites` remains a valid raw value so an old session still decodes
     /// — it resumes into nothing, never a crash. The former `.rated` mode is
     /// gone outright: star playlists are tag playlists, and a stored "rated"

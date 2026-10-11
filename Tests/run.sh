@@ -76,6 +76,9 @@ sh "$here/run_tag_suggester.sh"
 # Pure arithmetic on a fixed clock — no model, no cache tree, no engine.py.
 sh "$here/run_neighbour_prior.sh"
 
+# The videos taken within a few days of one video, nearest day first.
+sh "$here/run_shot_nearby.sh"
+
 # Where a tag came from: read off the file, or guessed from the picture.
 sh "$here/run_tag_provenance.sh"
 

@@ -85,6 +85,10 @@ struct PlaylistSidebar: View {
                 saidBanner
                 Divider()
             }
+            if playback.mode == .nearby {
+                nearbyBanner
+                Divider()
+            }
             // The action row sits DIRECTLY on the list, not up in the toolbar.
             // Select, AI and Files all act on the videos below them, and a
             // control that acts on a list belongs against that list — with the
@@ -267,6 +271,31 @@ struct PlaylistSidebar: View {
         .background(.thinMaterial)
         .help("Every video in this profile where \u{201C}\(playback.saidQuery ?? "")\u{201D} is said. "
               + "Each starts at the first mention; the Transcript panel shows the lines. "
+              + "Done goes back to the folder or tag you were in.")
+    }
+
+    /// What the list is while it holds the videos taken around one video, and
+    /// the way back out.
+    private var nearbyBanner: some View {
+        let others = max(playback.nearbyDays.count - 1, 0)
+        let name = playback.nearbyAnchor.map { ($0 as NSString).lastPathComponent } ?? ""
+        return HStack(spacing: 6) {
+            Image(systemName: "calendar")
+            Text("\(others) \(others == 1 ? "video" : "videos") taken within \(ShotNearby.days) days of \(name)")
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 4)
+            Button("Done") { playback.leaveNearby() }
+                .font(.caption)
+                .buttonStyle(.link)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thinMaterial)
+        .help("Videos this profile knows that were taken within \(ShotNearby.days) days of "
+              + "\u{201C}\(name)\u{201D}, by file date: the same day first, then a day away, and so on. "
               + "Done goes back to the folder or tag you were in.")
     }
 
@@ -1935,6 +1964,19 @@ struct PlaylistSidebar: View {
                     .foregroundStyle(Color.accentColor)
                     .help("Stop converting. Videos already converted stay converted; the one in hand is left as it was.")
             }
+            if playback.findingNearby {
+                // A stat per video the profile knows, possibly on a share: a
+                // few seconds that would otherwise read as nothing happening.
+                Text("·").foregroundStyle(.tertiary)
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.55)
+                    .frame(width: 10, height: 10)
+                Text("Reading dates")
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help("Reading the dates of the videos this profile knows, to find the ones taken around the same time")
+            }
             if let batch = app.transcribeBatch {
                 // The playlist run, on the same line and in the same shape as
                 // the engine's job: what, how far, and the way to stop it.
@@ -2604,6 +2646,13 @@ struct RowMenu: View {
             NSPasteboard.general.setString(path, forType: .string)
         }
         Divider()
+        // About THIS row, like Get Info: a neighbourhood has one centre.
+        if !library.isHidden(path) {
+            Button("Find Taken Around the Same Time") { playback.playNearby(path) }
+                .disabled(playback.findingNearby)
+                .help("List the videos taken within \(ShotNearby.days) days of this one, the same day first")
+            Divider()
+        }
         // Watched is the user's to say, for one video or a selection.
         if targets.allSatisfy({ library.watchState($0) == .watched }) {
             Button(targets.count > 1 ? "Mark \(targets.count) Unwatched" : "Mark Unwatched") {
