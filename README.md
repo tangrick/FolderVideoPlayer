@@ -28,6 +28,12 @@ no account, no cloud service, and no video, frame or tag leaves the machine.
   the Same Time* lists the videos this profile knows that were taken within
   three days of it, by file date: the same day first, then a day away, and so
   on. **Done** goes back to the folder or tag you were in.
+- **Videos that may show a person** — right-click a name under People in the
+  library panel ▸ *Show Videos That May Have This Face* lists the videos not
+  yet named for them with a face that resembles theirs, best match first:
+  *Likely* is what the app would suggest the name on, *Possible* a weaker
+  resemblance. Only videos already scanned for faces can appear, and nothing is
+  tagged by asking.
 - **Watch state and Library Overview** — each video is unwatched, in progress
   or watched (Mark Watched / Unwatched by hand, for a selection too); Library ▸
   Library Overview (⌘0) lists Continue Watching, Recently Added, Recently

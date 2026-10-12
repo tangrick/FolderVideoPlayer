@@ -1531,6 +1531,14 @@ struct LibrarySidebar: View {
                     Button("Play “\(person.name)”") { playback.playTag(person.name) }
                     combineButton(person.name)
                     Divider()
+                    // The other half of the row: not the videos already named,
+                    // the ones that might be. By face alone, from what has been
+                    // scanned — nothing is analysed or tagged by asking.
+                    Button("Show Videos That May Have This Face") {
+                        app.showPossibleFaces(person.name)
+                    }
+                    .disabled(app.faceSearchFor != nil)
+                    Divider()
                     Button("Train Tags from “\(person.name)”") { app.trainTag(person.name) }
                     Button("Gather into Folder…") { app.gatherTag(person.name) }
                     Divider()

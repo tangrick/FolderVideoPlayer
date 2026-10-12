@@ -169,6 +169,14 @@ final class PlaybackController: ObservableObject {
     /// Set while the library's dates are being read for it.
     @Published private(set) var findingNearby = false
 
+    /// The person a `.faces` playlist was searched for, each video's best face
+    /// match against them, and how many videos the search could say nothing
+    /// about because no face is on record for them. Drawn best match first,
+    /// whatever the sort bar says.
+    @Published private(set) var facesPerson: String?
+    @Published private(set) var faceScores: [String: Double] = [:]
+    @Published private(set) var facesUnread = 0
+
     init(library: Library, media: MediaCache) {
         self.library = library
         self.media = media
@@ -599,6 +607,24 @@ final class PlaybackController: ObservableObject {
         if !resumeLastSession() { closePlaylist() }
     }
 
+    /// Play the videos that may show `person`, best match first. `ranked` is
+    /// the face search's answer in its own order — the app runs it, since the
+    /// face index and the registry are the app's — and `unread` is how many
+    /// videos have no face on record, for the banner to say.
+    func playFaces(_ person: String, ranked: [(path: String, score: Double)], unread: Int) {
+        guard !ranked.isEmpty else { return }
+        facesPerson = person
+        faceScores = Dictionary(ranked.map { ($0.path, $0.score) }, uniquingKeysWith: max)
+        facesUnread = unread
+        start(ranked.map(\.path), mode: .faces, root: nil, resume: nil)
+    }
+
+    /// Back to the folder or tag it was opened from, like `leaveSaid`.
+    func leaveFaces() {
+        guard mode == .faces else { return }
+        if !resumeLastSession() { closePlaylist() }
+    }
+
     /// Play the hidden videos. Callers must have asked for the password first;
     /// this function does not check the lock, because the point of the lock is
     /// to stop the list being REACHED, and every caller goes through the
@@ -634,7 +660,7 @@ final class PlaybackController: ObservableObject {
             // A relaunch is locked, so there is nothing to resume into. The
             // session is left alone rather than cleared.
             return false
-        case .said, .nearby:
+        case .said, .nearby, .faces:
             // Never written as the session (see `saveSession`); an old one
             // that somehow says so resumes into nothing.
             return false
@@ -653,8 +679,9 @@ final class PlaybackController: ObservableObject {
         // playlist, so every caller — folder, tag, favorites, a drop, a
         // resume — is covered by construction rather than by remembering.
         let filter: HiddenFilter = mode == .hidden ? .only(library.hidden) : .omit(library.hidden)
-        // A nearby list arrives in its own order — nearest day first.
-        playlist = mode == .nearby ? filter.apply(to: items) : library.sorted(filter.apply(to: items))
+        // A search with an order of its own — nearest day, best match — arrives
+        // in it.
+        playlist = mode.keepsItsOrder ? filter.apply(to: items) : library.sorted(filter.apply(to: items))
         self.mode = mode
         self.root = root
         if mode != .tag { tagName = nil; tagQuery = nil; smartCollection = nil; namedList = nil }
@@ -665,6 +692,11 @@ final class PlaybackController: ObservableObject {
         if mode != .nearby {
             nearbyAnchor = nil
             nearbyDays = [:]
+        }
+        if mode != .faces {
+            facesPerson = nil
+            faceScores = [:]
+            facesUnread = 0
         }
         failures = 0
         nameFilter = ""
@@ -718,6 +750,9 @@ final class PlaybackController: ObservableObject {
         saidMentions = [:]
         nearbyAnchor = nil
         nearbyDays = [:]
+        facesPerson = nil
+        faceScores = [:]
+        facesUnread = 0
         nameFilter = ""
         tagFilter = []
         tagExcluded = []
@@ -754,8 +789,8 @@ final class PlaybackController: ObservableObject {
     /// What Next plays follows the order on screen, so this moves the playlist
     /// itself rather than only the list drawn from it.
     private func reorder() {
-        // A nearby list keeps its own order: the sort bar does not apply.
-        guard mode != .nearby else { return rebuildRows() }
+        // A nearby or face list keeps its own order: the sort bar does not apply.
+        guard !mode.keepsItsOrder else { return rebuildRows() }
         let current = currentPath
         playlist = library.sorted(playlist)
         if let current, let found = playlist.firstIndex(of: current) { index = found }
@@ -1271,7 +1306,7 @@ final class PlaybackController: ObservableObject {
         // A search is a look through the library, not a place to come back
         // to: the session keeps naming the folder or tag it was opened from,
         // which is also what `leaveSaid` returns to.
-        guard mode != .said, mode != .nearby, tagQuery == nil, smartCollection == nil, namedList == nil,
+        guard !mode.isSearch, tagQuery == nil, smartCollection == nil, namedList == nil,
               let path = currentPath else { return }
         library.session = Session(mode: mode.rawValue, root: root, path: path,
                                   tag: tagName)
@@ -1304,7 +1339,7 @@ final class PlaybackController: ObservableObject {
             break
         case .hidden:
             playlist = library.sorted(library.hiddenPaths())
-        case .folder, .said, .nearby:
+        case .folder, .said, .nearby, .faces:
             // Same files on disk — only their drawn tags were stale. A search's
             // membership is what was said, which a tag repair does not change.
             rebuildRows()
@@ -1339,7 +1374,7 @@ final class PlaybackController: ObservableObject {
             break
         case .hidden:
             playlist = library.sorted(library.hiddenPaths())
-        case .folder, .said, .nearby:
+        case .folder, .said, .nearby, .faces:
             // A folder's membership is the disk's business, not a tag's —
             // but hiding is the app's, so what was just hidden leaves the
             // list in hand rather than waiting for the folder to be reopened.
@@ -1457,6 +1492,9 @@ final class PlaybackController: ObservableObject {
             nearbyAnchor = moved(anchor)
             nearbyDays = Dictionary(nearbyDays.map { (moved($0.key), $0.value) }, uniquingKeysWith: { a, _ in a })
         }
+        if !faceScores.isEmpty {
+            faceScores = Dictionary(faceScores.map { (moved($0.key), $0.value) }, uniquingKeysWith: max)
+        }
         refreshAfterFileChanges()
     }
 
@@ -1485,9 +1523,9 @@ final class PlaybackController: ObservableObject {
         case .hidden:
             playlist = library.sorted(library.hiddenPaths())
             settle(on: playingNow)
-        case .said, .nearby:
-            // What was said, or when it was taken, is fixed; what is still on
-            // disk is not.
+        case .said, .nearby, .faces:
+            // What was said, when it was taken or whose face is in it is fixed;
+            // what is still on disk is not.
             let listed = playlist
             let was = mode
             Task { [weak self] in
@@ -1551,15 +1589,18 @@ final class PlaybackController: ObservableObject {
             guard !ticked.isEmpty else { return true }
             return combine == .all ? ticked.allSatisfy(carries) : ticked.contains(where: carries)
         }
-        // A nearby list is headed by how many days away each run was taken.
-        if mode == .nearby {
+        // A nearby list is headed by how many days away each run was taken, a
+        // face list by how good the match is.
+        if mode.keepsItsOrder {
             var rows: [PlaylistRow] = []
-            var heading: Int?
+            var heading: String?
             for path in visible {
-                let days = nearbyDays[path] ?? 0
-                if days != heading {
-                    heading = days
-                    rows.append(.heading(ShotNearby.heading(days: days)))
+                let label = mode == .nearby
+                    ? ShotNearby.heading(days: nearbyDays[path] ?? 0)
+                    : FaceLookAlikes.heading(score: faceScores[path] ?? 0)
+                if label != heading {
+                    heading = label
+                    rows.append(.heading(label))
                 }
                 rows.append(.video(path))
             }
@@ -1600,6 +1641,7 @@ final class PlaybackController: ObservableObject {
         case .said: name = "Said: \u{201C}\(saidQuery ?? "")\u{201D}"
         case .nearby:
             name = "Around " + (nearbyAnchor.map { ($0 as NSString).lastPathComponent } ?? "the same time")
+        case .faces: name = "May show \(facesPerson ?? "this face")"
         }
         return playlist.isEmpty ? name : "\(name) (\(playlist.count))"
     }

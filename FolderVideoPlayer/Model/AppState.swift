@@ -39,11 +39,24 @@ enum PlayMode: String {
     /// day first — a row's "Find Taken Around the Same Time". A look through
     /// the library like `.said`, and never written as the session either.
     case nearby
+    /// The videos that may show one person, by face (`FaceLookAlikes`), best
+    /// match first — a People row's "Show Videos That May Have This Face".
+    /// Another look through the library, never written as the session.
+    case faces
     /// `.favorites` remains a valid raw value so an old session still decodes
     /// — it resumes into nothing, never a crash. The former `.rated` mode is
     /// gone outright: star playlists are tag playlists, and a stored "rated"
     /// raw value decodes to nil and falls through to `.folder` (no root, so
     /// it declines to resume).
+
+    /// A look through the library rather than a place in it: never written as
+    /// the session, so leaving it returns to the folder or tag it was opened
+    /// from.
+    var isSearch: Bool { self == .said || self == .nearby || self == .faces }
+
+    /// A list that arrives in an order of its own — nearest day, best match —
+    /// with headings that describe that order. The sort bar does not apply.
+    var keepsItsOrder: Bool { self == .nearby || self == .faces }
 }
 
 enum PlayOrder: String, Codable, CaseIterable, Identifiable {

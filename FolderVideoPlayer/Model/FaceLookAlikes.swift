@@ -40,6 +40,70 @@ enum FaceLookAlikes {
 
     static let defaultLimit = 30
 
+    // MARK: - the wider list: "may have this face"
+
+    /// The bar for a People row's "Show Videos That May Have This Face".
+    ///
+    /// The engine's own one-to-one bar, and deliberately lower than the search
+    /// above. `videoMatchCosine` is the bar for OFFERING a name unasked, where
+    /// a wrong chip costs something; this is a list somebody opened to look
+    /// through, best match first, so the faces between the two bars belong in
+    /// it — under a heading of their own, so they are not mistaken for the
+    /// ones the suggestion pass would have offered.
+    static let possibleCosine = SFaceEmbedder.matchCosine
+
+    /// What a run of that list is headed: at or over the suggestion bar, or
+    /// only over the looser one.
+    static func heading(score: Double) -> String {
+        score >= SFaceEmbedder.videoMatchCosine ? "Likely" : "Possible"
+    }
+
+    // MARK: - which videos may be offered at all
+
+    /// The face→video index reduced to the videos worth offering for one
+    /// person, as tag keys. Both searches ask this, so they cannot disagree
+    /// about what "already settled" means.
+    ///
+    /// Left out: hidden videos; videos outside the look-alike scope
+    /// (`mayOffer` — the caller's `LookAlikes.mayOffer`); videos already
+    /// carrying the person's name; and videos where the name has been refused.
+    ///
+    /// The name is matched case-insensitively throughout. The registry's
+    /// spelling of a person and the tag's can differ in case, and an exact
+    /// lookup would offer back a video the user has already rejected.
+    static func offerable(person: String,
+                          faceVideos: [String: Set<String>],
+                          key: (String) -> String,
+                          hidden: Set<String>,
+                          tags: (String) -> [String],
+                          refused: (String) -> [String],
+                          mayOffer: (String) -> Bool) -> [String: [String]] {
+        func names(_ list: [String]) -> Bool {
+            list.contains { $0.caseInsensitiveCompare(person) == .orderedSame }
+        }
+        var offered: [String: [String]] = [:]
+        // One verdict per video, however many faces it holds: a video with
+        // five people in it is five rows of the index.
+        var verdict: [String: Bool] = [:]
+        for (hash, paths) in faceVideos {
+            var keep: [String] = []
+            for path in paths {
+                let video = key(path)
+                let ok: Bool
+                if let known = verdict[video] {
+                    ok = known
+                } else {
+                    ok = !hidden.contains(video) && mayOffer(video)
+                        && !names(tags(video)) && !names(refused(video))
+                    verdict[video] = ok
+                }
+                if ok { keep.append(video) }
+            }
+            if !keep.isEmpty { offered[hash] = keep }
+        }
+        return offered
+    }
+
     /// One ranked video. `score` is the best face cosine, four decimals, on the
     /// same scale the suggestion rows show.
     struct Candidate: Equatable {

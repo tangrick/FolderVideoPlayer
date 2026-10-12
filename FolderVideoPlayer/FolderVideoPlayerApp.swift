@@ -866,7 +866,7 @@ final class AppModel: ObservableObject {
             startMovedScan(paths: pb.playlist, label: "Favorites")
         case .hidden:
             startMovedScan(paths: pb.playlist, label: "Hidden")
-        case .said, .nearby:
+        case .said, .nearby, .faces:
             startMovedScan(paths: pb.playlist, label: pb.sessionLabel)
         }
     }
@@ -1732,6 +1732,126 @@ final class AppModel: ObservableObject {
             names.contains(where: { $0.caseInsensitiveCompare(tag) == .orderedSame })
         }.keys
         trainScope(scopePaths: Array(keys), scopeTitle: "for “\(tag)”")
+    }
+
+    // MARK: - looking for a person by face
+
+    /// One face search's answer: the ranking, the candidates whose file is
+    /// still where its faces were cached, and how many are not.
+    struct FaceSearch {
+        var result: FaceLookAlikes.Result
+        var live: [LookAlikes.Candidate]
+        var gone: Int
+    }
+
+    /// The person a People row's face search is running for, so the playlist's
+    /// footer can say so.
+    @Published private(set) var faceSearchFor: String?
+
+    /// Find this person in videos that are not tagged with them yet, by face.
+    ///
+    /// It never re-analyses anything: the face pass is button-triggered (People
+    /// ▸ Scan), and the hard rule is that nothing but the playing video starts
+    /// work on its own — so a video nobody has scanned is COUNTED and named as
+    /// such, not quietly queued. And it needs no prototype rule: one bound face
+    /// is enough to search with, where a scene prototype needs two videos to
+    /// have any direction at all.
+    ///
+    /// Both askers come through here — the look-alike toggle on a person's tag
+    /// (the defaults: the suggestion bar, a shortlist) and the People row's
+    /// "Show Videos That May Have This Face" (the looser bar, no limit) — so
+    /// the two cannot disagree about which videos are already settled.
+    func searchFaces(person: String,
+                     threshold: Double = SFaceEmbedder.videoMatchCosine,
+                     limit: Int = FaceLookAlikes.defaultLimit) async -> FaceSearch? {
+        guard let library, let analysis = analysis as AnalysisStore? else { return nil }
+
+        // Reduced here, on the main actor, because the library and the
+        // suggestions live here — and reduced to what is worth OFFERING, so the
+        // ranking never scores a video the user has already settled. Same
+        // scope as the scene search: only a folder the user has tagged in may
+        // be offered back.
+        let folders = LookAlikes.taggedFolders(library.tags.keys.map { Paths.tagPath($0) })
+        let suggestions = suggestions
+        let offered = FaceLookAlikes.offerable(
+            person: person,
+            faceVideos: faceStore?.faceVideos ?? [:],
+            key: { Paths.tagKey($0) },
+            hidden: library.hidden,
+            tags: { library.tags[$0] ?? [] },
+            refused: { key in
+                (suggestions?.entry(key)?.verdicts ?? [:]).filter { $0.value == .rejected }.map(\.key)
+            },
+            mayOffer: { LookAlikes.mayOffer(Paths.tagPath($0), taggedFolders: folders) })
+        // What the coverage count is measured against: every video the app
+        // holds a record for. A video with a record but no faces indexed is
+        // the one the user cannot see the absence of — it looks searched and
+        // never was.
+        var analysed = Set<String>()
+        for (key, _) in analysis.records where !library.hidden.contains(key) {
+            analysed.insert(key)
+        }
+
+        let profile = Paths.activeProfile
+        let result = await Task.detached(priority: .userInitiated) { () -> FaceLookAlikes.Result in
+            // Reads only: the registry file for this person's bound hashes,
+            // then one `.f32` per distinct face. No model is loaded, which is
+            // what lets this work on a Mac that never downloaded the face
+            // bundle but has a cache from one that did.
+            let registry = FaceRegistry(root: Paths.support, profile: profile)
+            let bound = registry.registry()
+            let key = FaceRegistry.existingKey(person, in: bound) ?? person
+            let references = (bound[key] ?? []).compactMap { registry.vector(for: $0) }
+            return FaceLookAlikes.rank(person: person,
+                                       references: references,
+                                       faceVideos: offered,
+                                       analysed: analysed,
+                                       vector: { registry.vector(for: $0) },
+                                       threshold: threshold,
+                                       limit: limit)
+        }.value
+
+        // The same moved-file check the scene search makes, for the same
+        // reason: a cached row whose file has gone cannot be played or
+        // accepted, and carries the name of one that can.
+        let ranked = result.candidates.map { LookAlikes.Candidate(key: $0.key, score: $0.score) }
+        let checked = await Task.detached(priority: .userInitiated) {
+            LookAlikes.live(ranked) { key in
+                FileManager.default.fileExists(atPath: Paths.tagPath(key))
+            }
+        }.value
+        return FaceSearch(result: result, live: checked.live, gone: checked.gone)
+    }
+
+    /// Open the videos that may show a person, best match first — a People
+    /// row's "Show Videos That May Have This Face".
+    ///
+    /// The look-alike toggle asks the same question of the same faces, but it
+    /// is a shortlist at the suggestion bar, three clicks into a tag. This is
+    /// everything over the engine's own bar, as a playlist to look through. A
+    /// search that finds nothing says why rather than opening an empty list.
+    func showPossibleFaces(_ person: String) {
+        guard faceSearchFor == nil, let playback else { return }
+        faceSearchFor = person
+        Task {
+            defer { faceSearchFor = nil }
+            guard let found = await searchFaces(person: person,
+                                                threshold: FaceLookAlikes.possibleCosine,
+                                                limit: .max) else { return }
+            guard !found.live.isEmpty else {
+                var why: [String] = []
+                if let reason = found.result.reason { why.append(reason) }
+                if found.gone > 0 {
+                    why.append("\(found.gone) matching video\(found.gone == 1 ? " has" : "s have") "
+                             + "moved from the path the faces were cached under.")
+                }
+                say("No videos that may show “\(person)”", why.joined(separator: " "))
+                return
+            }
+            playback.playFaces(person,
+                               ranked: found.live.map { (Paths.tagPath($0.key), $0.score) },
+                               unread: found.result.unscanned)
+        }
     }
 
     /// What the engine is doing this second, in a line the user can act on —

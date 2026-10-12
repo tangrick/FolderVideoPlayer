@@ -214,6 +214,60 @@ struct FaceLookAlikesTest {
         checkEqual("equal scores are ordered by key, not by dictionary luck",
                    tied.candidates.map(\.key), ["a/first.mov", "z/last.mov"])
 
+        // --- the wider list: "may have this face" ---------------------------
+        //
+        // The People row's list uses the engine's own bar and no limit, so the
+        // face between the two bars is IN it — and headed apart from the ones
+        // the suggestion pass would have offered.
+
+        let wide = FaceLookAlikes.rank(person: "Quincy",
+                                       references: bound,
+                                       faceVideos: ["same": ["a/one.mov"],
+                                                    "barely": ["b/two.mov"],
+                                                    "justUnder": ["c/three.mov"],
+                                                    "oldBar": ["d/four.mov"],
+                                                    "stranger": ["e/five.mov"]],
+                                       analysed: analysed,
+                                       vector: read,
+                                       threshold: FaceLookAlikes.possibleCosine,
+                                       limit: .max)
+        checkEqual("the wider bar is the engine's own", FaceLookAlikes.possibleCosine, 0.30)
+        checkEqual("the wider list keeps what is between the two bars, best first",
+                   wide.candidates.map(\.key),
+                   ["a/one.mov", "b/two.mov", "c/three.mov", "d/four.mov"])
+        checkEqual("...headed by which bar each one cleared",
+                   wide.candidates.map { FaceLookAlikes.heading(score: $0.score) },
+                   ["Likely", "Likely", "Possible", "Possible"])
+
+        // --- which videos may be offered at all -------------------------------
+        //
+        // One rule for both searches. Each exclusion below is a video the user
+        // has already settled, or never asked the app to go through.
+
+        let faceIndex: [String: Set<String>] = [
+            "same": ["/v/in/fresh.mov", "/v/in/named.mov", "/v/in/refused.mov",
+                     "/v/in/hidden.mov", "/v/out/elsewhere.mov"],
+            "barely": ["/v/in/fresh.mov"],          // two faces, one video
+            "stranger": ["/v/in/named.mov"],        // nothing left to offer
+        ]
+        let tagged = ["in/named.mov": ["Iceland", "quincy"]]          // another case
+        let said = ["in/refused.mov": ["QUINCY"], "in/fresh.mov": ["Someone Else"]]
+        let offered = FaceLookAlikes.offerable(
+            person: "Quincy",
+            faceVideos: faceIndex,
+            key: { String($0.dropFirst(3)) },                         // "/v/" off the front
+            hidden: ["in/hidden.mov"],
+            tags: { tagged[$0] ?? [] },
+            refused: { said[$0] ?? [] },
+            mayOffer: { $0.hasPrefix("in/") })
+        checkEqual("only the unsettled video is offered, as a key",
+                   offered["same"], ["in/fresh.mov"])
+        checkEqual("...under every face it holds", offered["barely"], ["in/fresh.mov"])
+        check("a face with nothing left to offer is dropped from the index",
+              offered["stranger"] == nil)
+        checkEqual("named, refused (in any case), hidden and out of scope are all left out",
+                   Set(offered.values.flatMap { $0 }), ["in/fresh.mov"])
+
         print(failures == 0 ? "ALL PASS face look-alikes" : "\(failures) FAILURES")
         exit(failures == 0 ? 0 : 1)
     }

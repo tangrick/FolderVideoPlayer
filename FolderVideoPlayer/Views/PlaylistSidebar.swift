@@ -89,6 +89,10 @@ struct PlaylistSidebar: View {
                 nearbyBanner
                 Divider()
             }
+            if playback.mode == .faces {
+                facesBanner
+                Divider()
+            }
             // The action row sits DIRECTLY on the list, not up in the toolbar.
             // Select, AI and Files all act on the videos below them, and a
             // control that acts on a list belongs against that list — with the
@@ -297,6 +301,49 @@ struct PlaylistSidebar: View {
         .help("Videos this profile knows that were taken within \(ShotNearby.days) days of "
               + "\u{201C}\(name)\u{201D}, by file date: the same day first, then a day away, and so on. "
               + "Done goes back to the folder or tag you were in.")
+    }
+
+    /// What the list is while it holds the videos that may show one person,
+    /// and the way back out.
+    private var facesBanner: some View {
+        let count = playback.faceScores.count
+        let person = playback.facesPerson ?? ""
+        let unread = playback.facesUnread
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Image(systemName: "person.crop.circle.badge.questionmark")
+                Text("\(count) \(count == 1 ? "video" : "videos") that may show \(person)")
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 4)
+                Button("Done") { playback.leaveFaces() }
+                    .font(.caption)
+                    .buttonStyle(.link)
+            }
+            // Said even when the list is full, because it is the one thing the
+            // list cannot show: a video with no face on record was never asked
+            // about, and its absence here looks like an answer.
+            if unread > 0 {
+                Text("\(unread) \(unread == 1 ? "video has" : "videos have") no face on record")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thinMaterial)
+        .help("Videos with a face resembling \(person), best match first. Likely is what the app "
+              + "would suggest the name on; Possible is a weaker resemblance. Left out: videos "
+              + "already named \(person), ones where you said it is not them, and folders you have "
+              + "not tagged in."
+              + (unread > 0
+                 ? " A video with no face on record has not been scanned, or has nobody in it — "
+                   + "open People and scan to widen this."
+                 : "")
+              + " Done goes back to the folder or tag you were in.")
     }
 
     /// Search every transcript in the profile and make the hits the list.
@@ -1187,12 +1234,10 @@ struct PlaylistSidebar: View {
     /// Find this person in videos that are not tagged with them yet, by face.
     ///
     /// Deliberately shorter than the scene search below, because it cannot do
-    /// the two things that make that one long. It never re-analyses anything:
-    /// the face pass is button-triggered (People ▸ Scan), and the hard rule is
-    /// that nothing but the playing video starts work on its own — so a video
-    /// nobody has scanned is COUNTED and named as such, not quietly queued. And
-    /// it needs no prototype rule: one bound face is enough to search with,
-    /// where a scene prototype needs two videos to have any direction at all.
+    /// the two things that make that one long: it never re-analyses anything,
+    /// and it needs no prototype rule. The search itself is the app's
+    /// (`AppModel.searchFaces`), shared with the People row's "Show Videos
+    /// That May Have This Face".
     private func runFaceLookAlikeSearch(person: String) {
         aiByFace = true
         aiLoading = true
@@ -1200,93 +1245,23 @@ struct PlaylistSidebar: View {
         aiCandidates = []
         Task {
             defer { aiLoading = false }
-            guard let analysis = app.analysis as AnalysisStore? else { return }
-
-            // The index is `faceHash -> absolute paths`; everything the rows
-            // are drawn from is a tag key. Reduced here, on the main actor,
-            // because `library` and `suggestions` live here — and reduced to
-            // what is worth OFFERING, so the ranking below never scores a video
-            // the user has already settled.
-            let offerableFolders = taggedFolders()
-            var offered: [String: [String]] = [:]
-            for (hash, paths) in app.faceStore?.faceVideos ?? [:] {
-                var keep: [String] = []
-                for path in paths {
-                    let key = Paths.tagKey(path)
-                    if library.hidden.contains(key) { continue }
-                    // Same rule as the scene search: only a folder in force
-                    // that the user has tagged in may be offered back.
-                    if !inScope(Paths.tagPath(key), taggedIn: offerableFolders) { continue }
-                    if (library.tags[key] ?? []).contains(where: {
-                        $0.caseInsensitiveCompare(person) == .orderedSame
-                    }) { continue }
-                    // Case-insensitively, unlike the scene search's exact
-                    // lookup: that one asks with the tag as the user sees it
-                    // spelled, which is what `dismissAI` filed the verdict
-                    // under. This one asks with the REGISTRY's spelling of the
-                    // person, and the two can differ in case — an exact lookup
-                    // would offer back a video the user has already rejected.
-                    if let verdicts = suggestions.entry(key)?.verdicts,
-                       verdicts.first(where: {
-                           $0.key.caseInsensitiveCompare(person) == .orderedSame
-                       })?.value == .rejected { continue }
-                    keep.append(key)
-                }
-                if !keep.isEmpty { offered[hash] = keep }
-            }
-            // What the coverage count is measured against: every video the app
-            // holds a record for. A video with a record but no faces indexed is
-            // the one the user cannot see the absence of — it looks searched
-            // and never was.
-            var analysed = Set<String>()
-            for (key, _) in analysis.records where !library.hidden.contains(key) {
-                analysed.insert(key)
-            }
-
-            let profile = Paths.activeProfile
-            let result = await Task.detached(priority: .userInitiated) { () -> FaceLookAlikes.Result in
-                // Reads only: the registry file for this person's bound hashes,
-                // then one `.f32` per distinct face. No model is loaded, which
-                // is what lets this work on a Mac that never downloaded the
-                // face bundle but has a cache from one that did.
-                let registry = FaceRegistry(root: Paths.support, profile: profile)
-                let bound = registry.registry()
-                let key = FaceRegistry.existingKey(person, in: bound) ?? person
-                let references = (bound[key] ?? []).compactMap { registry.vector(for: $0) }
-                return FaceLookAlikes.rank(person: person,
-                                           references: references,
-                                           faceVideos: offered,
-                                           analysed: analysed,
-                                           vector: { registry.vector(for: $0) })
-            }.value
+            guard let found = await app.searchFaces(person: person) else { return }
             guard !Task.isCancelled, aiSuggest,
                   playback.tagName?.caseInsensitiveCompare(person) == .orderedSame else { return }
-
-            // The same moved-file check the scene search makes, for the same
-            // reason: a cached row whose file has gone cannot be played or
-            // accepted, and carries the name of one that can.
-            let ranked = result.candidates.map { LookAlikes.Candidate(key: $0.key, score: $0.score) }
-            let checked = await Task.detached(priority: .userInitiated) {
-                LookAlikes.live(ranked) { key in
-                    FileManager.default.fileExists(atPath: Paths.tagPath(key))
-                }
-            }.value
-            guard !Task.isCancelled, aiSuggest,
-                  playback.tagName?.caseInsensitiveCompare(person) == .orderedSame else { return }
-            aiCandidates = checked.live.map { (key: $0.key, score: $0.score) }
+            aiCandidates = found.live.map { (key: $0.key, score: $0.score) }
 
             var notes: [String] = []
-            if checked.live.isEmpty, let reason = result.reason { notes.append(reason) }
-            if checked.gone > 0 {
-                notes.append("\(checked.gone) candidate\(checked.gone == 1 ? "" : "s") skipped — "
+            if found.live.isEmpty, let reason = found.result.reason { notes.append(reason) }
+            if found.gone > 0 {
+                notes.append("\(found.gone) candidate\(found.gone == 1 ? "" : "s") skipped — "
                            + "the file has moved from the path the faces were cached under.")
             }
             // Said even when the answer is full, because it is the one thing
             // the user cannot see: a face search over a library that has barely
             // been scanned looks like a complete answer.
-            if result.unscanned > 0 {
-                let noun = result.unscanned == 1 ? "video has" : "videos have"
-                notes.append("\(result.unscanned) \(noun) not been scanned for faces yet — "
+            if found.result.unscanned > 0 {
+                let noun = found.result.unscanned == 1 ? "video has" : "videos have"
+                notes.append("\(found.result.unscanned) \(noun) not been scanned for faces yet — "
                            + "open People and scan them to widen this search.")
             }
             aiNote = notes.isEmpty ? nil : notes.joined(separator: " ")
@@ -1977,6 +1952,19 @@ struct PlaylistSidebar: View {
                     .lineLimit(1)
                     .help("Reading the dates of the videos this profile knows, to find the ones taken around the same time")
             }
+            if let person = app.faceSearchFor {
+                // One read per face on record, then a stat per match — short,
+                // but not nothing on a share.
+                Text("·").foregroundStyle(.tertiary)
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.55)
+                    .frame(width: 10, height: 10)
+                Text("Looking for \(person)")
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+                    .help("Comparing the faces on record with \(person)\u{2019}s")
+            }
             if let batch = app.transcribeBatch {
                 // The playlist run, on the same line and in the same shape as
                 // the engine's job: what, how far, and the way to stop it.
@@ -2124,7 +2112,13 @@ struct SortBar: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(active ? Color.primary : Color.secondary)
-        .help(help(sort, active: active))
+        // Off, with the reason, in a list that has an order of its own: a key
+        // that lights up and moves nothing is worse than one that says no.
+        .disabled(playback.mode.keepsItsOrder)
+        .help(playback.mode.keepsItsOrder
+              ? "This list is in its own order: "
+                + (playback.mode == .faces ? "best face match first" : "nearest day first")
+              : help(sort, active: active))
     }
 
     /// The bar's own words: "Date Added" and "File Size" do not fit four to a
