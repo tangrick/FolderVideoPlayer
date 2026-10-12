@@ -166,6 +166,8 @@ final class PlaybackController: ObservableObject {
     /// list is.
     @Published private(set) var nearbyAnchor: String?
     @Published private(set) var nearbyDays: [String: Int] = [:]
+    /// How many days either side of the anchor the list reaches.
+    @Published private(set) var nearbySpan = ShotNearby.days
     /// Set while the library's dates are being read for it.
     @Published private(set) var findingNearby = false
 
@@ -568,8 +570,14 @@ final class PlaybackController: ObservableObject {
     /// every file on every share. Their dates are a stat apiece, asked off the
     /// main thread; a file that has gone has no date and so is not offered.
     /// Hidden videos are left out, like everywhere else.
-    func playNearby(_ path: String) {
+    ///
+    /// `days` is how far either side to look — the user's own number, from the
+    /// list's banner. Asking again for the video the list is already around
+    /// re-draws it in place, so widening the reach does not restart whatever is
+    /// playing.
+    func playNearby(_ path: String, days span: Int = ShotNearby.days) {
         guard !findingNearby else { return }
+        let span = min(max(span, 0), ShotNearby.maxDays)
         let name = (path as NSString).lastPathComponent
         let candidates = Array(Set(playlist).union(library.knownVideoKeys().map(Paths.tagPath)))
             .filter { !library.isHidden($0) }
@@ -588,16 +596,26 @@ final class PlaybackController: ObservableObject {
             }
             let hits = ShotNearby.around(date: date,
                                          dated: candidates.map { ($0, self.library.addedOn($0)) },
-                                         excluding: path)
-            guard !hits.isEmpty else {
-                self.trouble = "No other video was taken within \(ShotNearby.days) days of \u{201C}\(name)\u{201D}."
+                                         excluding: path, days: span)
+            // The list already around this video is being re-reached: an empty
+            // answer is then the answer, not a reason to leave the old one up.
+            let again = self.mode == .nearby && self.nearbyAnchor == path
+            guard !hits.isEmpty || again else {
+                self.trouble = "No other video was taken within \(ShotNearby.reach(span)) of \u{201C}\(name)\u{201D}."
                 return
             }
             var days = [path: 0]
             for hit in hits { days[hit.key] = hit.days }
+            let list = [path] + hits.map(\.key)
             self.nearbyAnchor = path
             self.nearbyDays = days
-            self.start([path] + hits.map(\.key), mode: .nearby, root: nil, resume: path)
+            self.nearbySpan = span
+            if again, let playing = self.currentPath, list.contains(playing) {
+                self.playlist = list
+                self.settle(on: playing)
+            } else {
+                self.start(list, mode: .nearby, root: nil, resume: path)
+            }
         }
     }
 

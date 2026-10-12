@@ -69,6 +69,9 @@ struct PlaylistSidebar: View {
     @State private var gone: Set<String> = []
     /// The words typed into the library-wide transcript search.
     @State private var saidTyped = ""
+    /// How many days either side "Find Taken Around the Same Time" reaches —
+    /// the user's number, kept between launches.
+    @AppStorage("nearbyDays") private var nearbyReach = ShotNearby.days
 
     var body: some View {
         VStack(spacing: 0) {
@@ -102,9 +105,9 @@ struct PlaylistSidebar: View {
                 .padding(.horizontal, 8)
                 .padding(.top, 6)
                 .padding(.bottom, showSelectionBar ? 4 : 6)
-            // What to do with a selection appears only once there IS one worth
-            // acting on. A single click always selects a row, so showing this
-            // for one video would mean it never goes away.
+            // All and None are there whenever the list has something to pick:
+            // hidden until two rows were picked, the way to pick every row
+            // could only be found by already having picked some.
             if showSelectionBar {
                 selectionBar
                     .padding(.horizontal, 8)
@@ -283,24 +286,55 @@ struct PlaylistSidebar: View {
     private var nearbyBanner: some View {
         let others = max(playback.nearbyDays.count - 1, 0)
         let name = playback.nearbyAnchor.map { ($0 as NSString).lastPathComponent } ?? ""
-        return HStack(spacing: 6) {
-            Image(systemName: "calendar")
-            Text("\(others) \(others == 1 ? "video" : "videos") taken within \(ShotNearby.days) days of \(name)")
-                .font(.caption)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer(minLength: 4)
-            Button("Done") { playback.leaveNearby() }
-                .font(.caption)
-                .buttonStyle(.link)
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Image(systemName: "calendar")
+                Text("\(others) \(others == 1 ? "video" : "videos") taken around \(name)")
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 4)
+                Button("Done") { playback.leaveNearby() }
+                    .font(.caption)
+                    .buttonStyle(.link)
+            }
+            // The reach, as a number to type: three days suits a weekend and
+            // not a three-week trip. Return, or the arrows, re-draws the list.
+            HStack(spacing: 4) {
+                Text("Within")
+                TextField("days", value: $nearbyReach, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 44)
+                    .onSubmit(reachNearby)
+                    .accessibilityLabel("Days either side")
+                Stepper("", value: $nearbyReach, in: 0...ShotNearby.maxDays)
+                    .labelsHidden()
+                Text(nearbyReach == 1 ? "day either side" : "days either side")
+                if playback.findingNearby { ProgressView().controlSize(.mini) }
+            }
+            .font(.caption)
+            .controlSize(.small)
+            .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.thinMaterial)
-        .help("Videos this profile knows that were taken within \(ShotNearby.days) days of "
+        .onChange(of: nearbyReach) { _, _ in reachNearby() }
+        .help("Videos this profile knows that were taken within \(ShotNearby.reach(playback.nearbySpan)) of "
               + "\u{201C}\(name)\u{201D}, by file date: the same day first, then a day away, and so on. "
+              + "Type any number of days, up to \(ShotNearby.maxDays); 0 is the same day only. "
               + "Done goes back to the folder or tag you were in.")
+    }
+
+    /// Re-draw the nearby list at the reach now typed. Out-of-range numbers are
+    /// pulled back into range first, which fires this again with the real one.
+    private func reachNearby() {
+        let wanted = min(max(nearbyReach, 0), ShotNearby.maxDays)
+        guard wanted == nearbyReach else { nearbyReach = wanted; return }
+        guard let anchor = playback.nearbyAnchor, wanted != playback.nearbySpan else { return }
+        playback.playNearby(anchor, days: wanted)
     }
 
     /// What the list is while it holds the videos that may show one person,
@@ -359,9 +393,11 @@ struct PlaylistSidebar: View {
 
     // MARK: - band 2: the named actions
 
-    /// Whether several videos are picked, which is when the batch controls
-    /// are worth the row they take up.
-    private var showSelectionBar: Bool { app.selection.count > 1 }
+    /// Whether there is anything to pick, which is when All and None are
+    /// worth the row they take up.
+    private var showSelectionBar: Bool { !videos.isEmpty }
+    /// Several videos are picked: the batch has its own count to show.
+    private var batchPicked: Bool { app.selection.count > 1 }
 
     private var actionBand: some View {
         HStack(spacing: 6) {
@@ -372,7 +408,7 @@ struct PlaylistSidebar: View {
             // The count steps aside while a batch is picked: the row below
             // carries "N selected", and two counts in two lines invite a
             // misread.
-            if !showSelectionBar {
+            if !batchPicked {
                 Text(countLabel)
                     .font(.caption2).foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -440,11 +476,16 @@ struct PlaylistSidebar: View {
     /// list it acts on.
     private var selectionBar: some View {
         HStack(spacing: 8) {
-            Text("\(app.selection.count) selected")
+            Text("Select")
                 .font(.caption).foregroundStyle(.secondary)
-                .lineLimit(1)
             Button("All") { app.selectAll(playback.visibleVideos) }
             Button("None") { app.selectNone() }
+                .disabled(app.selection.isEmpty)
+            if batchPicked {
+                Text("\(app.selection.count) selected")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         }
         .buttonStyle(.link)
         .font(.caption)
@@ -2611,6 +2652,7 @@ struct RowMenu: View {
     /// Needed because tagging and un-favouriting change what BELONGS in the
     /// playlist, not merely how a row is drawn — the list has to be re-asked.
     @ObservedObject var playback: PlaybackController
+    @AppStorage("nearbyDays") private var nearbyReach = ShotNearby.days
 
     /// What the command applies to: the ticked rows when this row is one of
     /// them, otherwise just this row. Right-clicking inside a selection acts
@@ -2642,9 +2684,10 @@ struct RowMenu: View {
         Divider()
         // About THIS row, like Get Info: a neighbourhood has one centre.
         if !library.isHidden(path) {
-            Button("Find Taken Around the Same Time") { playback.playNearby(path) }
+            Button("Find Taken Around the Same Time") { playback.playNearby(path, days: nearbyReach) }
                 .disabled(playback.findingNearby)
-                .help("List the videos taken within \(ShotNearby.days) days of this one, the same day first")
+                .help("List the videos taken within \(ShotNearby.reach(nearbyReach)) of this one, the same day first. "
+                      + "The list's banner takes any number of days")
             Divider()
         }
         // Watched is the user's to say, for one video or a selection.

@@ -27,7 +27,8 @@ no account, no cloud service, and no video, frame or tag leaves the machine.
 - **Taken around the same time** — right-click a video ▸ *Find Taken Around
   the Same Time* lists the videos this profile knows that were taken within
   three days of it, by file date: the same day first, then a day away, and so
-  on. **Done** goes back to the folder or tag you were in.
+  on. Type any number of days in the list's banner to reach further or closer;
+  it is remembered. **Done** goes back to the folder or tag you were in.
 - **Videos that may show a person** — right-click a name under People in the
   library panel ▸ *Show Videos That May Have This Face* lists the videos not
   yet named for them with a face that resembles theirs, best match first:

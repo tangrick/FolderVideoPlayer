@@ -20,7 +20,18 @@ import Foundation
 enum ShotNearby {
 
     /// How far either side of the video counts as "around the same time".
+    /// The default; the list's banner takes any number up to `maxDays`.
     static let days = 3
+    static let maxDays = 365
+
+    /// "the same day", "1 day", "5 days" — how a reach is said.
+    static func reach(_ days: Int) -> String {
+        switch days {
+        case 0: return "the same day"
+        case 1: return "1 day"
+        default: return "\(days) days"
+        }
+    }
 
     struct Hit: Equatable {
         let key: String

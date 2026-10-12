@@ -72,6 +72,12 @@ struct ShotNearbyTest {
                    ShotNearby.around(date: mine, dated: tied, excluding: "", calendar: utc).map(\.key),
                    ["a", "b"])
 
+        checkEqual("a wider reach takes what three days left out",
+                   ShotNearby.around(date: mine, dated: pool, excluding: "self", days: 4, calendar: utc)
+                       .map(\.key).suffix(2), ["tooEarly", "outside"])
+        checkEqual("how a reach is said", [0, 1, 10].map { ShotNearby.reach($0) },
+                   ["the same day", "1 day", "10 days"])
+
         checkEqual("headings", [0, 1, 3].map { ShotNearby.heading(days: $0) },
                    ["Same day", "1 day apart", "3 days apart"])
 
