@@ -155,7 +155,18 @@ fi
 # legitimately dropped. What is provable now is that the package COMPILED and
 # that the link step was given it; the symbol check turns on by itself the
 # moment a source imports it.
-dd=$(ls -d ~/Library/Developer/Xcode/DerivedData/FolderVideoPlayer-* 2>/dev/null | head -1)
+# THIS checkout's DerivedData, by the project path Xcode records in it: a
+# second checkout of the project has a folder of the same name, and the first
+# one listed may be that one's — older, and built before the dependency.
+project=$(cd "$here/.." && pwd)/FolderVideoPlayer.xcodeproj
+dd=""
+for candidate in ~/Library/Developer/Xcode/DerivedData/FolderVideoPlayer-*; do
+    [ -f "$candidate/info.plist" ] || continue
+    if [ "$(/usr/libexec/PlistBuddy -c "Print WorkspacePath" "$candidate/info.plist" 2>/dev/null)" = "$project" ]; then
+        dd=$candidate
+        break
+    fi
+done
 imports=$(grep -rl "import WhisperKit" "$sources" --include=*.swift 2>/dev/null || true)
 if [ -z "$dd" ]; then
     skip "no DerivedData for this project — build it, then run this again to prove the link"
